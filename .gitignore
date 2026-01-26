@@ -3,7 +3,6 @@ __pycache__/
 .DS_Store
 
 # Generated datasets / outputs
-_smoke/
-phase_a_yaw_only/
-phase_a_yaw_pitch/
+_smoke*/
+phase_a_*/
 

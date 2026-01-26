@@ -6,7 +6,7 @@ set -euo pipefail
 
 python create_dataset.py \
   --out_dir ./phase_a_yaw_only \
-  --models_file ./models_4.txt \
+  --models_file ./models_phase_a_12.txt \
   --mode rotate_object \
   --yaw_min -90 --yaw_max 90 --yaw_step 1 \
   --pitch_list 0 \

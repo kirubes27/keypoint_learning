@@ -1,33 +1,34 @@
-"""TDW pose dataset generator (fine angular steps, Stage-A friendly).
+"""TDW Phase-A pose dataset generator.
 
-This is a *drop-in replacement* for the original create_dataset.py you shared.
-Your original script is great for recreating the older Joseph-style grid dataset,
-but it has a few issues for *your* Stage-A goal:
+Generates ordered image sequences of a single rigid TDW object under fixed scene settings,
+with small pose increments, for representation learning via temporal predictability / linear operators.
 
-1) It renders MANY objects in one scene (4x3 grid) -> background distractors.
-2) It uses 10° steps -> too coarse for compositional/locally-linear operator fits.
-3) It mixes train/test angle sets but not as temporal sequences.
-4) A couple bugs/rough edges (typos like `wseaaaaaaaaaangles`, hard-coded paths).
+Key properties:
+- One object per sequence; clean room; fixed camera/lighting; no scale randomization within a sequence.
+- Pose schedule: yaw grid with optional discrete pitch list; roll fixed (default 0).
+- Two rendering modes:
+  - rotate_object: fixed camera, rotate object (recommended for Phase-A).
+  - orbit_camera: move camera around object (equivalent images, different interpretation).
+- Outputs PNG frames + per-frame JSONL metadata, plus precomputed (t,t+1,t+2) triples.
 
-This script:
-- renders ONE object per scene (clean background).
-- uses 1° steps by default.
-- writes ordered frames + metadata (so training can use (t,t+1,t+2) triples).
-- deterministic train/test split by object identity.
-- supports either (A) camera orbit around a fixed object OR (B) object rotation
-  under a fixed camera (you can choose with --mode).
+Output layout (under --out_dir):
+  dataset_index.json, triples.json
+  train/<model_name>/{frames/a/img_XXXX.png, meta.jsonl, summary.json}
+  test/<model_name>/{frames/a/img_XXXX.png, meta.jsonl, summary.json}
 
-Usage example (yaw-only, 1° step):
+Notes:
+- CLI defaults are `--yaw_step 1` and `--mode orbit_camera`. For Phase-A, you likely want ~2° steps
+  and `--mode rotate_object`.
+- `--models_file` is a newline-separated list of TDW model names (e.g. "iron_box").
+
+Example (yaw-only, 2° steps, fixed camera):
   python create_dataset.py \
-      --out_dir ./tdw_pose_1deg \
-      --models_file ./models_12.txt \
-      --mode orbit_camera \
-      --yaw_min -90 --yaw_max 90 --yaw_step 1 \
-      --pitch_list 0 \
-      --dist 1.5 \
-      --img_size 128
-
-A models_file is a newline-separated list of TDW model names (e.g. 'iron_box').
+    --out_dir ./phase_a_yaw_only_12obj_yaw2deg_512 \
+    --models_file ./models_phase_a_12.txt \
+    --mode rotate_object \
+    --yaw_min -90 --yaw_max 90 --yaw_step 2 \
+    --pitch_list 0 --roll 0 \
+    --dist 0.5 --img_size 512
 """
 
 from __future__ import annotations

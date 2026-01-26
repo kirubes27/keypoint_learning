@@ -1,0 +1,12 @@
+coffeemug
+scissors
+toothbrush
+ball_peen_hammer
+screwdriver
+pepper
+headphones
+mug
+apple
+banana
+bowl
+can

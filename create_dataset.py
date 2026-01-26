@@ -126,6 +126,9 @@ def render_object_sequence(
     dist: float,
     mode: str,
     seed: int,
+    port: int,
+    camera_height: float,
+    look_at_height: float,
 ) -> Dict:
     """Render a sequence for one object. Returns a summary dict."""
 
@@ -138,7 +141,7 @@ def render_object_sequence(
         meta_jsonl.unlink()  # avoid accidental append from prior runs
 
     # TDW controller
-    c = Controller()
+    c = Controller(port=int(port))
 
     # Camera + capture. TDW ImageCapture writes images named by frame count.
     # We keep a single avatar id and save only RGB.
@@ -156,6 +159,8 @@ def render_object_sequence(
     # clean empty room
     commands = [
         TDWUtils.create_empty_room(12, 12),
+        # Disable post-processing to avoid depth-of-field blur.
+        {"$type": "set_post_process", "value": False},
         {"$type": "set_screen_size", "width": img_size, "height": img_size},
         {"$type": "set_target_framerate", "framerate": 30},
         {"$type": "set_render_quality", "render_quality": 5},
@@ -174,8 +179,8 @@ def render_object_sequence(
     if mode == "rotate_object":
         # place camera at yaw=0,pitch=0 by default
         x, y, z = _camera_pos_from_yaw_pitch(dist=dist, yaw_deg=0.0, pitch_deg=0.0)
-        cam.teleport({"x": x, "y": y, "z": z})
-        cam.look_at({"x": 0, "y": 0, "z": 0})
+        cam.teleport({"x": x, "y": float(camera_height), "z": z})
+        cam.look_at({"x": 0, "y": float(look_at_height), "z": 0})
         # Apply camera placement, but still don't save.
         c.communicate([])
 
@@ -190,8 +195,8 @@ def render_object_sequence(
         cmds: List[dict] = []
         if mode == "orbit_camera":
             x, y, z = _camera_pos_from_yaw_pitch(dist=dist, yaw_deg=pose.yaw_deg, pitch_deg=pose.pitch_deg)
-            cam.teleport({"x": x, "y": y, "z": z})
-            cam.look_at({"x": 0, "y": 0, "z": 0})
+            cam.teleport({"x": x, "y": float(y) + float(camera_height), "z": z})
+            cam.look_at({"x": 0, "y": float(look_at_height), "z": 0})
             # Apply camera move and capture on this same frame.
         elif mode == "rotate_object":
             # rotate object around Y (yaw) and X (pitch) in-place.
@@ -244,6 +249,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out_dir", type=str, required=True)
     ap.add_argument("--models_file", type=str, required=True, help="newline-separated TDW model names")
+    ap.add_argument("--port", type=int, default=1071, help="ZMQ port for TDW build (use a different one if a prior run crashed).")
 
     ap.add_argument("--mode", type=str, default="orbit_camera", choices=["orbit_camera", "rotate_object"])
 
@@ -257,6 +263,8 @@ def main() -> None:
     ap.add_argument("--img_size", type=int, default=128)
     ap.add_argument("--test_frac", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--camera_height", type=float, default=0.0, help="Raise camera (meters).")
+    ap.add_argument("--look_at_height", type=float, default=0.0, help="Look-at Y target (meters).")
 
     args = ap.parse_args()
 
@@ -302,6 +310,9 @@ def main() -> None:
             dist=args.dist,
             mode=args.mode,
             seed=args.seed,
+            port=args.port,
+            camera_height=args.camera_height,
+            look_at_height=args.look_at_height,
         )
         dataset_index["splits"][split].append(model_name)
         dataset_index["objects"][model_name] = summary

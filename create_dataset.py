@@ -120,6 +120,7 @@ def _append_jsonl(path: Path, obj: Dict) -> None:
 
 def render_object_sequence(
     *,
+    controller: Controller,
     model_name: str,
     out_dir: Path,
     poses: List[Pose],
@@ -127,7 +128,6 @@ def render_object_sequence(
     dist: float,
     mode: str,
     seed: int,
-    port: int,
     camera_height: float,
     look_at_height: float,
 ) -> Dict:
@@ -141,11 +141,18 @@ def render_object_sequence(
     if meta_jsonl.exists():
         meta_jsonl.unlink()  # avoid accidental append from prior runs
 
-    # TDW controller
-    c = Controller(port=int(port))
+    # Reuse a single TDW controller across all objects to avoid repeatedly
+    # launching/quitting the Unity build (which can trigger "quit unexpectedly"
+    # dialogs on some systems).
+    c = controller
 
     # Camera + capture. TDW ImageCapture writes images named by frame count.
     # We keep a single avatar id and save only RGB.
+    #
+    # IMPORTANT: Create fresh add-ons per object and replace the controller's
+    # add_ons list. This avoids conflicts with prior add-on state and ensures
+    # per-object filenames start at img_0000.png.
+    c.add_ons.clear()
     cam = ThirdPersonCamera(avatar_id="a", position={"x": 0, "y": 0, "z": 0}, look_at={"x": 0, "y": 0, "z": 0})
     # Use lossless PNG for Phase-A (avoid compression artifacts in predictability loss).
     cap = ImageCapture(avatar_ids=["a"], path=str(frames_dir.resolve()), png=True, pass_masks=["_img"])
@@ -157,8 +164,9 @@ def render_object_sequence(
     # - the first saved frame is img_0000.png and corresponds to t=0
     cap.set(frequency="never", avatar_ids=["a"], save=False)
 
-    # clean empty room
+    # Reset the scene per object so that walls/objects don't accumulate across sequences.
     commands = [
+        {"$type": "load_scene", "scene_name": "ProcGenScene"},
         TDWUtils.create_empty_room(12, 12),
         # Disable post-processing to avoid depth-of-field blur.
         {"$type": "set_post_process", "value": False},
@@ -229,8 +237,6 @@ def render_object_sequence(
         )
 
     # done
-    c.communicate([{ "$type": "terminate" }])
-
     summary = {
         "model_name": model_name,
         "object_id": obj_id,
@@ -282,6 +288,9 @@ def main() -> None:
         roll=args.roll,
     )
 
+    # Launch TDW once and reuse it across all objects.
+    c = Controller(port=int(args.port))
+
     dataset_index: Dict[str, Dict] = {
         "config": {
             "mode": args.mode,
@@ -304,6 +313,7 @@ def main() -> None:
         obj_out = out_root / split / model_name
         print(f"[{i+1}/{len(models)}] Rendering {model_name} -> {obj_out}")
         summary = render_object_sequence(
+            controller=c,
             model_name=model_name,
             out_dir=obj_out,
             poses=poses,
@@ -311,7 +321,6 @@ def main() -> None:
             dist=args.dist,
             mode=args.mode,
             seed=args.seed,
-            port=args.port,
             camera_height=args.camera_height,
             look_at_height=args.look_at_height,
         )
@@ -323,6 +332,9 @@ def main() -> None:
     # convenience: precompute (t,t+1,t+2) triples indices once (same for all objects)
     triples = [{"t0": t, "t1": t + 1, "t2": t + 2} for t in range(len(poses) - 2)]
     _write_json(out_root / "triples.json", {"n_frames": len(poses), "triples": triples})
+
+    # Terminate TDW once, after all objects are rendered.
+    c.communicate([{"$type": "terminate"}])
 
     print("Done.")
     print(f"Index: {out_root/'dataset_index.json'}")

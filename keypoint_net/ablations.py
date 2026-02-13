@@ -28,6 +28,7 @@ import argparse
 import json
 from pathlib import Path
 import copy
+import random
 
 import torch
 import torch.nn as nn
@@ -36,6 +37,15 @@ import numpy as np
 
 from model import PhaseAModel, compute_losses
 from dataset import SingleObjectDataset
+
+
+def _seed_everything(seed: int) -> None:
+    """Set seeds for reproducible ablations."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 @torch.no_grad()
@@ -209,8 +219,12 @@ def main():
     parser.add_argument("--num_keypoints", type=int, default=10)
     parser.add_argument("--img_size", type=int, default=256)
     parser.add_argument("--frame_skip", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible ablation perturbations")
     
     args = parser.parse_args()
+
+    _seed_everything(args.seed)
+    print(f"Seed: {args.seed}")
     
     if torch.cuda.is_available():
         device = "cuda"
@@ -229,12 +243,14 @@ def main():
         num_keypoints = config.get('num_keypoints', args.num_keypoints)
         base_channels = config.get('base_channels', 32)
         temperature = config.get('temperature', 1.0)
+        num_action_classes = config.get('num_action_classes', 0)
         frame_skip = config.get('frame_skip', args.frame_skip)
         print(f"Loaded config from checkpoint: {config}")
     else:
         num_keypoints = args.num_keypoints
         base_channels = 32
         temperature = 1.0
+        num_action_classes = 0
         frame_skip = args.frame_skip
         print(f"No config in checkpoint, using num_keypoints={num_keypoints}")
     
@@ -243,6 +259,7 @@ def main():
         num_keypoints=num_keypoints,
         base_channels=base_channels,
         temperature=temperature,
+        num_action_classes=num_action_classes,
     )
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device)

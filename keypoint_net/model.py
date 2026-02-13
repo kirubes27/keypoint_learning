@@ -158,6 +158,25 @@ class LinearOperator(nn.Module):
         return self.linear.bias
 
 
+class ActionClassifier(nn.Module):
+    """
+    Linear action head over keypoint deltas.
+
+    Given delta_k = p_{t+1} - p_t, predicts action class logits.
+    Keeping this linear tests whether action information is linearly decodable
+    from keypoint motion.
+    """
+
+    def __init__(self, keypoint_dim: int, num_classes: int):
+        super().__init__()
+        if num_classes < 2:
+            raise ValueError(f"num_classes must be >= 2, got {num_classes}")
+        self.linear = nn.Linear(keypoint_dim, num_classes)
+
+    def forward(self, delta_k: torch.Tensor) -> torch.Tensor:
+        return self.linear(delta_k)
+
+
 class PhaseAModel(nn.Module):
     """
     Combined model for Phase A training (10.1).
@@ -178,19 +197,25 @@ class PhaseAModel(nn.Module):
         in_channels: int = 3,
         base_channels: int = 32,
         temperature: float = 1.0,
+        num_action_classes: int = 0,
     ):
         super().__init__()
         self.num_keypoints = num_keypoints
         self.keypoint_dim = 2 * num_keypoints
-        
+        self.num_action_classes = num_action_classes
+
         self.extractor = KeypointExtractor(
             in_channels=in_channels,
             num_keypoints=num_keypoints,
             base_channels=base_channels,
             temperature=temperature,
         )
-        
+
         self.operator = LinearOperator(self.keypoint_dim)
+        if num_action_classes > 0:
+            self.action_classifier = ActionClassifier(self.keypoint_dim, num_action_classes)
+        else:
+            self.action_classifier = None
     
     def forward(self, x_t: torch.Tensor, x_t1: torch.Tensor) -> dict:
         """
@@ -204,14 +229,21 @@ class PhaseAModel(nn.Module):
         
         # Predict next keypoints using linear operator
         p_hat_t1 = self.operator(p_t)  # (B, 2N)
-        
-        return {
+
+        outputs = {
             'p_t': p_t,                # Current keypoints (B, 2N)
             'p_t1': p_t1,              # Next keypoints - ground truth (B, 2N)
             'p_hat_t1': p_hat_t1,      # Predicted next keypoints (B, 2N)
             'heatmaps_t': heatmaps_t,
             'heatmaps_t1': heatmaps_t1,
         }
+
+        if self.action_classifier is not None:
+            delta_k = p_t1 - p_t
+            outputs['delta_k'] = delta_k
+            outputs['action_logits'] = self.action_classifier(delta_k)
+
+        return outputs
     
     def multi_step_predict(self, p_0: torch.Tensor, k: int) -> torch.Tensor:
         """
@@ -262,8 +294,10 @@ def compute_losses(
     lambda_smooth: float = 0.1,
     lambda_disp: float = 0.1,
     lambda_ent: float = 0.1,
+    lambda_act: float = 0.0,
     sigma: float = 0.1,
     num_keypoints: int = 10,
+    action_labels: torch.Tensor = None,
 ) -> dict:
     """
     Compute all losses as specified in Phase A Modeling Plan (10.3).
@@ -277,18 +311,20 @@ def compute_losses(
         L_ent = Σ_i Entropy(H_i)                          (heatmap sharpness)
     
     Total:
-        L = L_pred + λ_s·L_smooth + λ_d·L_disp + λ_e·L_ent
+        L = L_pred + λ_s·L_smooth + λ_d·L_disp + λ_e·L_ent + λ_a·L_act
     
     Args:
         outputs: dict from PhaseAModel.forward()
         lambda_smooth: weight for L_smooth
         lambda_disp: weight for L_disp  
         lambda_ent: weight for L_ent
+        lambda_act: weight for L_act
         sigma: length scale for dispersion (10.3 specifies σ² denominator)
         num_keypoints: N
-    
+        action_labels: (B,) class labels for action prediction, if using action head
+
     Returns:
-        dict with 'loss', 'l_pred', 'l_smooth', 'l_disp', 'l_ent'
+        dict with 'loss', 'l_pred', 'l_smooth', 'l_disp', 'l_ent', 'l_act'
     """
     p_t = outputs['p_t']              # (B, 2N)
     p_t1 = outputs['p_t1']            # (B, 2N)
@@ -296,19 +332,32 @@ def compute_losses(
     heatmaps_t1 = outputs['heatmaps_t1']  # (B, N, H', W')
     
     B = p_t.shape[0]
+
+    # When backward pairs are included for action supervision, keep the
+    # operator objective tied to a single fixed action (forward/yaw+).
+    if action_labels is None:
+        forward_mask = torch.ones(B, dtype=torch.bool, device=p_t.device)
+    else:
+        forward_mask = action_labels.long() == 0
     
     # =========================================================================
     # L_pred: Main prediction loss
     # ||p̂_{t+1} - p_{t+1}||²
     # =========================================================================
-    l_pred = F.mse_loss(p_hat_t1, p_t1)
+    if forward_mask.any():
+        l_pred = F.mse_loss(p_hat_t1[forward_mask], p_t1[forward_mask])
+    else:
+        l_pred = p_t.new_tensor(0.0)
     
     # =========================================================================
     # L_smooth: Temporal smoothness regularizer
     # ||p_{t+1} - p_t||²
     # Prevents temporal jitter and identity swapping
     # =========================================================================
-    l_smooth = F.mse_loss(p_t1, p_t)
+    if forward_mask.any():
+        l_smooth = F.mse_loss(p_t1[forward_mask], p_t[forward_mask])
+    else:
+        l_smooth = p_t.new_tensor(0.0)
     
     # =========================================================================
     # L_disp: Dispersion regularizer (prevents keypoint collapse)
@@ -338,19 +387,38 @@ def compute_losses(
     # Prevents flat heatmaps, encourages localized peaks
     # =========================================================================
     l_ent = compute_entropy_loss(heatmaps_t1)
-    
+
+    # =========================================================================
+    # L_act: Action classification loss on keypoint deltas
+    # CE(h(delta_k), action_label)
+    # =========================================================================
+    l_act = p_t.new_tensor(0.0)
+    act_acc = p_t.new_tensor(0.0)
+    if 'action_logits' in outputs and action_labels is not None:
+        l_act = F.cross_entropy(outputs['action_logits'], action_labels.long())
+        preds = outputs['action_logits'].argmax(dim=-1)
+        act_acc = (preds == action_labels.long()).float().mean()
+
     # =========================================================================
     # Total loss
-    # L = L_pred + λ_s·L_smooth + λ_d·L_disp + λ_e·L_ent
+    # L = L_pred + λ_s·L_smooth + λ_d·L_disp + λ_e·L_ent + λ_a·L_act
     # =========================================================================
-    l_total = l_pred + lambda_smooth * l_smooth + lambda_disp * l_disp + lambda_ent * l_ent
-    
+    l_total = (
+        l_pred
+        + lambda_smooth * l_smooth
+        + lambda_disp * l_disp
+        + lambda_ent * l_ent
+        + lambda_act * l_act
+    )
+
     return {
         'loss': l_total,
         'l_pred': l_pred,
         'l_smooth': l_smooth,
         'l_disp': l_disp,
         'l_ent': l_ent,
+        'l_act': l_act,
+        'act_acc': act_acc,
     }
 
 
@@ -360,7 +428,7 @@ def compute_losses(
 if __name__ == "__main__":
     B, C, H, W = 4, 3, 256, 256
     N = 10
-    
+
     model = PhaseAModel(num_keypoints=N)
     x_t = torch.randn(B, C, H, W)
     x_t1 = torch.randn(B, C, H, W)
@@ -378,9 +446,25 @@ if __name__ == "__main__":
     print(f"  L_smooth: {losses['l_smooth'].item():.4f}")
     print(f"  L_disp:   {losses['l_disp'].item():.4f}")
     print(f"  L_ent:    {losses['l_ent'].item():.4f}")
+    print(f"  L_act:    {losses['l_act'].item():.4f}")
     print(f"\nTotal parameters: {sum(p.numel() for p in model.parameters()):,}")
-    
+
     # Test multi-step prediction
     p_0 = outputs['p_t']
     p_3 = model.multi_step_predict(p_0, k=3)
     print(f"\nMulti-step prediction (k=3): {p_3.shape}")
+
+    # Test optional action head
+    model_act = PhaseAModel(num_keypoints=N, num_action_classes=2)
+    outputs_act = model_act(x_t, x_t1)
+    action_labels = torch.randint(0, 2, (B,))
+    losses_act = compute_losses(
+        outputs_act,
+        lambda_act=0.1,
+        num_keypoints=N,
+        sigma=0.1,
+        action_labels=action_labels,
+    )
+    print(f"\nAction head test:")
+    print(f"  action_logits shape: {outputs_act['action_logits'].shape}")
+    print(f"  L_act: {losses_act['l_act'].item():.4f}")

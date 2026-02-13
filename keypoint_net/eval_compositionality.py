@@ -193,6 +193,7 @@ def main():
         num_keypoints = config.get('num_keypoints', args.num_keypoints)
         base_channels = config.get('base_channels', 32)
         temperature = config.get('temperature', 1.0)
+        num_action_classes = config.get('num_action_classes', 0)
         frame_skip = args.frame_skip if args.frame_skip is not None else config.get('frame_skip', 1)
         yaw_step_deg = config.get('yaw_step_deg', None)
         print(f"Loaded config from checkpoint: {config}")
@@ -200,6 +201,7 @@ def main():
         num_keypoints = args.num_keypoints
         base_channels = 32
         temperature = 1.0
+        num_action_classes = 0
         frame_skip = args.frame_skip if args.frame_skip is not None else 1
         yaw_step_deg = None
         print(f"No config in checkpoint, using num_keypoints={num_keypoints}")
@@ -209,6 +211,7 @@ def main():
         num_keypoints=num_keypoints,
         base_channels=base_channels,
         temperature=temperature,
+        num_action_classes=num_action_classes,
     )
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()

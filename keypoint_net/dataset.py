@@ -44,6 +44,7 @@ class PoseSequenceDataset(Dataset):
         frame_skip: int = 1,
         center_crop: Optional[int] = None,
         augment: bool = False,
+        include_backward: bool = False,
     ):
         """
         Args:
@@ -55,11 +56,13 @@ class PoseSequenceDataset(Dataset):
                         If yaw_step=2° in dataset: skip=1→2°, skip=2→4°, skip=3→6°
             center_crop: If specified, center crop to this size before resize
             augment: Whether to apply data augmentation (not recommended for Phase A)
+            include_backward: If True, add reversed pairs for action classification
         """
         self.data_root = Path(data_root)
         self.split = split
         self.img_size = img_size
         self.frame_skip = frame_skip
+        self.include_backward = include_backward
         
         # Load dataset index
         index_path = self.data_root / "dataset_index.json"
@@ -97,7 +100,17 @@ class PoseSequenceDataset(Dataset):
                     'object': obj,
                     't': i,
                     't1': i + frame_skip,
+                    'action_label': 0,  # forward (yaw+)
                 })
+                if include_backward:
+                    self.pairs.append({
+                        'x_t_path': frames[i + frame_skip],
+                        'x_t1_path': frames[i],
+                        'object': obj,
+                        't': i + frame_skip,
+                        't1': i,
+                        'action_label': 1,  # backward (yaw-)
+                    })
         
         if not self.pairs:
             raise ValueError(
@@ -106,7 +119,10 @@ class PoseSequenceDataset(Dataset):
                 f"enough frames for the requested frame_skip."
             )
         
-        print(f"Loaded {len(self.pairs)} pairs from {len(self.objects)} objects ({split}, frame_skip={frame_skip})")
+        print(
+            f"Loaded {len(self.pairs)} pairs from {len(self.objects)} objects "
+            f"({split}, frame_skip={frame_skip}, include_backward={include_backward})"
+        )
         
         # Image transforms
         transform_list = []
@@ -139,6 +155,7 @@ class PoseSequenceDataset(Dataset):
             'object': pair['object'],
             't': pair['t'],
             't1': pair['t1'],
+            'action_label': pair['action_label'],
         }
 
 
@@ -159,6 +176,7 @@ class SingleObjectDataset(Dataset):
         img_size: int = 256,
         frame_skip: int = 1,
         center_crop: Optional[int] = None,
+        include_backward: bool = False,
     ):
         """
         Args:
@@ -167,9 +185,11 @@ class SingleObjectDataset(Dataset):
             frame_skip: Number of frames to skip between pairs.
                         If yaw_step=2° in dataset: skip=1→2°, skip=2→4°, skip=3→6°
             center_crop: If specified, center crop to this size before resize (reduces background)
+            include_backward: If True, add reversed pairs for action classification
         """
         self.frames_dir = Path(frames_dir)
         self.frame_skip = frame_skip
+        self.include_backward = include_backward
         
         # Get sorted list of frame files
         self.frames = sorted(self.frames_dir.glob("img_*.png"))
@@ -182,7 +202,12 @@ class SingleObjectDataset(Dataset):
                 f"Dataset produced 0 pairs: {len(self.frames)} frames with "
                 f"frame_skip={frame_skip}. Need at least {frame_skip + 1} frames."
             )
-        print(f"Loaded {len(self.frames)} frames, frame_skip={frame_skip} -> {n_pairs} pairs")
+        self.n_forward = n_pairs
+        n_total = n_pairs * (2 if include_backward else 1)
+        print(
+            f"Loaded {len(self.frames)} frames, frame_skip={frame_skip} -> "
+            f"{self.n_forward} forward pairs ({n_total} total, include_backward={include_backward})"
+        )
         
         # Image transforms
         transform_list = []
@@ -196,12 +221,24 @@ class SingleObjectDataset(Dataset):
         self.transform = transforms.Compose(transform_list)
     
     def __len__(self) -> int:
-        return len(self.frames) - self.frame_skip  # Number of valid pairs
-    
+        if self.include_backward:
+            return self.n_forward * 2
+        return self.n_forward
+
     def __getitem__(self, idx: int) -> dict:
-        # Load frames with skip
-        x_t = Image.open(self.frames[idx]).convert('RGB')
-        x_t1 = Image.open(self.frames[idx + self.frame_skip]).convert('RGB')
+        if idx < self.n_forward:
+            t = idx
+            t1 = idx + self.frame_skip
+            action_label = 0
+        else:
+            rev_idx = idx - self.n_forward
+            t = rev_idx + self.frame_skip
+            t1 = rev_idx
+            action_label = 1
+
+        # Load frames with skip (forward or backward)
+        x_t = Image.open(self.frames[t]).convert('RGB')
+        x_t1 = Image.open(self.frames[t1]).convert('RGB')
         
         # Apply transforms
         x_t = self.transform(x_t)
@@ -210,8 +247,9 @@ class SingleObjectDataset(Dataset):
         return {
             'x_t': x_t,
             'x_t1': x_t1,
-            't': idx,
-            't1': idx + self.frame_skip,
+            't': t,
+            't1': t1,
+            'action_label': action_label,
         }
 
 
@@ -246,6 +284,7 @@ if __name__ == "__main__":
         print(f"Sample x_t1 shape: {sample['x_t1'].shape}")
         print(f"Sample object: {sample['object']}")
         print(f"Sample t: {sample['t']}")
+        print(f"Sample action_label: {sample['action_label']}")
     except Exception as e:
         print(f"Could not load full dataset: {e}")
     
@@ -255,3 +294,4 @@ if __name__ == "__main__":
         dataset = SingleObjectDataset(frames_dir)
         sample = dataset[0]
         print(f"Single object - x_t shape: {sample['x_t'].shape}")
+        print(f"Single object - action_label: {sample['action_label']}")

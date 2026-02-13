@@ -48,12 +48,13 @@ def load_model(checkpoint_path: str, num_keypoints: int = None, device: str = "c
             num_keypoints=config.get('num_keypoints', 10),
             base_channels=config.get('base_channels', 32),
             temperature=config.get('temperature', 1.0),
+            num_action_classes=config.get('num_action_classes', 0),
         )
         print(f"Loaded config from checkpoint: {config}")
     else:
         # Fall back to argument or default
         n_kp = num_keypoints if num_keypoints is not None else 10
-        model = PhaseAModel(num_keypoints=n_kp)
+        model = PhaseAModel(num_keypoints=n_kp, num_action_classes=0)
         config = {}
         print(f"No config in checkpoint, using num_keypoints={n_kp}")
     

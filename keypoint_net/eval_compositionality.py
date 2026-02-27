@@ -84,19 +84,34 @@ def evaluate_compositionality(
             error = torch.mean((p_hat - p_actual) ** 2).item()
             errors_by_k[k].append(error)
     
-    # Compute statistics
+    # Compute statistics.
+    #
+    # Important: these "samples" are different starting frames t within a single
+    # sequence. They are useful as a descriptive measure of within-sequence
+    # variability, but they are not an i.i.d. sample from a population.
     results = {
         'max_k': max_k,
         'frame_skip': frame_skip,
         'n_frames': n_frames,
+        'error_bar_definition': (
+            'mean +/- 1 s.e.m. across start frames t '
+            '(s.e.m. = sample std(ddof=1)/sqrt(n))'
+        ),
         'errors': {},
     }
     
     for k in range(1, max_k + 1):
         errs = errors_by_k[k]
+        n = len(errs)
+        if n <= 1:
+            std = 0.0
+        else:
+            # Sample standard deviation (unbiased estimator).
+            std = float(np.std(errs, ddof=1))
         results['errors'][k] = {
             'mean': float(np.mean(errs)),
-            'std': float(np.std(errs)),
+            'std': std,
+            'sem': float(std / np.sqrt(n)) if n > 0 else 0.0,
             'min': float(np.min(errs)),
             'max': float(np.max(errs)),
             'n_samples': len(errs),
@@ -109,7 +124,7 @@ def plot_compositionality(results: dict, output_path: str = None, yaw_step_deg: 
     """Plot error vs k to visualize extent of linearity."""
     ks = list(range(1, results['max_k'] + 1))
     means = [results['errors'][k]['mean'] for k in ks]
-    stds = [results['errors'][k]['std'] for k in ks]
+    sems = [results['errors'][k]['sem'] for k in ks]
     frame_skip = results.get('frame_skip', 1)
     
     # Build x-axis label that reports effective degrees if known
@@ -123,19 +138,29 @@ def plot_compositionality(results: dict, output_path: str = None, yaw_step_deg: 
     
     # Left: Error vs k
     ax = axes[0]
-    ax.errorbar(ks, means, yerr=stds, marker='o', capsize=3, linewidth=2, markersize=8)
+    ax.errorbar(ks, means, yerr=sems, marker='o', capsize=3, linewidth=2, markersize=8)
     ax.set_xlabel(x_label, fontsize=12)
-    ax.set_ylabel('MSE (prediction error)', fontsize=12)
+    ax.set_ylabel('MSE (mean +/- 1 s.e.m.)', fontsize=12)
     ax.set_title('Multi-step Prediction Error', fontsize=14)
     ax.grid(True, alpha=0.3)
     ax.set_xticks(ks)
+    ax.text(
+        0.02,
+        0.98,
+        "Error bars: +/- 1 s.e.m. over starting frames t\n(descriptive within-sequence variability)",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=9,
+        bbox=dict(facecolor="white", alpha=0.75, edgecolor="none"),
+    )
     
     # Right: Log scale to see growth rate
     ax = axes[1]
     ax.semilogy(ks, means, marker='o', linewidth=2, markersize=8)
     ax.fill_between(ks, 
-                    np.array(means) - np.array(stds), 
-                    np.array(means) + np.array(stds), 
+                    np.array(means) - np.array(sems), 
+                    np.array(means) + np.array(sems), 
                     alpha=0.3)
     ax.set_xlabel(x_label, fontsize=12)
     ax.set_ylabel('MSE (log scale)', fontsize=12)
@@ -238,7 +263,11 @@ def main():
     for k in range(1, args.max_k + 1):
         err = results['errors'][k]
         frame_label = f" (frames +{k * frame_skip})" if frame_skip > 1 else ""
-        print(f"  k={k:2d}{frame_label}: MSE = {err['mean']:.6f} +/- {err['std']:.6f}")
+        print(
+            f"  k={k:2d}{frame_label}: "
+            f"MSE = {err['mean']:.6f} +/- {err['sem']:.6f} "
+            f"(s.e.m. over start frames, n={err['n_samples']})"
+        )
     
     # Save
     output_dir = Path(args.output_dir)

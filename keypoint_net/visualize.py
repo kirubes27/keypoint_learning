@@ -8,6 +8,7 @@ Success criteria from Action Plan:
 """
 
 import argparse
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -360,6 +361,159 @@ def visualize_heatmaps(
     plt.close()
 
 
+def visualize_operator(
+    model: PhaseAModel,
+    output_dir: Path,
+):
+    """
+    Visualize the learned linear operator p̂_{t+1} = W p_t + b.
+
+    This does not "prove" semantic keypoints, but it helps debug whether the
+    learned operator is:
+    - close to identity (degenerate),
+    - mostly per-keypoint (block-diagonal),
+    - strongly mixing keypoints (off-diagonal energy),
+    - roughly norm-preserving (rotation-like) vs scaling/shearing.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    W = model.operator.W.detach().cpu().numpy()  # (2N, 2N)
+    b = model.operator.b.detach().cpu().numpy()  # (2N,)
+    N = model.num_keypoints
+    D = 2 * N
+
+    # Basic metrics
+    I = np.eye(D, dtype=W.dtype)
+    fro_W = float(np.linalg.norm(W, ord="fro"))
+    fro_WmI = float(np.linalg.norm(W - I, ord="fro"))
+    off_diag_mask = np.ones((N, N), dtype=bool)
+    np.fill_diagonal(off_diag_mask, False)
+
+    # Block (2x2) structure: block[i,j] maps keypoint j -> keypoint i
+    block_norms = np.zeros((N, N), dtype=np.float64)
+    diag_block_angles = []
+    diag_block_det = []
+    diag_block_svals = []
+
+    for i in range(N):
+        for j in range(N):
+            blk = W[2 * i : 2 * i + 2, 2 * j : 2 * j + 2]
+            block_norms[i, j] = np.linalg.norm(blk, ord="fro")
+        # Diagonal 2x2 block diagnostics
+        A = W[2 * i : 2 * i + 2, 2 * i : 2 * i + 2]
+        try:
+            U, s, Vt = np.linalg.svd(A)
+            R = U @ Vt  # closest rotation (polar decomposition)
+            angle = float(np.arctan2(R[1, 0], R[0, 0]))
+            diag_block_angles.append(angle)
+            diag_block_svals.append([float(s[0]), float(s[1])])
+        except np.linalg.LinAlgError:
+            diag_block_angles.append(float("nan"))
+            diag_block_svals.append([float("nan"), float("nan")])
+        diag_block_det.append(float(np.linalg.det(A)))
+
+    # Energy split: diagonal blocks vs off-diagonal blocks (squared Frobenius)
+    block_energy = block_norms ** 2
+    diag_energy = float(np.trace(block_energy))
+    off_energy = float(block_energy[off_diag_mask].sum())
+    mix_ratio = off_energy / (diag_energy + off_energy + 1e-12)
+
+    # Spectral diagnostics
+    try:
+        eigvals = np.linalg.eigvals(W)
+    except np.linalg.LinAlgError:
+        eigvals = np.array([], dtype=np.complex128)
+
+    # Save metrics
+    metrics = {
+        "dim": int(D),
+        "num_keypoints": int(N),
+        "fro_W": fro_W,
+        "fro_W_minus_I": fro_WmI,
+        "block_diag_energy": diag_energy,
+        "block_offdiag_energy": off_energy,
+        "block_mix_ratio_offdiag": float(mix_ratio),
+        "diag_block_angles_rad": [float(x) for x in diag_block_angles],
+        "diag_block_det": [float(x) for x in diag_block_det],
+        "diag_block_singular_values": diag_block_svals,
+        "bias_norm": float(np.linalg.norm(b)),
+        "eig_abs_mean": float(np.mean(np.abs(eigvals))) if eigvals.size else None,
+        "eig_abs_max": float(np.max(np.abs(eigvals))) if eigvals.size else None,
+    }
+    (output_dir / "operator_metrics.json").write_text(
+        json.dumps(metrics, indent=2),
+        encoding="utf-8",
+    )
+
+    # Build plots
+    vmax = float(np.quantile(np.abs(W), 0.99)) if W.size else 1.0
+    vmax = max(vmax, 1e-6)
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # 1) Raw W heatmap
+    ax = axes[0, 0]
+    im = ax.imshow(W, cmap="coolwarm", vmin=-vmax, vmax=vmax)
+    ax.set_title("Operator W (2N x 2N)")
+    ax.set_xlabel("Input dims")
+    ax.set_ylabel("Output dims")
+    plt.colorbar(im, ax=ax, fraction=0.046)
+
+    # 2) 2x2 block norm heatmap (N x N)
+    ax = axes[0, 1]
+    im = ax.imshow(block_norms, cmap="viridis")
+    ax.set_title("Block norms ||W_ij||_F (each block is 2x2)")
+    ax.set_xlabel("Input keypoint j")
+    ax.set_ylabel("Output keypoint i")
+    ax.set_xticks(range(N))
+    ax.set_yticks(range(N))
+    plt.colorbar(im, ax=ax, fraction=0.046)
+    ax.text(
+        0.02,
+        0.98,
+        f"Off-diagonal mix ratio: {mix_ratio:.3f}",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=9,
+        bbox=dict(facecolor="white", alpha=0.75, edgecolor="none"),
+    )
+
+    # 3) Eigenvalues (complex plane)
+    ax = axes[1, 0]
+    if eigvals.size:
+        ax.scatter(eigvals.real, eigvals.imag, s=30, alpha=0.8)
+        # Unit circle for reference
+        theta = np.linspace(0, 2 * np.pi, 256)
+        ax.plot(np.cos(theta), np.sin(theta), "k--", linewidth=1, alpha=0.5)
+        ax.set_aspect("equal", "box")
+    ax.set_title("eig(W) in complex plane (unit circle dashed)")
+    ax.set_xlabel("Re")
+    ax.set_ylabel("Im")
+    ax.grid(True, alpha=0.3)
+
+    # 4) Diagonal block "rotation-like" angles (polar decomposition)
+    ax = axes[1, 1]
+    ax.plot(range(N), diag_block_angles, marker="o", linewidth=2)
+    ax.axhline(0.0, color="k", linewidth=1, alpha=0.3)
+    ax.set_title("Angles of diagonal 2x2 blocks (closest rotation), radians")
+    ax.set_xlabel("Keypoint i")
+    ax.set_ylabel("angle (rad)")
+    ax.grid(True, alpha=0.3)
+
+    fig.suptitle(
+        f"Operator diagnostics: ||W||_F={fro_W:.2f}, ||W-I||_F={fro_WmI:.2f}, ||b||={np.linalg.norm(b):.2f}",
+        fontsize=12,
+        y=1.02,
+    )
+    plt.tight_layout()
+
+    out_path = output_dir / "operator_summary.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {out_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Visualize Phase A results")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
@@ -407,6 +561,9 @@ def main():
     
     # 4. Heatmaps
     visualize_heatmaps(model, dataset, n_frames // 2, output_dir / "heatmaps.png", device)
+
+    # 5. Operator diagnostics
+    visualize_operator(model, output_dir)
     
     print(f"All visualizations saved to: {output_dir}")
 

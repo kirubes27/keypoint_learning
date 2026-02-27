@@ -69,22 +69,51 @@ class KeypointExtractor(nn.Module):
         # 4-layer CNN encoder (using stride=2 for downsampling)
         self.encoder = nn.Sequential(
             # Layer 1: 256 -> 128
-            nn.Conv2d(in_channels, base_channels, kernel_size=7, stride=2, padding=3),
+            # Use reflect padding to reduce border artifacts in heatmaps.
+            nn.Conv2d(
+                in_channels,
+                base_channels,
+                kernel_size=7,
+                stride=2,
+                padding=3,
+                padding_mode="reflect",
+            ),
             nn.BatchNorm2d(base_channels),
             nn.ReLU(inplace=True),
             
             # Layer 2: 128 -> 64
-            nn.Conv2d(base_channels, base_channels * 2, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(
+                base_channels,
+                base_channels * 2,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+                padding_mode="reflect",
+            ),
             nn.BatchNorm2d(base_channels * 2),
             nn.ReLU(inplace=True),
             
             # Layer 3: 64 -> 32
-            nn.Conv2d(base_channels * 2, base_channels * 4, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(
+                base_channels * 2,
+                base_channels * 4,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+                padding_mode="reflect",
+            ),
             nn.BatchNorm2d(base_channels * 4),
             nn.ReLU(inplace=True),
             
             # Layer 4: 32 -> 32 (preserve resolution)
-            nn.Conv2d(base_channels * 4, base_channels * 4, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(
+                base_channels * 4,
+                base_channels * 4,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                padding_mode="reflect",
+            ),
             nn.BatchNorm2d(base_channels * 4),
             nn.ReLU(inplace=True),
         )

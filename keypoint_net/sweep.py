@@ -42,16 +42,22 @@ import numpy as np
 # ─────────────────────────────────────────────────────────────────────────────
 
 SWEEP_GRID = {
-    "lambda_ent":    [0.0, 0.005, 0.01, 0.05, 0.1],
-    "lambda_act":    [0.0, 0.1, 0.5, 1.0],
+    # Main loss L_pred is always present. Every auxiliary loss gets an explicit
+    # zero-weight control plus at least one active setting.
+    "lambda_act":    [0.0, 0.5, 1.0],
+    "lambda_cycle":  [0.0, 0.1],
+    "lambda_disp":   [0.0, 0.1],
+    "lambda_ent":    [0.0, 0.01, 0.05],
+    "lambda_inv":    [0.0, 0.1],
+    "lambda_loc":    [0.0, 0.01],
     "lambda_smooth": [0.0, 0.001, 0.01],
 }
 
 # Fixed across all configs
 FIXED_PARAMS = {
-    "lambda_disp": 0.1,
     "sigma": 0.1,
     "frame_skip": 3,
+    "img_size": 512,
     "num_keypoints": 10,
     "epochs": 1000,
     "seed": 42,
@@ -67,12 +73,12 @@ FIXED_PARAMS = {
 
 MANDATORY_GATES = {
     "identity_ratio": (">", 2.0),
-    "on_foreground_pct":  (">", 0.5),
+    "on_object_pct":  (">", 0.5),
+    "active_kp_frac": (">", 0.3),
+    "val_act_acc":    (">", 0.7),
 }
 
 SOFT_GATES = {
-    "val_act_acc":    (">", 0.7),
-    "active_kp_frac": (">", 0.3),
     "k10_k1_ratio":   ("<", 5.0),
 }
 
@@ -93,7 +99,9 @@ def evaluate_promotion(metrics: dict) -> str:
 
     Returns: 'full', 'soft', or 'none'
     """
-    # Must pass ALL mandatory gates
+    # Must pass ALL mandatory gates. In particular, on_object_pct is a
+    # standalone veto: strong prediction/action metrics cannot rescue a
+    # background or border-shortcut run.
     for key, (op, thresh) in MANDATORY_GATES.items():
         if not _passes_gate(metrics.get(key), op, thresh):
             return "none"
@@ -129,9 +137,20 @@ def generate_configs() -> list[dict]:
 
 def config_tag(cfg: dict) -> str:
     """Short string identifying a config, for matching and display."""
-    return (
-        f"ent{cfg['lambda_ent']}_act{cfg['lambda_act']}_sm{cfg['lambda_smooth']}"
-    )
+    aliases = {
+        "lambda_act": "act",
+        "lambda_cycle": "cyc",
+        "lambda_disp": "disp",
+        "lambda_ent": "ent",
+        "lambda_inv": "inv",
+        "lambda_loc": "loc",
+        "lambda_smooth": "sm",
+    }
+
+    def _fmt(v) -> str:
+        return f"{float(v):g}".replace("-", "m").replace(".", "p")
+
+    return "_".join(f"{aliases[k]}{_fmt(cfg[k])}" for k in sorted(SWEEP_GRID))
 
 
 def parse_filter(filter_str: str) -> dict:
@@ -170,16 +189,20 @@ def _configs_match(run_cfg: dict, target: dict) -> bool:
     Check if a run config matches a target sweep config.
 
     Compares all swept params AND key fixed params (num_keypoints,
-    epochs, seed, frame_skip) to avoid matching the wrong run.
+    epochs, seed, frame_skip, img_size) to avoid matching the wrong run.
     """
     # Swept params
     for key in SWEEP_GRID:
         if abs(run_cfg.get(key, -999) - target[key]) > 1e-8:
             return False
     # Fixed params that affect results
-    for key in ("num_keypoints", "epochs", "seed", "frame_skip"):
+    for key in ("num_keypoints", "epochs", "seed", "frame_skip", "img_size"):
         if run_cfg.get(key) != target.get(key):
             return False
+    for key in ("operator_type", "pairs_index"):
+        if key in target and target.get(key) is not None:
+            if run_cfg.get(key) != target.get(key):
+                return False
     return True
 
 
@@ -248,6 +271,12 @@ def collect_metrics(run_dir: Path) -> dict:
     """
     metrics = {}
 
+    def _first_present(d: dict, keys: tuple[str, ...]):
+        for key in keys:
+            if key in d and d[key] is not None:
+                return d[key]
+        return None
+
     # --- ablations.json ---
     ablation_path = run_dir / "ablations" / "ablation_results.json"
     if ablation_path.exists():
@@ -300,7 +329,12 @@ def collect_metrics(run_dir: Path) -> dict:
 
         # Localization (backward compat: old artifacts used "on_object_pct")
         loc = rm.get("localization", {})
-        metrics["on_foreground_pct"] = loc.get("on_foreground_pct") or loc.get("on_object_pct")
+        on_obj = _first_present(loc, ("on_object_pct", "on_foreground_pct"))
+        metrics["on_object_pct"] = on_obj
+        metrics["on_foreground_pct"] = loc.get("on_foreground_pct")
+        metrics["mean_dist_to_object_px"] = loc.get("mean_dist_to_object_px")
+        metrics["border_occupancy_pct"] = loc.get("border_occupancy_pct")
+        metrics["out_of_bounds_pct"] = loc.get("out_of_bounds_pct")
 
         # Participation
         part = rm.get("participation", {})
@@ -331,6 +365,27 @@ def collect_metrics(run_dir: Path) -> dict:
         fwd = rm.get("forward", {})
         metrics["forward_k1_mse"] = fwd.get("k1_mse")
         metrics["forward_k10_mse"] = fwd.get("k10_mse")
+
+        # Cyclic closed-orbit compositionality
+        cyc = rm.get("cyclic_compositionality", {})
+        closed = cyc.get("closed_orbit", {})
+        if closed:
+            metrics["closed_orbit_k"] = cyc.get("closed_orbit_k")
+            metrics["closed_orbit_mse"] = closed.get("mean")
+            metrics["closed_orbit_sem"] = closed.get("sem")
+        cyc_errors = cyc.get("errors", {})
+        k60 = cyc_errors.get("60", {})
+        if k60:
+            metrics["cyclic_k60_mse"] = k60.get("mean")
+
+        # Canonical object-relative stability
+        canon = rm.get("canonical_stability", {})
+        locked = canon.get("locked_minus") or canon.get("locked_plus", {})
+        audit = canon.get("audit_plus") or canon.get("audit_minus", {})
+        metrics["canonical_mean_rms"] = locked.get("mean_canonical_rms")
+        metrics["canonical_max_rms"] = locked.get("max_canonical_rms")
+        metrics["canonical_audit_mean_rms"] = audit.get("mean_canonical_rms")
+        metrics["canonical_sign_warning"] = canon.get("warning_locked_sign_not_lower_variance")
 
     # --- operator_metrics.json ---
     op_path = run_dir / "visualizations" / "operator_metrics.json"
@@ -381,20 +436,27 @@ def run_training(
         "--output_dir", str(output_dir),
         "--auto_eval",
         # Swept params
-        "--lambda_ent", str(cfg["lambda_ent"]),
         "--lambda_act", str(cfg["lambda_act"]),
+        "--lambda_cycle", str(cfg["lambda_cycle"]),
+        "--lambda_disp", str(cfg["lambda_disp"]),
+        "--lambda_ent", str(cfg["lambda_ent"]),
+        "--lambda_inv", str(cfg["lambda_inv"]),
+        "--lambda_loc", str(cfg["lambda_loc"]),
         "--lambda_smooth", str(cfg["lambda_smooth"]),
         # Fixed params
-        "--lambda_disp", str(cfg["lambda_disp"]),
         "--sigma", str(cfg["sigma"]),
         "--frame_skip", str(cfg["frame_skip"]),
+        "--img_size", str(cfg["img_size"]),
         "--num_keypoints", str(cfg["num_keypoints"]),
         "--epochs", str(cfg["epochs"]),
         "--seed", str(cfg["seed"]),
         "--batch_size", str(cfg["batch_size"]),
         "--lr", str(cfg["lr"]),
         "--num_action_classes", str(cfg["num_action_classes"]),
+        "--operator_type", str(cfg.get("operator_type", "shared_affine")),
     ]
+    if cfg.get("pairs_index"):
+        cmd.extend(["--pairs_index", str(cfg["pairs_index"])])
 
     print(f"\n{'='*60}")
     print(f"[Sweep] Training: {config_tag(cfg)}")
@@ -466,13 +528,17 @@ def run_rollout_eval(
 
 SCORECARD_COLUMNS = [
     # config
-    "tag", "lambda_ent", "lambda_act", "lambda_smooth",
+    "tag", "operator_type", "pairs_index",
+    "lambda_act", "lambda_cycle", "lambda_disp", "lambda_ent", "lambda_inv",
+    "lambda_loc", "lambda_smooth",
     # mandatory gates
-    "identity_ratio", "on_foreground_pct",
+    "identity_ratio", "on_object_pct", "active_kp_frac", "val_act_acc",
     # soft gates
-    "val_act_acc", "active_kp_frac", "k10_k1_ratio",
+    "k10_k1_ratio",
     # reported
     "baseline_MSE", "top1_energy_frac", "mean_speed", "mean_accel",
+    "mean_dist_to_object_px", "border_occupancy_pct",
+    "closed_orbit_k", "closed_orbit_mse", "canonical_mean_rms",
     # diagnostics
     "dim2_frac", "sv_min", "sv_max", "spectral_radius", "orth_err",
     "W_minus_I_fro", "inverse_k1_MSE",
@@ -554,9 +620,9 @@ def plot_summary(results: list[dict], output_path: Path):
             ax.legend(fontsize=8)
 
     _bar(axes[0, 0], "identity_ratio", "Identity Ratio (>2.0 = mandatory gate)", 2.0)
-    _bar(axes[0, 1], "on_foreground_pct", "On-Foreground % (>0.5 = mandatory gate)", 0.5)
-    _bar(axes[0, 2], "val_act_acc", "Action Accuracy (>0.7 = soft gate)", 0.7)
-    _bar(axes[1, 0], "active_kp_frac", "Active KP Fraction (>0.3 = soft gate)", 0.3)
+    _bar(axes[0, 1], "on_object_pct", "On-Object % (>0.5 = mandatory veto)", 0.5)
+    _bar(axes[0, 2], "val_act_acc", "Action Accuracy (>0.7 = mandatory gate)", 0.7)
+    _bar(axes[1, 0], "active_kp_frac", "Active KP Fraction (>0.3 = mandatory gate)", 0.3)
     _bar(axes[1, 1], "k10_k1_ratio", "k10/k1 Ratio (<5.0 = soft gate)", 5.0)
 
     # Legend for promotion tiers
@@ -597,6 +663,14 @@ def main():
                         help="Run only stage 1 or stage 2. Default: both.")
     parser.add_argument("--filter", type=str, default=None,
                         help="Filter configs, e.g., 'lambda_act=0.1,lambda_ent=0.01'")
+    parser.add_argument("--operator_type", type=str, default="shared_affine",
+                        choices=["dense", "shared_affine"],
+                        help="Operator family to use for all sweep configs.")
+    parser.add_argument("--pairs_index", type=str, default=None,
+                        help=(
+                            "Pair-index JSON for cyclic training. If omitted and "
+                            "--data_root has indices/pairs_skip3_cyclic.json, it is used."
+                        ))
     parser.add_argument("--collect_only", action="store_true",
                         help="Collect metrics from existing runs, no training.")
     parser.add_argument("--runs_dir", type=str, default=None,
@@ -605,8 +679,19 @@ def main():
                         help="Print configs without running anything.")
     args = parser.parse_args()
 
+    # ── Resolve cyclic pair index if available ──
+    pairs_index = args.pairs_index
+    if pairs_index is None and args.data_root:
+        candidate = Path(args.data_root) / "indices" / f"pairs_skip{FIXED_PARAMS['frame_skip']}_cyclic.json"
+        if candidate.exists():
+            pairs_index = str(candidate)
+            print(f"Using cyclic pair index: {pairs_index}")
+
     # ── Generate configs ──
     configs = generate_configs()
+    for cfg in configs:
+        cfg["operator_type"] = args.operator_type
+        cfg["pairs_index"] = pairs_index
     if args.filter:
         filters = parse_filter(args.filter)
         configs = apply_filter(configs, filters)
@@ -647,7 +732,8 @@ def main():
         for cfg in configs:
             tag = config_tag(cfg)
             run_dir = matched.get(tag)
-            row = {"tag": tag, **{k: cfg[k] for k in SWEEP_GRID}}
+            row = {"tag": tag, **{k: cfg[k] for k in SWEEP_GRID},
+                   "operator_type": cfg.get("operator_type"), "pairs_index": cfg.get("pairs_index")}
 
             if run_dir is None:
                 print(f"  [{tag}] No matching run found")
@@ -664,7 +750,11 @@ def main():
             row["run_dir"] = str(run_dir)
             row["promotion_tier"] = evaluate_promotion(metrics)
             all_results.append(row)
-            print(f"  [{tag}] {row['promotion_tier']}  identity_ratio={metrics.get('identity_ratio', '?')}")
+            print(
+                f"  [{tag}] {row['promotion_tier']}  "
+                f"identity_ratio={metrics.get('identity_ratio', '?')}  "
+                f"on_object={metrics.get('on_object_pct', '?')}"
+            )
 
     else:
         # Run stage 1 (or both)
@@ -695,6 +785,7 @@ def main():
                     print(f"[Sweep] WARNING: Could not find run dir after training {tag}")
                     all_results.append({
                         "tag": tag, **{k: cfg[k] for k in SWEEP_GRID},
+                        "operator_type": cfg.get("operator_type"), "pairs_index": cfg.get("pairs_index"),
                         "promotion_tier": "none",
                     })
                     continue
@@ -704,7 +795,8 @@ def main():
                     run_rollout_eval(run_dir, frames_dir_str, metrics_only=True)
 
                 metrics = collect_metrics(run_dir)
-                row = {"tag": tag, **{k: cfg[k] for k in SWEEP_GRID}}
+                row = {"tag": tag, **{k: cfg[k] for k in SWEEP_GRID},
+                       "operator_type": cfg.get("operator_type"), "pairs_index": cfg.get("pairs_index")}
                 row.update(metrics)
                 row["run_dir"] = str(run_dir)
                 row["promotion_tier"] = evaluate_promotion(metrics)

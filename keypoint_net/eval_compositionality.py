@@ -201,6 +201,13 @@ def main():
     parser.add_argument("--max_k", type=int, default=10, help="Maximum k for k-step prediction")
     parser.add_argument("--num_keypoints", type=int, default=10)
     parser.add_argument("--img_size", type=int, default=256)
+    parser.add_argument(
+        "--padding_mode_override",
+        type=str,
+        default=None,
+        choices=["zeros", "reflect", "replicate", "circular"],
+        help="Override checkpoint padding mode for legacy compatibility checks",
+    )
     parser.add_argument("--frame_skip", type=int, default=None,
                         help="Frame skip (overrides checkpoint config if set)")
     
@@ -219,17 +226,30 @@ def main():
         base_channels = config.get('base_channels', 32)
         temperature = config.get('temperature', 1.0)
         num_action_classes = config.get('num_action_classes', 0)
+        operator_type = config.get('operator_type', 'dense')
+        learn_inverse_operator = config.get('learn_inverse_operator', False)
+        padding_mode = args.padding_mode_override if args.padding_mode_override is not None else config.get('padding_mode')
+        if padding_mode is None:
+            raise ValueError(
+                "Checkpoint config is missing 'padding_mode'. "
+                "Pass --padding_mode_override (usually 'zeros' for early Feb 2026 runs)."
+            )
         frame_skip = args.frame_skip if args.frame_skip is not None else config.get('frame_skip', 1)
         yaw_step_deg = config.get('yaw_step_deg', None)
         print(f"Loaded config from checkpoint: {config}")
+        print(f"Using padding_mode={padding_mode}")
     else:
         num_keypoints = args.num_keypoints
         base_channels = 32
         temperature = 1.0
         num_action_classes = 0
+        operator_type = 'dense'
+        learn_inverse_operator = False
+        padding_mode = "reflect" if args.padding_mode_override is None else args.padding_mode_override
         frame_skip = args.frame_skip if args.frame_skip is not None else 1
         yaw_step_deg = None
         print(f"No config in checkpoint, using num_keypoints={num_keypoints}")
+        print(f"Using padding_mode={padding_mode}")
     
     # Load model with correct config
     model = PhaseAModel(
@@ -237,6 +257,9 @@ def main():
         base_channels=base_channels,
         temperature=temperature,
         num_action_classes=num_action_classes,
+        padding_mode=padding_mode,
+        operator_type=operator_type,
+        learn_inverse_operator=learn_inverse_operator,
     )
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()

@@ -31,7 +31,25 @@ COLORS = [
 ]
 
 
-def load_model(checkpoint_path: str, num_keypoints: int = None, device: str = "cpu") -> tuple:
+def _resolve_padding_mode(config: dict, padding_mode_override: Optional[str]) -> str:
+    """Resolve extractor padding mode with explicit handling for legacy checkpoints."""
+    if padding_mode_override is not None:
+        return padding_mode_override
+    if "padding_mode" in config:
+        return config["padding_mode"]
+    raise ValueError(
+        "Checkpoint config is missing 'padding_mode'. "
+        "This is a legacy checkpoint and can replay differently across code versions. "
+        "Pass --padding_mode_override (usually 'zeros' for early Feb 2026 runs)."
+    )
+
+
+def load_model(
+    checkpoint_path: str,
+    num_keypoints: int = None,
+    device: str = "cpu",
+    padding_mode_override: Optional[str] = None,
+) -> tuple:
     """Load trained model from checkpoint.
     
     If checkpoint contains 'config', uses those hyperparameters.
@@ -45,19 +63,32 @@ def load_model(checkpoint_path: str, num_keypoints: int = None, device: str = "c
     # Try to load config from checkpoint
     if 'config' in checkpoint:
         config = checkpoint['config']
+        padding_mode = _resolve_padding_mode(config, padding_mode_override)
         model = PhaseAModel(
             num_keypoints=config.get('num_keypoints', 10),
             base_channels=config.get('base_channels', 32),
             temperature=config.get('temperature', 1.0),
             num_action_classes=config.get('num_action_classes', 0),
+            padding_mode=padding_mode,
+            operator_type=config.get('operator_type', 'dense'),
+            learn_inverse_operator=config.get('learn_inverse_operator', False),
         )
         print(f"Loaded config from checkpoint: {config}")
+        print(f"Using padding_mode={padding_mode}")
     else:
         # Fall back to argument or default
         n_kp = num_keypoints if num_keypoints is not None else 10
-        model = PhaseAModel(num_keypoints=n_kp, num_action_classes=0)
+        padding_mode = "reflect" if padding_mode_override is None else padding_mode_override
+        model = PhaseAModel(
+            num_keypoints=n_kp,
+            num_action_classes=0,
+            padding_mode=padding_mode,
+            operator_type="dense",
+            learn_inverse_operator=False,
+        )
         config = {}
         print(f"No config in checkpoint, using num_keypoints={n_kp}")
+        print(f"Using padding_mode={padding_mode}")
     
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
@@ -364,6 +395,7 @@ def visualize_heatmaps(
 def visualize_operator(
     model: PhaseAModel,
     output_dir: Path,
+    target_step_deg: Optional[float] = None,
 ):
     """
     Visualize the learned linear operator p̂_{t+1} = W p_t + b.
@@ -381,6 +413,7 @@ def visualize_operator(
     b = model.operator.b.detach().cpu().numpy()  # (2N,)
     N = model.num_keypoints
     D = 2 * N
+    operator_name = type(model.operator).__name__
 
     # Basic metrics
     I = np.eye(D, dtype=W.dtype)
@@ -424,22 +457,100 @@ def visualize_operator(
     except np.linalg.LinAlgError:
         eigvals = np.array([], dtype=np.complex128)
 
+    target_rotation = None
+    target_rotation_neg = None
+    if target_step_deg is not None:
+        theta = np.deg2rad(float(target_step_deg))
+        target_rotation = np.array(
+            [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]],
+            dtype=np.float64,
+        )
+        target_rotation_neg = np.array(
+            [[np.cos(-theta), -np.sin(-theta)], [np.sin(-theta), np.cos(-theta)]],
+            dtype=np.float64,
+        )
+
+    diag_block_target_errors = []
+    diag_block_target_neg_errors = []
+    if target_rotation is not None and target_rotation_neg is not None:
+        for i in range(N):
+            A_i = W[2 * i : 2 * i + 2, 2 * i : 2 * i + 2]
+            diag_block_target_errors.append(float(np.linalg.norm(A_i - target_rotation, ord="fro")))
+            diag_block_target_neg_errors.append(float(np.linalg.norm(A_i - target_rotation_neg, ord="fro")))
+
+    shared_affine_metrics = None
+    if hasattr(model.operator, "A") and hasattr(model.operator, "bias"):
+        A = model.operator.A.detach().cpu().numpy().astype(np.float64)
+        shared_b = model.operator.bias.detach().cpu().numpy().astype(np.float64)
+        try:
+            U, s, Vt = np.linalg.svd(A)
+            R_closest = U @ Vt
+            angle_rad = float(np.arctan2(R_closest[1, 0], R_closest[0, 0]))
+            singular_values = [float(s[0]), float(s[1])]
+        except np.linalg.LinAlgError:
+            R_closest = np.full((2, 2), np.nan)
+            angle_rad = float("nan")
+            singular_values = [float("nan"), float("nan")]
+
+        shared_affine_metrics = {
+            "A": A.tolist(),
+            "bias": shared_b.tolist(),
+            "det_A": float(np.linalg.det(A)),
+            "singular_values": singular_values,
+            "orthogonality_error_fro": float(np.linalg.norm(A.T @ A - np.eye(2), ord="fro")),
+            "closest_rotation_matrix": R_closest.tolist(),
+            "closest_rotation_angle_rad": angle_rad,
+            "closest_rotation_angle_deg": float(np.rad2deg(angle_rad)),
+            "bias_norm": float(np.linalg.norm(shared_b)),
+        }
+        if target_rotation is not None and target_rotation_neg is not None:
+            err_pos = float(np.linalg.norm(A - target_rotation, ord="fro"))
+            err_neg = float(np.linalg.norm(A - target_rotation_neg, ord="fro"))
+            shared_affine_metrics.update(
+                {
+                    "target_step_deg": float(target_step_deg),
+                    "target_rotation_matrix_pos": target_rotation.tolist(),
+                    "target_rotation_matrix_neg": target_rotation_neg.tolist(),
+                    "fro_error_to_R_pos": err_pos,
+                    "fro_error_to_R_neg": err_neg,
+                    "best_signed_target": "+target" if err_pos <= err_neg else "-target",
+                    "best_fro_error_to_target_rotation": min(err_pos, err_neg),
+                }
+            )
+
     # Save metrics
     metrics = {
+        "operator_type": operator_name,
         "dim": int(D),
         "num_keypoints": int(N),
+        "operator_trainable_parameters": int(sum(p.numel() for p in model.operator.parameters())),
+        "model_trainable_parameters": int(sum(p.numel() for p in model.parameters())),
         "fro_W": fro_W,
         "fro_W_minus_I": fro_WmI,
         "block_diag_energy": diag_energy,
         "block_offdiag_energy": off_energy,
         "block_mix_ratio_offdiag": float(mix_ratio),
         "diag_block_angles_rad": [float(x) for x in diag_block_angles],
+        "diag_block_angles_deg": [float(np.rad2deg(x)) for x in diag_block_angles],
         "diag_block_det": [float(x) for x in diag_block_det],
         "diag_block_singular_values": diag_block_svals,
         "bias_norm": float(np.linalg.norm(b)),
         "eig_abs_mean": float(np.mean(np.abs(eigvals))) if eigvals.size else None,
         "eig_abs_max": float(np.max(np.abs(eigvals))) if eigvals.size else None,
     }
+    if target_step_deg is not None:
+        metrics["target_step_deg"] = float(target_step_deg)
+        metrics["diag_block_fro_error_to_R_pos"] = diag_block_target_errors
+        metrics["diag_block_fro_error_to_R_neg"] = diag_block_target_neg_errors
+        if diag_block_target_errors:
+            mean_pos = float(np.mean(diag_block_target_errors))
+            mean_neg = float(np.mean(diag_block_target_neg_errors))
+            metrics["diag_block_mean_fro_error_to_R_pos"] = mean_pos
+            metrics["diag_block_mean_fro_error_to_R_neg"] = mean_neg
+            metrics["diag_block_best_signed_target"] = "+target" if mean_pos <= mean_neg else "-target"
+            metrics["diag_block_best_mean_fro_error_to_target_rotation"] = min(mean_pos, mean_neg)
+    if shared_affine_metrics is not None:
+        metrics["shared_affine"] = shared_affine_metrics
     (output_dir / "operator_metrics.json").write_text(
         json.dumps(metrics, indent=2),
         encoding="utf-8",
@@ -521,6 +632,13 @@ def main():
     parser.add_argument("--output_dir", type=str, default="./viz_output")
     parser.add_argument("--num_keypoints", type=int, default=10)
     parser.add_argument("--img_size", type=int, default=256)
+    parser.add_argument(
+        "--padding_mode_override",
+        type=str,
+        default=None,
+        choices=["zeros", "reflect", "replicate", "circular"],
+        help="Override checkpoint padding mode for legacy compatibility checks",
+    )
     
     args = parser.parse_args()
     
@@ -533,7 +651,12 @@ def main():
     print(f"Using device: {device}")
     
     # Load model and config from checkpoint
-    model, ckpt_config = load_model(args.checkpoint, args.num_keypoints, device)
+    model, ckpt_config = load_model(
+        args.checkpoint,
+        args.num_keypoints,
+        device,
+        args.padding_mode_override,
+    )
     
     # Use frame_skip and yaw_step_deg from checkpoint so viz matches training
     frame_skip = ckpt_config.get('frame_skip', 1)
@@ -563,7 +686,8 @@ def main():
     visualize_heatmaps(model, dataset, n_frames // 2, output_dir / "heatmaps.png", device)
 
     # 5. Operator diagnostics
-    visualize_operator(model, output_dir)
+    target_step_deg = frame_skip * yaw_step_deg if yaw_step_deg is not None else None
+    visualize_operator(model, output_dir, target_step_deg=target_step_deg)
     
     print(f"All visualizations saved to: {output_dir}")
 

@@ -253,6 +253,138 @@ class SingleObjectDataset(Dataset):
         }
 
 
+class IndexPairDataset(Dataset):
+    """
+    Loads frame pairs from a precomputed pair-index JSON, e.g.
+        _tdw_world_z_roll_base_panel_512_v2/indices/pairs_skip3_cyclic.json
+
+    WHY THIS EXISTS:
+    SingleObjectDataset / PoseSequenceDataset build pairs as
+    `frames[i] -> frames[i+frame_skip]`, which CANNOT represent a cyclic wrap
+    transition (e.g. 354 deg -> 0 deg, frame 177 -> 0). For a closed-orbit
+    dataset that is exactly the structure we care about: with the wrap pairs,
+    the operator W learns a 6-degree generator on a ring (testable via
+    W^180 ~= I) instead of a finite arc with artificial endpoints.
+
+    Each index pair is a forward (+delta_theta) transition with action_label 0.
+    If include_backward=True, a reversed copy (dst -> src) is appended with
+    action_label 1, mirroring SingleObjectDataset so that L_act and the
+    forward-masking in compute_losses() behave identically (L_pred/L_smooth are
+    computed on forward pairs only; L_act uses both directions).
+
+    Index JSON schema (per pair):
+        model_name, src_frame_index, dst_frame_index,
+        src_theta_deg, dst_theta_deg,
+        src_image_relpath, dst_image_relpath  (relative to data_root)
+    """
+
+    def __init__(
+        self,
+        data_root: str,
+        index_path: str,
+        img_size: int = 256,
+        center_crop: Optional[int] = None,
+        include_backward: bool = False,
+        object_name: Optional[str] = None,
+    ):
+        """
+        Args:
+            data_root: dataset folder the pair relpaths are relative to
+                       (e.g. .../_tdw_world_z_roll_base_panel_512_v2).
+            index_path: path to the pair-index JSON. May be absolute or
+                        relative to data_root (e.g. "indices/pairs_skip3_cyclic.json").
+            img_size: resize images to this size.
+            center_crop: optional center crop before resize.
+            include_backward: add reversed (-delta_theta) pairs for L_act.
+            object_name: if set, keep only pairs for this object (single-object
+                         training). If None, use all objects in the index.
+        """
+        self.data_root = Path(data_root)
+
+        ip = Path(index_path)
+        if not ip.exists():
+            ip = self.data_root / index_path
+        if not ip.exists():
+            raise FileNotFoundError(
+                f"Pair index not found: '{index_path}' "
+                f"(also tried {self.data_root / index_path})"
+            )
+
+        with open(ip) as f:
+            idx = json.load(f)
+
+        raw_pairs = idx["pairs"] if isinstance(idx, dict) and "pairs" in idx else idx
+        self.cyclic = bool(idx.get("cyclic", False)) if isinstance(idx, dict) else False
+        self.delta_theta_deg = idx.get("delta_theta_deg") if isinstance(idx, dict) else None
+
+        if object_name:
+            raw_pairs = [p for p in raw_pairs if p.get("model_name") == object_name]
+            if not raw_pairs:
+                raise ValueError(
+                    f"No pairs for object_name='{object_name}' in {ip.name}"
+                )
+
+        self.samples = []
+        for p in raw_pairs:
+            self.samples.append({
+                "x_t_rel": p["src_image_relpath"],
+                "x_t1_rel": p["dst_image_relpath"],
+                "object": p["model_name"],
+                "t": p["src_frame_index"],
+                "t1": p["dst_frame_index"],
+                "action_label": 0,  # forward (+delta_theta)
+            })
+            if include_backward:
+                self.samples.append({
+                    "x_t_rel": p["dst_image_relpath"],
+                    "x_t1_rel": p["src_image_relpath"],
+                    "object": p["model_name"],
+                    "t": p["dst_frame_index"],
+                    "t1": p["src_frame_index"],
+                    "action_label": 1,  # backward (-delta_theta)
+                })
+
+        if not self.samples:
+            raise ValueError(f"Pair index produced 0 samples: {ip}")
+
+        n_obj = len({s["object"] for s in self.samples})
+        n_wrap = sum(
+            1 for p in raw_pairs if p["dst_frame_index"] < p["src_frame_index"]
+        )
+        print(
+            f"Loaded {len(self.samples)} pairs from {ip.name} "
+            f"(objects={n_obj}, cyclic={self.cyclic}, "
+            f"delta_theta={self.delta_theta_deg}, wrap_pairs={n_wrap}, "
+            f"include_backward={include_backward})"
+        )
+
+        transform_list = []
+        if center_crop is not None:
+            transform_list.append(transforms.CenterCrop(center_crop))
+        transform_list.extend([
+            transforms.Resize((img_size, img_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        self.transform = transforms.Compose(transform_list)
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> dict:
+        s = self.samples[idx]
+        x_t = Image.open(self.data_root / s["x_t_rel"]).convert("RGB")
+        x_t1 = Image.open(self.data_root / s["x_t1_rel"]).convert("RGB")
+        return {
+            "x_t": self.transform(x_t),
+            "x_t1": self.transform(x_t1),
+            "object": s["object"],
+            "t": s["t"],
+            "t1": s["t1"],
+            "action_label": s["action_label"],
+        }
+
+
 def get_inverse_transform():
     """Get transform to convert normalized tensor back to displayable image."""
     return transforms.Compose([

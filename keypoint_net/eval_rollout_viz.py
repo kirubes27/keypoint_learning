@@ -20,6 +20,7 @@ import argparse
 import json
 import warnings
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -75,6 +76,83 @@ def _extract_all_keypoints(
             p, _ = model.extractor(x)
         all_kp.append(p.cpu())
     return torch.cat(all_kp, dim=0)  # (T, 2N)
+
+
+def _object_dir_from_frames_dir(frames_dir: Path) -> Path:
+    """Return the object directory for a TDW path like .../object/frames/a."""
+    # frames_dir is usually .../train/<object>/frames/a.
+    if frames_dir.name and frames_dir.parent.name == "frames":
+        return frames_dir.parent.parent
+    if frames_dir.name == "frames":
+        return frames_dir.parent
+    return frames_dir.parent
+
+
+def _load_frame_metadata(frames_dir: Path, frames: list[Path]) -> list[Optional[dict]]:
+    """
+    Load per-frame metadata aligned to `frames`.
+
+    For the v2 roll dataset, theta_deg lives in <object>/meta.jsonl. We do not
+    recompute angles from frame index because that is exactly where 2deg-vs-6deg
+    mistakes enter the analysis.
+    """
+    object_dir = _object_dir_from_frames_dir(frames_dir)
+    meta_path = object_dir / "meta.jsonl"
+    if not meta_path.exists():
+        return [None for _ in frames]
+
+    by_relpath = {}
+    with open(meta_path) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if "image_relpath" in row:
+                by_relpath[row["image_relpath"]] = row
+
+    aligned = []
+    for frame in frames:
+        try:
+            rel = frame.relative_to(object_dir).as_posix()
+        except ValueError:
+            rel = frame.as_posix()
+        aligned.append(by_relpath.get(rel))
+    return aligned
+
+
+def _mask_path_for_frame(frame_path: Path) -> Optional[Path]:
+    """
+    Infer TDW binary-mask path from frame path.
+
+    Expected layout:
+        <object>/frames/a/img_0000.png
+        <object>/masks/a/mask_0000.png
+    """
+    if frame_path.parent.parent.name != "frames":
+        return None
+    object_dir = frame_path.parent.parent.parent
+    camera_dir = frame_path.parent.name
+    suffix = frame_path.stem.replace("img_", "")
+    mask_path = object_dir / "masks" / camera_dir / f"mask_{suffix}.png"
+    return mask_path if mask_path.exists() else None
+
+
+def _load_binary_mask(mask_path: Path, img_size: int) -> np.ndarray:
+    mask = Image.open(mask_path).convert("L")
+    mask = mask.resize((img_size, img_size), Image.NEAREST)
+    return np.array(mask) > 0
+
+
+def _keypoints_to_pixel_array(kp_norm: np.ndarray, img_size: int) -> np.ndarray:
+    """Convert keypoints from [-1, 1] normalized coordinates to image pixels."""
+    return ((kp_norm + 1.0) / 2.0) * (img_size - 1)
+
+
+def _mask_bbox(mask: np.ndarray) -> Optional[tuple[int, int, int, int]]:
+    ys, xs = np.where(mask)
+    if len(xs) == 0:
+        return None
+    return int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -424,6 +502,130 @@ def compute_localization(
     }
 
 
+def compute_mask_localization(
+    all_keypoints: torch.Tensor,
+    frames: list[Path],
+    img_size: int,
+    n_kp: int,
+    border_frac: float = 0.05,
+) -> Optional[dict]:
+    """
+    Compute strict object localization from TDW binary masks.
+
+    This is the preferred metric for the v2 roll dataset. It is intentionally
+    evaluation-only: masks are not fed into the training loss here.
+    """
+    mask_paths = [_mask_path_for_frame(Path(f)) for f in frames]
+    missing = sum(p is None for p in mask_paths)
+    if missing:
+        return None
+
+    try:
+        from scipy.ndimage import distance_transform_edt
+    except Exception:
+        distance_transform_edt = None
+
+    kp = all_keypoints.view(all_keypoints.shape[0], n_kp, 2).numpy()
+    T = min(kp.shape[0], len(frames))
+    border_px = max(1, int(round(img_size * border_frac)))
+
+    per_frame_pct = []
+    per_frame_mean_dist_px = []
+    per_frame_mean_dist_norm = []
+    per_kp_inside = np.zeros((T, n_kp), dtype=np.float32)
+    per_kp_dist_px = np.zeros((T, n_kp), dtype=np.float32)
+    border_hits = np.zeros((T, n_kp), dtype=np.float32)
+    out_of_bounds = np.zeros((T, n_kp), dtype=np.float32)
+    centroid_offsets_norm = []
+    bbox_diags = []
+    sqrt_areas = []
+
+    for t in range(T):
+        mask = _load_binary_mask(mask_paths[t], img_size)
+        area = int(mask.sum())
+        sqrt_area = float(np.sqrt(max(area, 1)))
+        sqrt_areas.append(sqrt_area)
+
+        bbox = _mask_bbox(mask)
+        if bbox is None:
+            bbox_diag = float("nan")
+            centroid_offsets_norm.append(float("nan"))
+        else:
+            x0, y0, x1, y1 = bbox
+            bbox_diag = float(np.sqrt((x1 - x0 + 1) ** 2 + (y1 - y0 + 1) ** 2))
+            ys, xs = np.where(mask)
+            centroid_x = float(xs.mean())
+            centroid_y = float(ys.mean())
+            center = (img_size - 1) / 2.0
+            centroid_offsets_norm.append(
+                float(np.sqrt((centroid_x - center) ** 2 + (centroid_y - center) ** 2) / max(bbox_diag, 1.0))
+            )
+        bbox_diags.append(bbox_diag)
+
+        dist_map = None
+        if distance_transform_edt is not None:
+            # Distance is 0 on-object and positive in background.
+            dist_map = distance_transform_edt(~mask)
+
+        kp_px = _keypoints_to_pixel_array(kp[t], img_size)
+        inside_count = 0
+        dists = []
+        norm_dists = []
+        for i in range(n_kp):
+            x = kp_px[i, 0]
+            y = kp_px[i, 1]
+            border_hits[t, i] = (
+                x < border_px or x > (img_size - 1 - border_px)
+                or y < border_px or y > (img_size - 1 - border_px)
+            )
+            if x < 0 or x >= img_size or y < 0 or y >= img_size:
+                out_of_bounds[t, i] = 1.0
+                dist_px = float(img_size)
+            else:
+                px_x = int(round(x))
+                px_y = int(round(y))
+                px_x = min(max(px_x, 0), img_size - 1)
+                px_y = min(max(px_y, 0), img_size - 1)
+                if mask[px_y, px_x]:
+                    inside_count += 1
+                    per_kp_inside[t, i] = 1.0
+                if dist_map is not None:
+                    dist_px = float(dist_map[px_y, px_x])
+                else:
+                    dist_px = 0.0 if mask[px_y, px_x] else float("nan")
+            per_kp_dist_px[t, i] = dist_px
+            dists.append(dist_px)
+            norm_dists.append(dist_px / max(sqrt_area, 1.0))
+
+        per_frame_pct.append(inside_count / n_kp)
+        per_frame_mean_dist_px.append(float(np.nanmean(dists)))
+        per_frame_mean_dist_norm.append(float(np.nanmean(norm_dists)))
+
+    return {
+        "on_object_pct": float(np.mean(per_frame_pct)),
+        "method": "tdw_binary_mask",
+        "mask_distance_method": (
+            "scipy.ndimage.distance_transform_edt" if distance_transform_edt is not None
+            else "inside_only_no_distance_transform"
+        ),
+        "border_frac": float(border_frac),
+        "border_px": int(border_px),
+        "border_occupancy_pct": float(np.mean(border_hits)),
+        "out_of_bounds_pct": float(np.mean(out_of_bounds)),
+        "mean_dist_to_object_px": float(np.nanmean(per_frame_mean_dist_px)),
+        "mean_dist_to_object_norm_sqrt_area": float(np.nanmean(per_frame_mean_dist_norm)),
+        "per_kp_on_object_pct": np.mean(per_kp_inside, axis=0).astype(float).tolist(),
+        "per_kp_mean_dist_to_object_px": np.nanmean(per_kp_dist_px, axis=0).astype(float).tolist(),
+        "per_frame_pct": [float(x) for x in per_frame_pct],
+        "per_frame_mean_dist_px": [float(x) for x in per_frame_mean_dist_px],
+        "mask_centroid_mean_offset_norm_bboxdiag": float(np.nanmean(centroid_offsets_norm)),
+        "mask_centroid_max_offset_norm_bboxdiag": float(np.nanmax(centroid_offsets_norm)),
+        "mean_mask_sqrt_area_px": float(np.nanmean(sqrt_areas)),
+        "mean_mask_bbox_diag_px": float(np.nanmean(bbox_diags)),
+        "n_frames": int(T),
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # D) Trajectory analysis
 # ─────────────────────────────────────────────────────────────────────────────
@@ -541,7 +743,258 @@ def compute_trajectory_geometry(
     }
 
 
-def compute_operator_spectrum(model) -> dict:
+@torch.no_grad()
+def compute_cyclic_compositionality(
+    model,
+    all_keypoints: torch.Tensor,
+    frame_skip: int,
+    max_k: int,
+    device: str,
+    target_step_deg: Optional[float] = None,
+) -> dict:
+    """
+    Evaluate modular k-step rollouts on a closed orbit.
+
+    Target index is (t + k * frame_skip) mod T. This is required for the
+    360-degree roll dataset because the most important check is the closed
+    orbit: with skip=3 and 2deg source frames, k=60 should return to frame t.
+    """
+    model.eval()
+    T = all_keypoints.shape[0]
+    errors_by_k = {}
+
+    for k in range(1, max_k + 1):
+        errs = []
+        for t in range(T):
+            target_idx = (t + k * frame_skip) % T
+            p_t = all_keypoints[t : t + 1].to(device)
+            p_actual = all_keypoints[target_idx : target_idx + 1].to(device)
+            p_hat = model.multi_step_predict(p_t, k)
+            errs.append(float(torch.mean((p_hat - p_actual) ** 2).item()))
+        arr = np.array(errs, dtype=np.float64)
+        std = float(np.std(arr, ddof=1)) if len(arr) > 1 else 0.0
+        errors_by_k[str(k)] = {
+            "mean": float(np.mean(arr)),
+            "std": std,
+            "sem": float(std / np.sqrt(len(arr))) if len(arr) else 0.0,
+            "min": float(np.min(arr)),
+            "max": float(np.max(arr)),
+            "n_samples": int(len(arr)),
+            "target_offset_frames_mod": int((k * frame_skip) % T),
+        }
+
+    closed_orbit_k = None
+    if target_step_deg is not None and target_step_deg > 0:
+        maybe_k = 360.0 / float(target_step_deg)
+        if abs(maybe_k - round(maybe_k)) < 1e-6:
+            closed_orbit_k = int(round(maybe_k))
+    if closed_orbit_k is None:
+        for k in range(1, max_k + 1):
+            if (k * frame_skip) % T == 0:
+                closed_orbit_k = k
+                break
+
+    result = {
+        "method": "cyclic_modular_target_indexing",
+        "frame_skip": int(frame_skip),
+        "max_k": int(max_k),
+        "n_frames": int(T),
+        "target_step_deg": float(target_step_deg) if target_step_deg is not None else None,
+        "closed_orbit_k": closed_orbit_k,
+        "error_bar_definition": (
+            "mean +/- 1 s.e.m. across cyclic start frames t; "
+            "descriptive within-sequence variability, not independent samples"
+        ),
+        "errors": errors_by_k,
+    }
+    if closed_orbit_k is not None and str(closed_orbit_k) in errors_by_k:
+        result["closed_orbit"] = errors_by_k[str(closed_orbit_k)]
+    return result
+
+
+def plot_cyclic_compositionality(results: dict, output_path: Path):
+    ks = [int(k) for k in results["errors"].keys()]
+    ks.sort()
+    means = [results["errors"][str(k)]["mean"] for k in ks]
+    sems = [results["errors"][str(k)]["sem"] for k in ks]
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+    ax.errorbar(ks, means, yerr=sems, marker="o", markersize=3, linewidth=1.5, capsize=2)
+    ax.set_xlabel("k operator applications")
+    ax.set_ylabel("MSE (mean +/- 1 s.e.m.)")
+    ax.set_title("Cyclic Compositionality: modular target indexing")
+    ax.grid(True, alpha=0.3)
+    closed_k = results.get("closed_orbit_k")
+    if closed_k is not None and closed_k in ks:
+        ax.axvline(closed_k, color="red", linestyle="--", linewidth=1.2, label=f"closed orbit k={closed_k}")
+        ax.legend()
+    ax.text(
+        0.02, 0.98,
+        "Error bars: +/- 1 s.e.m. over cyclic start frames t\n(descriptive within-sequence variability)",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=9,
+        bbox=dict(facecolor="white", alpha=0.75, edgecolor="none"),
+    )
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {output_path}")
+
+
+def _rotate_points_standard(points: np.ndarray, theta_rad: np.ndarray) -> np.ndarray:
+    """
+    Rotate row-vector points by a per-frame standard 2D rotation matrix.
+
+    points: (T, N, 2), theta_rad: (T,)
+    keypoints are in normalized image coordinates [-1, 1], so the verified
+    image center is the origin and no pixel-space pivot is used.
+    """
+    c = np.cos(theta_rad)[:, None]
+    s = np.sin(theta_rad)[:, None]
+    x = points[:, :, 0]
+    y = points[:, :, 1]
+    x_new = c * x - s * y
+    y_new = s * x + c * y
+    return np.stack([x_new, y_new], axis=-1)
+
+
+def _canonical_rms(canonical: np.ndarray) -> tuple[list[float], float, float, float]:
+    centered = canonical - canonical.mean(axis=0, keepdims=True)
+    sq = np.sum(centered ** 2, axis=-1)  # (T, N)
+    per_kp_rms = np.sqrt(np.mean(sq, axis=0))
+    return (
+        per_kp_rms.astype(float).tolist(),
+        float(np.mean(per_kp_rms)),
+        float(np.median(per_kp_rms)),
+        float(np.max(per_kp_rms)),
+    )
+
+
+def _pairwise_distance_drift(kp: np.ndarray) -> dict:
+    T, N, _ = kp.shape
+    if N < 2:
+        return {"mean_pairwise_dist_std": 0.0, "max_pairwise_dist_std": 0.0}
+    dists = []
+    for t in range(T):
+        diff = kp[t, :, None, :] - kp[t, None, :, :]
+        d = np.sqrt(np.sum(diff ** 2, axis=-1))
+        dists.append(d[np.triu_indices(N, k=1)])
+    dists = np.stack(dists, axis=0)
+    stds = np.std(dists, axis=0, ddof=1) if T > 1 else np.zeros(dists.shape[1])
+    return {
+        "mean_pairwise_dist_std": float(np.mean(stds)),
+        "max_pairwise_dist_std": float(np.max(stds)),
+    }
+
+
+def compute_canonical_stability(
+    all_keypoints: torch.Tensor,
+    frame_metadata: list[Optional[dict]],
+    n_kp: int,
+) -> Optional[dict]:
+    """
+    Object-relative stability for World-Z roll.
+
+    The sign is locked to -theta from the independent mask IoU smoke check for
+    this TDW World-Z roll dataset. We also compute +theta as audit-only and flag
+    if it appears lower-variance; we never choose the sign by minimizing the
+    reported metric.
+    """
+    if not frame_metadata or any(m is None or "theta_deg" not in m for m in frame_metadata):
+        return None
+
+    kp = all_keypoints.view(all_keypoints.shape[0], n_kp, 2).numpy()
+    theta_deg = np.array([float(m["theta_deg"]) for m in frame_metadata[: kp.shape[0]]], dtype=np.float64)
+    theta_rad = np.deg2rad(theta_deg)
+
+    canonical_plus = _rotate_points_standard(kp, theta_rad)
+    canonical_minus = _rotate_points_standard(kp, -theta_rad)
+
+    plus_per, plus_mean, plus_median, plus_max = _canonical_rms(canonical_plus)
+    minus_per, minus_mean, minus_median, minus_max = _canonical_rms(canonical_minus)
+
+    raw_centered = kp - kp.mean(axis=0, keepdims=True)
+    raw_per_kp_rms = np.sqrt(np.mean(np.sum(raw_centered ** 2, axis=-1), axis=0))
+    probe_idx = int(np.argmax(raw_per_kp_rms))
+    plus_probe = float(plus_per[probe_idx])
+    minus_probe = float(minus_per[probe_idx])
+
+    locked_not_lower = minus_mean > plus_mean
+    pairwise = _pairwise_distance_drift(kp)
+
+    return {
+        "method": "canonical_unrotation_world_z_roll",
+        "coordinate_space": "normalized_keypoints_minus1_to_1",
+        "pivot": [0.0, 0.0],
+        "angle_source": "frame_metadata.theta_deg",
+        "locked_sign": "-theta",
+        "locked_sign_provenance": (
+            "Independent mask IoU smoke verification showed -theta de-rotation "
+            "recovers frame 0 under the eval image-coordinate convention; sign "
+            "is not selected by canonical variance."
+        ),
+        "audit_sign": "+theta",
+        "warning_locked_sign_not_lower_variance": bool(locked_not_lower),
+        "locked_minus": {
+            "per_kp_canonical_rms": minus_per,
+            "mean_canonical_rms": minus_mean,
+            "median_canonical_rms": minus_median,
+            "max_canonical_rms": minus_max,
+        },
+        "audit_plus": {
+            "per_kp_canonical_rms": plus_per,
+            "mean_canonical_rms": plus_mean,
+            "median_canonical_rms": plus_median,
+            "max_canonical_rms": plus_max,
+        },
+        "flatness_probe": {
+            "keypoint_index": probe_idx,
+            "selection_rule": "largest raw trajectory RMS; not used to choose sign",
+            "raw_rms": float(raw_per_kp_rms[probe_idx]),
+            "locked_minus_canonical_rms": minus_probe,
+            "audit_plus_canonical_rms": plus_probe,
+        },
+        "pairwise_distance_drift": pairwise,
+        "theta_deg_first": float(theta_deg[0]),
+        "theta_deg_last": float(theta_deg[-1]),
+        "n_frames": int(kp.shape[0]),
+    }
+
+
+def plot_canonical_flatness_probe(stability: dict, all_keypoints: torch.Tensor,
+                                  frame_metadata: list[dict], n_kp: int,
+                                  output_path: Path):
+    kp = all_keypoints.view(all_keypoints.shape[0], n_kp, 2).numpy()
+    theta_deg = np.array([float(m["theta_deg"]) for m in frame_metadata[: kp.shape[0]]], dtype=np.float64)
+    theta_rad = np.deg2rad(theta_deg)
+    idx = stability["flatness_probe"]["keypoint_index"]
+    raw = kp[:, idx, :]
+    plus = _rotate_points_standard(kp[:, idx:idx + 1, :], theta_rad)[:, 0, :]
+    minus = _rotate_points_standard(kp[:, idx:idx + 1, :], -theta_rad)[:, 0, :]
+
+    fig, axes = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+    for ax, arr, title in [
+        (axes[0], raw, "raw keypoint coordinates"),
+        (axes[1], minus, "canonical -theta (locked sign)"),
+        (axes[2], plus, "canonical +theta (audit only)"),
+    ]:
+        ax.plot(theta_deg, arr[:, 0], label="x", linewidth=1.5)
+        ax.plot(theta_deg, arr[:, 1], label="y", linewidth=1.5)
+        ax.set_ylabel("coord")
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="best")
+    axes[-1].set_xlabel("theta_deg from metadata")
+    fig.suptitle(f"Canonical flatness probe: keypoint {idx}", y=1.01)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {output_path}")
+
+
+def compute_operator_spectrum(model, target_step_deg: float = None) -> dict:
     """
     Operator spectrum diagnostics (all in float64).
 
@@ -551,6 +1004,7 @@ def compute_operator_spectrum(model) -> dict:
     """
     W = model.operator.W.detach().cpu().double()  # (2N, 2N)
     D = W.shape[0]
+    N = model.num_keypoints
 
     try:
         sv = torch.linalg.svdvals(W)
@@ -572,11 +1026,145 @@ def compute_operator_spectrum(model) -> dict:
     except Exception:
         orth_err = float("nan")
 
-    return {
+    result = {
+        "operator_type": type(model.operator).__name__,
+        "operator_trainable_parameters": int(sum(p.numel() for p in model.operator.parameters())),
         "sv_min": sv_min,
         "sv_max": sv_max,
         "spectral_radius": spectral_radius,
         "orth_err": orth_err,
+    }
+
+    if hasattr(model.operator, "A") and hasattr(model.operator, "bias"):
+        A = model.operator.A.detach().cpu().double()
+        bias = model.operator.bias.detach().cpu().double()
+        try:
+            s = torch.linalg.svdvals(A)
+            U, _, Vh = torch.linalg.svd(A)
+            R = U @ Vh
+            angle_rad = float(torch.atan2(R[1, 0], R[0, 0]).item())
+            singular_values = [float(s[0]), float(s[1])]
+        except Exception:
+            R = torch.full((2, 2), float("nan"), dtype=A.dtype)
+            angle_rad = float("nan")
+            singular_values = [float("nan"), float("nan")]
+
+        shared = {
+            "A": A.tolist(),
+            "bias": bias.tolist(),
+            "det_A": float(torch.linalg.det(A).item()),
+            "singular_values": singular_values,
+            "orthogonality_error_fro": float(torch.linalg.norm(A.T @ A - torch.eye(2, dtype=A.dtype), ord="fro").item()),
+            "closest_rotation_matrix": R.tolist(),
+            "closest_rotation_angle_rad": angle_rad,
+            "closest_rotation_angle_deg": float(np.rad2deg(angle_rad)),
+            "bias_norm": float(torch.linalg.norm(bias).item()),
+        }
+        if target_step_deg is not None:
+            theta = np.deg2rad(float(target_step_deg))
+            R_pos = torch.tensor(
+                [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]],
+                dtype=A.dtype,
+            )
+            R_neg = torch.tensor(
+                [[np.cos(-theta), -np.sin(-theta)], [np.sin(-theta), np.cos(-theta)]],
+                dtype=A.dtype,
+            )
+            err_pos = float(torch.linalg.norm(A - R_pos, ord="fro").item())
+            err_neg = float(torch.linalg.norm(A - R_neg, ord="fro").item())
+            shared.update(
+                {
+                    "target_step_deg": float(target_step_deg),
+                    "fro_error_to_R_pos": err_pos,
+                    "fro_error_to_R_neg": err_neg,
+                    "best_signed_target": "+target" if err_pos <= err_neg else "-target",
+                    "best_fro_error_to_target_rotation": min(err_pos, err_neg),
+                }
+            )
+        result["shared_affine"] = shared
+
+    if target_step_deg is not None:
+        theta = np.deg2rad(float(target_step_deg))
+        R_pos = torch.tensor(
+            [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]],
+            dtype=W.dtype,
+        )
+        R_neg = torch.tensor(
+            [[np.cos(-theta), -np.sin(-theta)], [np.sin(-theta), np.cos(-theta)]],
+            dtype=W.dtype,
+        )
+        pos_errors = []
+        neg_errors = []
+        for i in range(N):
+            A_i = W[2 * i : 2 * i + 2, 2 * i : 2 * i + 2]
+            pos_errors.append(float(torch.linalg.norm(A_i - R_pos, ord="fro").item()))
+            neg_errors.append(float(torch.linalg.norm(A_i - R_neg, ord="fro").item()))
+        result["target_step_deg"] = float(target_step_deg)
+        result["diag_block_mean_fro_error_to_R_pos"] = float(np.mean(pos_errors))
+        result["diag_block_mean_fro_error_to_R_neg"] = float(np.mean(neg_errors))
+        result["diag_block_best_signed_target"] = (
+            "+target" if result["diag_block_mean_fro_error_to_R_pos"] <= result["diag_block_mean_fro_error_to_R_neg"] else "-target"
+        )
+        result["diag_block_best_mean_fro_error_to_target_rotation"] = min(
+            result["diag_block_mean_fro_error_to_R_pos"],
+            result["diag_block_mean_fro_error_to_R_neg"],
+        )
+
+    return result
+
+
+def compute_known_success_gates(results: dict) -> dict:
+    """
+    Gate known metrics with AND semantics.
+
+    This per-run evaluator does not know identity-ratio or validation action
+    accuracy; sweep.py adds those. Here we enforce that on-object can veto a
+    run even if rollout/operator metrics look good.
+    """
+    loc = results.get("localization", {})
+    part = results.get("participation", {})
+    gates = {
+        "on_object_pct": {
+            "value": loc.get("on_object_pct"),
+            "op": ">",
+            "threshold": 0.5,
+        },
+        "active_kp_frac": {
+            "value": part.get("active_kp_frac"),
+            "op": ">",
+            "threshold": 0.3,
+        },
+    }
+    for gate in gates.values():
+        value = gate["value"]
+        if value is None:
+            gate["pass"] = False
+        elif gate["op"] == ">":
+            gate["pass"] = bool(value > gate["threshold"])
+        elif gate["op"] == "<":
+            gate["pass"] = bool(value < gate["threshold"])
+        else:
+            gate["pass"] = False
+
+    failed = [name for name, gate in gates.items() if not gate["pass"]]
+    warnings_list = []
+    if "on_object_pct" in failed:
+        warnings_list.append(
+            "on_object_pct failed; this is a standalone veto for border/background shortcut runs."
+        )
+    if loc.get("border_occupancy_pct", 0.0) > 0.2:
+        warnings_list.append("High border_occupancy_pct; inspect for border shortcut.")
+    if results.get("canonical_stability", {}).get("warning_locked_sign_not_lower_variance"):
+        warnings_list.append(
+            "Canonical sign audit: locked -theta has higher variance than +theta; check sign/pivot/metadata handling."
+        )
+
+    return {
+        "known_gates_pass": len(failed) == 0,
+        "and_gate_semantics": "all known gates must pass; any single failed gate blocks promotion",
+        "gates": gates,
+        "failed_gates": failed,
+        "warnings": warnings_list,
     }
 
 
@@ -592,7 +1180,19 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--frames_dir", type=str, required=True)
     parser.add_argument("--output_dir", type=str, default="./rollout_output")
-    parser.add_argument("--img_size", type=int, default=256)
+    parser.add_argument(
+        "--img_size",
+        type=int,
+        default=None,
+        help="Eval image size. Defaults to checkpoint config img_size, or 256 for legacy checkpoints.",
+    )
+    parser.add_argument(
+        "--padding_mode_override",
+        type=str,
+        default=None,
+        choices=["zeros", "reflect", "replicate", "circular"],
+        help="Override checkpoint padding mode for legacy compatibility checks.",
+    )
     parser.add_argument(
         "--start_frame",
         type=str,
@@ -616,6 +1216,21 @@ def main():
         help="Generate forward rollout viz but skip inverse viz. "
         "Used for soft-promoted configs in sweep.",
     )
+    parser.add_argument(
+        "--cyclic_max_k",
+        type=int,
+        default=None,
+        help=(
+            "Maximum k for cyclic modular rollout. Defaults to the closed-orbit "
+            "k when target_step_deg divides 360, otherwise 60."
+        ),
+    )
+    parser.add_argument(
+        "--border_frac",
+        type=float,
+        default=0.05,
+        help="Border width as a fraction of image size for border-shortcut metric.",
+    )
 
     args = parser.parse_args()
 
@@ -623,8 +1238,15 @@ def main():
     print(f"Using device: {device}")
 
     # Load model
-    model, config = load_model(args.checkpoint, device=device)
+    model, config = load_model(
+        args.checkpoint,
+        device=device,
+        padding_mode_override=args.padding_mode_override,
+    )
     frame_skip = args.frame_skip or config.get("frame_skip", 1)
+    args.img_size = args.img_size or config.get("img_size", 256)
+    yaw_step_deg = config.get("yaw_step_deg", None)
+    target_step_deg = frame_skip * yaw_step_deg if yaw_step_deg is not None else None
     n_kp = model.num_keypoints
 
     # Load dataset (for transform + frame list)
@@ -634,6 +1256,7 @@ def main():
     )
     frames = dataset.frames  # sorted list of Path objects
     n_frames = len(frames)
+    frame_metadata = _load_frame_metadata(frames_dir, frames)
 
     # Determine start frame
     if args.start_frame == "mid":
@@ -658,6 +1281,9 @@ def main():
         "n_frames": n_frames,
         "num_keypoints": n_kp,
         "checkpoint": str(args.checkpoint),
+        "yaw_step_deg": yaw_step_deg,
+        "target_step_deg": target_step_deg,
+        "frame_metadata_available": all(m is not None for m in frame_metadata),
     }
 
     # ── A) Forward rollout ──
@@ -696,14 +1322,34 @@ def main():
 
     # ── C) Localization ──
     print("\n--- Localization ---")
-    localization = compute_localization(all_kp, frames, args.img_size, n_kp)
-    results["localization"] = {
-        "on_foreground_pct": localization["on_foreground_pct"],
-        "method": localization["method"],
-    }
+    localization = compute_mask_localization(
+        all_kp, frames, args.img_size, n_kp, border_frac=args.border_frac
+    )
+    if localization is None:
+        localization = compute_localization(all_kp, frames, args.img_size, n_kp)
+        results["localization"] = {
+            "on_foreground_pct": localization["on_foreground_pct"],
+            "method": localization["method"],
+        }
+        print(
+            f"  on_foreground_pct = {localization['on_foreground_pct']:.3f}  "
+            f"method={localization['method']}"
+        )
+    else:
+        results["localization"] = {
+            k: v for k, v in localization.items()
+            if not k.startswith("per_frame")
+        }
+        print(
+            f"  on_object_pct = {localization['on_object_pct']:.3f}  "
+            f"mean_dist_px={localization['mean_dist_to_object_px']:.3f}  "
+            f"border_pct={localization['border_occupancy_pct']:.3f}  "
+            f"method={localization['method']}"
+        )
     # Store per-frame in a separate key (can be large)
     results["localization_per_frame"] = localization["per_frame_pct"]
-    print(f"  on_foreground_pct = {localization['on_foreground_pct']:.3f}  method={localization['method']}")
+    if "per_frame_mean_dist_px" in localization:
+        results["localization_per_frame_mean_dist_px"] = localization["per_frame_mean_dist_px"]
 
     # ── D) Participation ──
     print("\n--- Participation ---")
@@ -733,13 +1379,81 @@ def main():
     }
     print(f"  dim2_frac = {traj_geom['dim2_frac']:.3f}")
 
+    # ── Cyclic compositionality ──
+    print("\n--- Cyclic compositionality ---")
+    if args.cyclic_max_k is not None:
+        cyclic_max_k = args.cyclic_max_k
+    elif target_step_deg is not None and target_step_deg > 0:
+        cyclic_max_k = int(round(360.0 / target_step_deg))
+    else:
+        cyclic_max_k = 60
+    cyclic = compute_cyclic_compositionality(
+        model, all_kp, frame_skip=frame_skip, max_k=cyclic_max_k,
+        device=device, target_step_deg=target_step_deg,
+    )
+    results["cyclic_compositionality"] = cyclic
+    closed = cyclic.get("closed_orbit")
+    if closed is not None:
+        print(
+            f"  closed_orbit k={cyclic['closed_orbit_k']}: "
+            f"MSE = {closed['mean']:.6f} +/- {closed['sem']:.6f}"
+        )
+    else:
+        k1 = cyclic["errors"].get("1", {})
+        print(f"  k=1 cyclic MSE = {k1.get('mean', float('nan')):.6f}")
+    if not args.metrics_only:
+        plot_cyclic_compositionality(cyclic, output_dir / "cyclic_compositionality.png")
+
+    # ── Canonical object-relative stability ──
+    print("\n--- Canonical object-relative stability ---")
+    canonical = compute_canonical_stability(all_kp, frame_metadata, n_kp)
+    if canonical is None:
+        results["canonical_stability"] = {
+            "available": False,
+            "reason": "frame metadata with theta_deg not available for every frame",
+        }
+        print("  skipped: frame metadata with theta_deg is unavailable")
+    else:
+        canonical["available"] = True
+        results["canonical_stability"] = canonical
+        locked = canonical["locked_minus"]
+        audit = canonical["audit_plus"]
+        print(
+            f"  locked -theta mean_rms={locked['mean_canonical_rms']:.6f}; "
+            f"audit +theta mean_rms={audit['mean_canonical_rms']:.6f}; "
+            f"warning={canonical['warning_locked_sign_not_lower_variance']}"
+        )
+        if not args.metrics_only:
+            plot_canonical_flatness_probe(
+                canonical, all_kp, frame_metadata, n_kp,
+                output_dir / "canonical_flatness_probe.png",
+            )
+
     # ── Operator spectrum ──
     print("\n--- Operator spectrum (diagnostic) ---")
-    spectrum = compute_operator_spectrum(model)
+    spectrum = compute_operator_spectrum(model, target_step_deg=target_step_deg)
     results["operator_spectrum"] = spectrum
     print(f"  sv_min={spectrum['sv_min']:.4f}  sv_max={spectrum['sv_max']:.4f}")
     print(f"  spectral_radius={spectrum['spectral_radius']:.4f}")
     print(f"  orth_err={spectrum['orth_err']:.4f}")
+    if "shared_affine" in spectrum:
+        shared = spectrum["shared_affine"]
+        print(f"  shared angle={shared['closest_rotation_angle_deg']:.3f} deg")
+        if "best_fro_error_to_target_rotation" in shared:
+            print(
+                f"  shared target error={shared['best_fro_error_to_target_rotation']:.6f} "
+                f"({shared['best_signed_target']})"
+            )
+
+    # ── Success gates available in this evaluator ──
+    print("\n--- Known success gates ---")
+    gates = compute_known_success_gates(results)
+    results["success_gates"] = gates
+    print(f"  known_gates_pass = {gates['known_gates_pass']}")
+    if gates["failed_gates"]:
+        print(f"  failed_gates = {', '.join(gates['failed_gates'])}")
+    for warning in gates["warnings"]:
+        print(f"  warning: {warning}")
 
     # ── Save ──
     metrics_path = output_dir / "rollout_metrics.json"

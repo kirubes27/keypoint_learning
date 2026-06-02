@@ -28,7 +28,7 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from model import PhaseAModel, compute_losses
-from dataset import PoseSequenceDataset, SingleObjectDataset
+from dataset import PoseSequenceDataset, SingleObjectDataset, IndexPairDataset
 
 
 def _select_device() -> torch.device:
@@ -157,6 +157,10 @@ def train_epoch(
     lambda_disp: float,
     lambda_ent: float,
     lambda_act: float,
+    lambda_loc: float,
+    lambda_inv: float,
+    lambda_cycle: float,
+    loc_bg_threshold: float,
     sigma: float,
     num_keypoints: int,
 ) -> dict:
@@ -169,6 +173,9 @@ def train_epoch(
     total_disp = 0.0
     total_ent = 0.0
     total_act = 0.0
+    total_loc = 0.0
+    total_inv = 0.0
+    total_cycle = 0.0
     total_act_acc = 0.0
     n_batches = 0
 
@@ -185,9 +192,15 @@ def train_epoch(
             lambda_disp=lambda_disp,
             lambda_ent=lambda_ent,
             lambda_act=lambda_act,
+            lambda_loc=lambda_loc,
+            lambda_inv=lambda_inv,
+            lambda_cycle=lambda_cycle,
             sigma=sigma,
             num_keypoints=num_keypoints,
             action_labels=action_labels,
+            x_t=x_t,
+            x_t1=x_t1,
+            loc_bg_threshold=loc_bg_threshold,
         )
 
         # Backward pass
@@ -202,6 +215,9 @@ def train_epoch(
         total_disp += losses['l_disp'].item()
         total_ent += losses['l_ent'].item()
         total_act += losses['l_act'].item()
+        total_loc += losses['l_loc'].item()
+        total_inv += losses['l_inv'].item()
+        total_cycle += losses['l_cycle'].item()
         total_act_acc += losses['act_acc'].item()
         n_batches += 1
 
@@ -212,6 +228,9 @@ def train_epoch(
         'l_disp': total_disp / n_batches,
         'l_ent': total_ent / n_batches,
         'l_act': total_act / n_batches,
+        'l_loc': total_loc / n_batches,
+        'l_inv': total_inv / n_batches,
+        'l_cycle': total_cycle / n_batches,
         'act_acc': total_act_acc / n_batches,
     }
 
@@ -225,6 +244,10 @@ def evaluate(
     lambda_disp: float,
     lambda_ent: float,
     lambda_act: float,
+    lambda_loc: float,
+    lambda_inv: float,
+    lambda_cycle: float,
+    loc_bg_threshold: float,
     sigma: float,
     num_keypoints: int,
 ) -> dict:
@@ -234,6 +257,9 @@ def evaluate(
     total_loss = 0.0
     total_pred = 0.0
     total_act = 0.0
+    total_loc = 0.0
+    total_inv = 0.0
+    total_cycle = 0.0
     total_act_acc = 0.0
     n_batches = 0
 
@@ -249,14 +275,23 @@ def evaluate(
             lambda_disp=lambda_disp,
             lambda_ent=lambda_ent,
             lambda_act=lambda_act,
+            lambda_loc=lambda_loc,
+            lambda_inv=lambda_inv,
+            lambda_cycle=lambda_cycle,
             sigma=sigma,
             num_keypoints=num_keypoints,
             action_labels=action_labels,
+            x_t=x_t,
+            x_t1=x_t1,
+            loc_bg_threshold=loc_bg_threshold,
         )
 
         total_loss += losses['loss'].item()
         total_pred += losses['l_pred'].item()
         total_act += losses['l_act'].item()
+        total_loc += losses['l_loc'].item()
+        total_inv += losses['l_inv'].item()
+        total_cycle += losses['l_cycle'].item()
         total_act_acc += losses['act_acc'].item()
         n_batches += 1
 
@@ -264,6 +299,9 @@ def evaluate(
         'loss': total_loss / n_batches,
         'l_pred': total_pred / n_batches,
         'l_act': total_act / n_batches,
+        'l_loc': total_loc / n_batches,
+        'l_inv': total_inv / n_batches,
+        'l_cycle': total_cycle / n_batches,
         'act_acc': total_act_acc / n_batches,
     }
 
@@ -274,19 +312,52 @@ def main():
     # Data
     parser.add_argument("--data_root", type=str, required=True, help="Path to dataset root")
     parser.add_argument("--object", type=str, default=None, help="Single object name (e.g., coffeemug)")
+    parser.add_argument("--pairs_index", type=str, default=None,
+                        help="Path to a precomputed pair-index JSON (e.g. "
+                             "indices/pairs_skip3_cyclic.json), absolute or relative to "
+                             "--data_root. If set, uses IndexPairDataset, which honors "
+                             "cyclic wrap pairs (358->0). Combine with --object to filter "
+                             "to one object. Overrides the frame_skip globbing path.")
     parser.add_argument("--img_size", type=int, default=256)
     
     # Model
     parser.add_argument("--num_keypoints", type=int, default=10, help="N keypoints")
     parser.add_argument("--base_channels", type=int, default=32)
     parser.add_argument("--temperature", type=float, default=1.0, help="Soft-argmax temperature")
+    parser.add_argument(
+        "--padding_mode",
+        type=str,
+        default="reflect",
+        choices=["zeros", "reflect", "replicate", "circular"],
+        help="Conv2d padding_mode used in keypoint extractor",
+    )
+    parser.add_argument(
+        "--operator_type",
+        type=str,
+        default="dense",
+        choices=["dense", "shared_affine"],
+        help=(
+            "Transition operator family. 'dense' is the legacy 2N x 2N map; "
+            "'shared_affine' applies the same 2D affine map to every keypoint."
+        ),
+    )
+    parser.add_argument(
+        "--learn_inverse_operator",
+        action="store_true",
+        help="Learn a separate inverse operator W- for inverse/cycle losses.",
+    )
     
     # Loss weights -- Run 0 defaults: only L_pred + L_disp
     parser.add_argument("--lambda_smooth", type=float, default=0.0, help="λ_s for L_smooth (0 for Run 0)")
     parser.add_argument("--lambda_disp", type=float, default=0.1, help="λ_d for L_disp")
     parser.add_argument("--lambda_ent", type=float, default=0.0, help="λ_e for L_ent (0 for Run 0)")
     parser.add_argument("--lambda_act", type=float, default=0.0, help="λ_a for L_act action classification loss")
+    parser.add_argument("--lambda_loc", type=float, default=0.0, help="λ_l for L_loc localization loss")
+    parser.add_argument("--lambda_inv", type=float, default=0.0, help="λ_i for inverse prediction W- K_{t+1} ~= K_t")
+    parser.add_argument("--lambda_cycle", type=float, default=0.0, help="λ_c for one-step W- W+ and W+ W- cycle consistency")
     parser.add_argument("--sigma", type=float, default=0.1, help="σ for L_disp length scale")
+    parser.add_argument("--loc_bg_threshold", type=float, default=30.0,
+                        help="Background subtraction threshold for L_loc (0-255 scale)")
     parser.add_argument("--num_action_classes", type=int, default=2, help="Number of action classes for action head")
     
     # Dataset (10.4)
@@ -319,6 +390,11 @@ def main():
 
     if args.lambda_act > 0 and args.num_action_classes < 2:
         raise ValueError("--num_action_classes must be >= 2 when --lambda_act > 0")
+    learn_inverse_operator = (
+        args.learn_inverse_operator
+        or args.lambda_inv > 0.0
+        or args.lambda_cycle > 0.0
+    )
     
     # Reproducibility
     _seed_everything(args.seed)
@@ -340,6 +416,7 @@ def main():
     # Save config
     config = vars(args)
     config['device'] = str(device)
+    config['learn_inverse_operator_effective'] = learn_inverse_operator
     with open(run_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
     print(f"Output directory: {run_dir}")
@@ -347,7 +424,19 @@ def main():
     # Create dataset
     include_backward = args.lambda_act > 0.0
 
-    if args.object:
+    if args.pairs_index is not None:
+        # Index-driven pairs (honors cyclic wrap transitions). data_root is the
+        # dataset folder the pair relpaths are relative to; --object filters.
+        train_dataset = IndexPairDataset(
+            data_root=args.data_root,
+            index_path=args.pairs_index,
+            img_size=args.img_size,
+            center_crop=args.center_crop,
+            include_backward=include_backward,
+            object_name=args.object,
+        )
+        val_dataset = train_dataset
+    elif args.object:
         # Single object mode - look for frames directly
         # Try to find the frames directory
         train_frames = Path(args.data_root) / "train" / args.object / "frames" / "a"
@@ -435,6 +524,9 @@ def main():
         base_channels=args.base_channels,
         temperature=args.temperature,
         num_action_classes=model_num_action_classes,
+        padding_mode=args.padding_mode,
+        operator_type=args.operator_type,
+        learn_inverse_operator=learn_inverse_operator,
     ).to(device)
     
     n_params = sum(p.numel() for p in model.parameters())
@@ -453,22 +545,34 @@ def main():
         'num_keypoints': args.num_keypoints,
         'base_channels': args.base_channels,
         'temperature': args.temperature,
+        'padding_mode': args.padding_mode,
+        'operator_type': args.operator_type,
+        'learn_inverse_operator': learn_inverse_operator,
         'frame_skip': args.frame_skip,
         'yaw_step_deg': args.yaw_step_deg,
         'lambda_smooth': args.lambda_smooth,
         'lambda_disp': args.lambda_disp,
         'lambda_ent': args.lambda_ent,
         'lambda_act': args.lambda_act,
+        'lambda_loc': args.lambda_loc,
+        'lambda_inv': args.lambda_inv,
+        'lambda_cycle': args.lambda_cycle,
         'num_action_classes': model_num_action_classes,
         'sigma': args.sigma,
+        'loc_bg_threshold': args.loc_bg_threshold,
         'img_size': args.img_size,
         'seed': args.seed,
+        'data_root': args.data_root,
+        'object': args.object,
+        'pairs_index': args.pairs_index,
     }
     
     eff_deg = args.frame_skip * args.yaw_step_deg
     print(f"\nStarting training for {args.epochs} epochs...")
+    print(f"Operator: {args.operator_type} (learn_inverse_operator={learn_inverse_operator})")
     print(f"Loss weights: lambda_smooth={args.lambda_smooth}, lambda_disp={args.lambda_disp}, "
-          f"lambda_ent={args.lambda_ent}, lambda_act={args.lambda_act}, sigma={args.sigma}")
+          f"lambda_ent={args.lambda_ent}, lambda_act={args.lambda_act}, lambda_loc={args.lambda_loc}, "
+          f"lambda_inv={args.lambda_inv}, lambda_cycle={args.lambda_cycle}, sigma={args.sigma}")
     print(f"Frame skip: {args.frame_skip} (effective step: {eff_deg:.0f} deg)")
     print(f"Include backward pairs: {include_backward}")
     print("-" * 70)
@@ -482,8 +586,10 @@ def main():
         diag_out = model(diag_x_t, diag_x_t1)
         diag_losses = compute_losses(
             diag_out, lambda_smooth=args.lambda_smooth, lambda_disp=args.lambda_disp,
-            lambda_ent=args.lambda_ent, lambda_act=args.lambda_act,
+            lambda_ent=args.lambda_ent, lambda_act=args.lambda_act, lambda_loc=args.lambda_loc,
+            lambda_inv=args.lambda_inv, lambda_cycle=args.lambda_cycle,
             sigma=args.sigma, num_keypoints=args.num_keypoints, action_labels=diag_action_labels,
+            x_t=diag_x_t, x_t1=diag_x_t1, loc_bg_threshold=args.loc_bg_threshold,
         )
         print(f"\n[Diagnostic] First batch (before training):")
         print(f"  p_t  range: [{diag_out['p_t'].min().item():.4f}, {diag_out['p_t'].max().item():.4f}]")
@@ -492,6 +598,9 @@ def main():
         print(f"  l_smooth:{diag_losses['l_smooth'].item():.6f}")
         print(f"  l_ent:   {diag_losses['l_ent'].item():.6f}")
         print(f"  l_act:   {diag_losses['l_act'].item():.6f}")
+        print(f"  l_loc:   {diag_losses['l_loc'].item():.6f}")
+        print(f"  l_inv:   {diag_losses['l_inv'].item():.6f}")
+        print(f"  l_cycle: {diag_losses['l_cycle'].item():.6f}")
         print(f"  act_acc: {diag_losses['act_acc'].item():.4f}")
         print(f"  total:   {diag_losses['loss'].item():.6f}")
         print("-" * 70)
@@ -500,7 +609,9 @@ def main():
         # Train
         train_metrics = train_epoch(
             model, train_loader, optimizer, device,
-            args.lambda_smooth, args.lambda_disp, args.lambda_ent, args.lambda_act, args.sigma, args.num_keypoints
+            args.lambda_smooth, args.lambda_disp, args.lambda_ent, args.lambda_act,
+            args.lambda_loc, args.lambda_inv, args.lambda_cycle,
+            args.loc_bg_threshold, args.sigma, args.num_keypoints
         )
         
         # Step scheduler
@@ -510,7 +621,9 @@ def main():
         if epoch % args.log_every == 0 or epoch == 1:
             val_metrics = evaluate(
                 model, val_loader, device,
-                args.lambda_smooth, args.lambda_disp, args.lambda_ent, args.lambda_act, args.sigma, args.num_keypoints
+                args.lambda_smooth, args.lambda_disp, args.lambda_ent, args.lambda_act,
+                args.lambda_loc, args.lambda_inv, args.lambda_cycle,
+                args.loc_bg_threshold, args.sigma, args.num_keypoints
             )
             
             print(f"Epoch {epoch:4d} | "
@@ -520,6 +633,9 @@ def main():
                   f"L_disp: {train_metrics['l_disp']:.5f} | "
                   f"L_ent: {train_metrics['l_ent']:.5f} | "
                   f"L_act: {train_metrics['l_act']:.5f} | "
+                  f"L_loc: {train_metrics['l_loc']:.5f} | "
+                  f"L_inv: {train_metrics['l_inv']:.5f} | "
+                  f"L_cycle: {train_metrics['l_cycle']:.5f} | "
                   f"ActAcc: {train_metrics['act_acc']:.3f} | "
                   f"Val: {val_metrics['loss']:.5f}")
             
@@ -531,10 +647,16 @@ def main():
                 'train_disp': train_metrics['l_disp'],
                 'train_ent': train_metrics['l_ent'],
                 'train_act': train_metrics['l_act'],
+                'train_loc': train_metrics['l_loc'],
+                'train_inv': train_metrics['l_inv'],
+                'train_cycle': train_metrics['l_cycle'],
                 'train_act_acc': train_metrics['act_acc'],
                 'val_loss': val_metrics['loss'],
                 'val_pred': val_metrics['l_pred'],
                 'val_act': val_metrics['l_act'],
+                'val_loc': val_metrics['l_loc'],
+                'val_inv': val_metrics['l_inv'],
+                'val_cycle': val_metrics['l_cycle'],
                 'val_act_acc': val_metrics['act_acc'],
                 'lr': scheduler.get_last_lr()[0],
             })

@@ -6,3 +6,15 @@ __pycache__/
 _smoke*/
 phase_a_*/
 
+# Local notes / docs: do not stage Markdown unless force-added intentionally
+*.md
+!/README.md
+# Checkpoints and training artifacts
+*.ckpt
+*.log
+runs_local_smoke/
+keypoint_net/runs_local_smoke/
+# Generated TDW datasets and smoke/sanity outputs
+_tdw*/
+_full*/
+_sanity*/

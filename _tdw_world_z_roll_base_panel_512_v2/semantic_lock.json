@@ -1,0 +1,22 @@
+{
+  "must_be_true": [
+    "Full dataset uses TDW rerendering, not PIL rotation.",
+    "Operator is base pose, then rotate_object_by(axis='roll', is_world=True, use_centroid=True).",
+    "Each frame is reset to base pose before applying the absolute theta.",
+    "World lighting remains fixed.",
+    "Manual TDW _id capture is saved along with binary masks.",
+    "Scale values are loaded from the approved world-Z-roll scale probe.",
+    "Cyclic pair indices are included because 358 + 2 wraps to 0."
+  ],
+  "must_not_happen": [
+    "Do not use base_2d_scale as a TDW scale.",
+    "Do not chain incremental 2-degree rotations.",
+    "Do not rotate lights with the object.",
+    "Do not use post-render 2D recentering/cropping."
+  ],
+  "source_index": "/Users/kirubeso.r/Documents/PhD/tdw_phase_a_starter /_full_2d_affine_selected_final_512/dataset_index.json",
+  "source_base_panel": "/Users/kirubeso.r/Documents/PhD/tdw_phase_a_starter /_full_2d_affine_selected_final_512/base_panel_all_objects.png",
+  "scale_index": "/Users/kirubeso.r/Documents/PhD/tdw_phase_a_starter /_sanity_tdw_world_z_roll_scale_probe_512_v2/sanity_index.json",
+  "operator_reference_image": "/Users/kirubeso.r/Documents/PhD/tdw_phase_a_starter /_sanity_hammer_tdw_world_axes_yaw_pitch_roll_512/hammer_three_operators_rgb_contact_sheet.png",
+  "scale_sanity_image": "/Users/kirubeso.r/Documents/PhD/tdw_phase_a_starter /_sanity_tdw_world_z_roll_scale_probe_512_v2/proposed_scale_rgb_contact_sheet.png"
+}

@@ -1,0 +1,26 @@
+{
+  "engineers_hammer_vray": {
+    "scale_abs": 1.4931429660635545,
+    "scale_multiplier_from_base": 2.8
+  },
+  "b03_banana_01_high": {
+    "scale_abs": 2.438816542816367,
+    "scale_multiplier_from_base": 2.7
+  },
+  "kettle": {
+    "scale_abs": 1.4345744798809217,
+    "scale_multiplier_from_base": 2.3
+  },
+  "dewalt_compact_drill_vray": {
+    "scale_abs": 1.4906723927272076,
+    "scale_multiplier_from_base": 2.3
+  },
+  "toy_monkey_medium": {
+    "scale_abs": 1.8406598336315914,
+    "scale_multiplier_from_base": 2.7
+  },
+  "b03_trumpet_vray": {
+    "scale_abs": 1.2908106237378383,
+    "scale_multiplier_from_base": 2.8
+  }
+}

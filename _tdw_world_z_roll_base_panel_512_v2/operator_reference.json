@@ -1,0 +1,24 @@
+{
+  "current_operator": "tdw_world_z_roll",
+  "current_operator_command": {
+    "reset_to_base_pose": true,
+    "rotate_object_by": {
+      "axis": "roll",
+      "is_world": true,
+      "use_centroid": true,
+      "angle": "theta_deg"
+    }
+  },
+  "future_supported_operators": {
+    "tdw_world_y_yaw_by_axis": {
+      "axis": "yaw",
+      "is_world": true,
+      "use_centroid": true
+    },
+    "tdw_world_x_pitch": {
+      "axis": "pitch",
+      "is_world": true,
+      "use_centroid": true
+    }
+  }
+}

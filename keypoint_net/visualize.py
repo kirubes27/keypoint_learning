@@ -249,9 +249,15 @@ def visualize_prediction(
     plot_keypoints_on_image(axes[1], img_t1, kp_t1_pixels, title=f"p_{{t+d}} actual (frame {t1_idx}, {step_label})")
     plot_keypoints_on_image(axes[2], img_t1, kp_hat_t1_pixels, title=f"p_hat predicted ({step_label})")
     
-    # Compute prediction error
-    error = torch.norm(p_t1 - p_hat_t1).item()
-    fig.suptitle(f"Prediction Error: {error:.4f}", fontsize=12)
+    # Report both units so this plot is comparable to JSON metrics.
+    # Training/eval use MSE; the L2 norm is useful visually but is much larger.
+    diff = p_t1 - p_hat_t1
+    pred_l2 = torch.norm(diff).item()
+    pred_mse = torch.mean(diff ** 2).item()
+    fig.suptitle(
+        f"Prediction Error: MSE={pred_mse:.6f} | L2={pred_l2:.4f}",
+        fontsize=12,
+    )
     
     plt.tight_layout()
     
@@ -352,15 +358,26 @@ def visualize_heatmaps(
     output_path: Optional[str] = None,
     device: str = "cpu",
 ):
-    """Visualize the N keypoint heatmaps."""
+    """Visualize softmax probability maps for the N keypoints.
+
+    The extractor emits raw logits, but soft-argmax operates on the spatial
+    softmax. Plotting probabilities avoids raw-logit color scale artifacts that
+    can make flat/dead heatmaps look deceptively bright.
+    """
     sample = dataset[frame_idx]
     x_t = sample['x_t'].unsqueeze(0).to(device)
     
     with torch.no_grad():
         keypoints, heatmaps = model.extractor(x_t)
     
-    heatmaps = heatmaps[0].cpu().numpy()  # (N, H', W')
-    N = heatmaps.shape[0]
+    heatmap_logits = heatmaps[0].cpu()  # (N, H', W')
+    N, H, W = heatmap_logits.shape
+    heatmap_probs = torch.softmax(heatmap_logits.view(N, -1), dim=1).view(N, H, W)
+    probs_np = heatmap_probs.numpy()
+    flat_probs = heatmap_probs.view(N, -1)
+    max_probs = flat_probs.max(dim=1).values.numpy()
+    entropies = (-(flat_probs * (flat_probs + 1e-12).log()).sum(dim=1)).numpy()
+    norm_entropies = entropies / np.log(H * W)
     
     # Determine grid size
     cols = min(5, N)
@@ -371,8 +388,11 @@ def visualize_heatmaps(
     
     for i in range(N):
         ax = axes[i]
-        im = ax.imshow(heatmaps[i], cmap='hot')
-        ax.set_title(f'Keypoint {i}')
+        im = ax.imshow(probs_np[i], cmap='hot', vmin=0.0, vmax=float(probs_np.max()))
+        ax.set_title(
+            f'Keypoint {i}\nmaxP={max_probs[i]:.4f}, Hnorm={norm_entropies[i]:.2f}',
+            fontsize=9,
+        )
         ax.axis('off')
         plt.colorbar(im, ax=ax, fraction=0.046)
     
@@ -380,7 +400,7 @@ def visualize_heatmaps(
     for i in range(N, len(axes)):
         axes[i].axis('off')
     
-    plt.suptitle(f'Keypoint Heatmaps (Frame {frame_idx})')
+    plt.suptitle(f'Keypoint Softmax Probability Maps (Frame {frame_idx})')
     plt.tight_layout()
     
     if output_path:

@@ -41,9 +41,7 @@ import numpy as np
 # Sweep grid
 # ─────────────────────────────────────────────────────────────────────────────
 
-SWEEP_GRID = {
-    # Main loss L_pred is always present. Every auxiliary loss gets an explicit
-    # zero-weight control plus at least one active setting.
+LEGACY_SWEEP_GRID = {
     "lambda_act":    [0.0, 0.5, 1.0],
     "lambda_cycle":  [0.0, 0.1],
     "lambda_disp":   [0.0, 0.1],
@@ -52,6 +50,98 @@ SWEEP_GRID = {
     "lambda_loc":    [0.0, 0.01],
     "lambda_smooth": [0.0, 0.001, 0.01],
 }
+
+FULL360_MAIN_GRID = {
+    # Main full-orbit compositionality protocol:
+    # - no action direction supervision on a closed 360 deg orbit;
+    # - no localization loss in the headline grid;
+    # - inv/cycle are explicit operator ablations.
+    "lambda_act":    [0.0],
+    "lambda_cycle":  [0.0, 0.1, 0.5],
+    "lambda_disp":   [0.0, 0.05, 0.1],
+    "lambda_ent":    [0.01, 0.05, 0.1, 0.5],
+    "lambda_inv":    [0.0, 0.1, 0.5],
+    "lambda_loc":    [0.0],
+    "lambda_smooth": [0.0, 0.001, 0.01],
+}
+
+LOCAL_ARC_ACTION_GRID = {
+    # Future -60..60 style action-decodability control:
+    # action supervision is meaningful here because the arc is not a closed
+    # orbit with globally repeating local displacements.
+    "lambda_act":    [0.0, 0.5, 1.0],
+    "lambda_cycle":  [0.0],
+    "lambda_disp":   [0.0, 0.05, 0.1],
+    "lambda_ent":    [0.01, 0.05, 0.1, 0.5],
+    "lambda_inv":    [0.0],
+    "lambda_loc":    [0.0],
+    "lambda_smooth": [0.0, 0.001, 0.01],
+}
+
+SWEEP_PROTOCOLS = {
+    "full360_main": {
+        "description": (
+            "Full 360 deg roll compositionality sweep; action accuracy is reported only. "
+            "Run once with shared_affine and once with dense for the 648-run operator comparison."
+        ),
+        "grid": FULL360_MAIN_GRID,
+        "mandatory_gates": {
+            "on_object_pct":          (">", 0.5),
+            "active_kp_frac":         (">", 0.3),
+            "active_on_object_frac":  (">", 0.5),
+        },
+        "soft_gates": {
+            "k10_k1_ratio":      ("<", 5.0),
+            "identity_ratio":    (">", 1.0),
+            "closed_orbit_mse":  ("<", 0.05),
+        },
+        "reported_not_gated": {
+            "val_act_acc": (
+                "reported only; use local_arc_action for action decodability claims"
+            ),
+            "clean_kp_frac": "reported as drift quality; not a mandatory first-pass gate",
+        },
+    },
+    "local_arc_action": {
+        "description": "Restricted-arc action-decodability sweep; no closed-orbit promotion gate.",
+        "grid": LOCAL_ARC_ACTION_GRID,
+        "mandatory_gates": {
+            "on_object_pct":          (">", 0.5),
+            "active_kp_frac":         (">", 0.3),
+            "active_on_object_frac":  (">", 0.5),
+            "val_act_acc":            (">", 0.7),
+        },
+        "soft_gates": {
+            "k10_k1_ratio":   ("<", 5.0),
+            "identity_ratio": (">", 1.0),
+        },
+        "reported_not_gated": {
+            "closed_orbit_mse": (
+                "not a local-arc gate; W^60≈I is only meaningful for full 360 deg cyclic runs"
+            ),
+            "clean_kp_frac": "reported as drift quality; not a mandatory first-pass gate",
+        },
+    },
+    "legacy": {
+        "description": "Previous broad cartesian grid retained for reproducibility.",
+        "grid": LEGACY_SWEEP_GRID,
+        "mandatory_gates": {
+            "on_object_pct":          (">", 0.5),
+            "active_kp_frac":         (">", 0.3),
+            "active_on_object_frac":  (">", 0.5),
+        },
+        "soft_gates": {
+            "k10_k1_ratio":      ("<", 5.0),
+            "identity_ratio":    (">", 1.0),
+            "closed_orbit_mse":  ("<", 0.05),
+        },
+        "reported_not_gated": {
+            "val_act_acc": "reported only unless using local_arc_action",
+        },
+    },
+}
+
+SWEEP_GRID = FULL360_MAIN_GRID
 
 # Fixed across all configs
 FIXED_PARAMS = {
@@ -72,15 +162,41 @@ FIXED_PARAMS = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 MANDATORY_GATES = {
-    "identity_ratio": (">", 2.0),
-    "on_object_pct":  (">", 0.5),
-    "active_kp_frac": (">", 0.3),
-    "val_act_acc":    (">", 0.7),
+    # Full-360 roll runs should not be promoted by action accuracy: the action
+    # head is expected to be uninformative on a closed orbit. Identity ratio is
+    # reported but no longer a hard gate because 6 deg identity is a strong
+    # small-step baseline.
+    "on_object_pct":          (">", 0.5),
+    "active_kp_frac":         (">", 0.3),
+    "active_on_object_frac":  (">", 0.5),
 }
 
 SOFT_GATES = {
-    "k10_k1_ratio":   ("<", 5.0),
+    "k10_k1_ratio":      ("<", 5.0),
+    "identity_ratio":    (">", 1.0),
+    "closed_orbit_mse":  ("<", 0.05),
 }
+
+REPORTED_NOT_GATED = {
+    "val_act_acc": (
+        "reported only for full360 sweeps; use local-arc protocol for action "
+        "decodability claims"
+    ),
+}
+
+
+def set_sweep_protocol(protocol_name: str) -> dict:
+    """Select sweep grid and gates for a named experimental protocol."""
+    if protocol_name not in SWEEP_PROTOCOLS:
+        valid = ", ".join(sorted(SWEEP_PROTOCOLS))
+        raise ValueError(f"Unknown sweep protocol {protocol_name!r}. Valid: {valid}")
+    settings = SWEEP_PROTOCOLS[protocol_name]
+    global SWEEP_GRID, MANDATORY_GATES, SOFT_GATES, REPORTED_NOT_GATED
+    SWEEP_GRID = settings["grid"]
+    MANDATORY_GATES = settings["mandatory_gates"]
+    SOFT_GATES = settings["soft_gates"]
+    REPORTED_NOT_GATED = settings["reported_not_gated"]
+    return settings
 
 
 def _passes_gate(value, op, threshold) -> bool:
@@ -339,7 +455,18 @@ def collect_metrics(run_dir: Path) -> dict:
         # Participation
         part = rm.get("participation", {})
         metrics["active_kp_frac"] = part.get("active_kp_frac")
+        metrics["active_count"] = part.get("active_count")
         metrics["top1_energy_frac"] = part.get("top1_energy_frac")
+
+        # Per-keypoint quality
+        quality = rm.get("keypoint_quality", {})
+        metrics["active_on_object_frac"] = quality.get("active_on_object_frac")
+        metrics["active_off_object_frac"] = quality.get("active_off_object_frac")
+        metrics["static_on_object_frac"] = quality.get("static_on_object_frac")
+        metrics["clean_kp_frac"] = quality.get("clean_kp_frac")
+        metrics["dead_off_object_frac"] = quality.get("dead_off_object_frac")
+        metrics["sliding_on_object_frac"] = quality.get("sliding_on_object_frac")
+        metrics["motion_object_partition_sum"] = quality.get("motion_object_partition_sum")
 
         # Stability
         stab = rm.get("stability", {})
@@ -356,6 +483,12 @@ def collect_metrics(run_dir: Path) -> dict:
         metrics["sv_max"] = spec.get("sv_max")
         metrics["spectral_radius"] = spec.get("spectral_radius")
         metrics["orth_err"] = spec.get("orth_err")
+        shared = spec.get("shared_affine", {})
+        metrics["shared_angle_deg"] = shared.get("closest_rotation_angle_deg")
+        metrics["shared_target_error"] = shared.get("best_fro_error_to_target_rotation")
+        metrics["shared_target_sign"] = shared.get("best_signed_target")
+        metrics["shared_det"] = shared.get("det")
+        metrics["shared_spectral_radius"] = shared.get("eig_abs_mean")
 
         # Inverse
         metrics["inverse_k1_MSE"] = rm.get("inverse", {}).get("k1_mse")
@@ -531,14 +664,19 @@ SCORECARD_COLUMNS = [
     "tag", "operator_type", "pairs_index",
     "lambda_act", "lambda_cycle", "lambda_disp", "lambda_ent", "lambda_inv",
     "lambda_loc", "lambda_smooth",
-    # mandatory gates
-    "identity_ratio", "on_object_pct", "active_kp_frac", "val_act_acc",
+    # gates and reported diagnostics
+    "identity_ratio", "on_object_pct", "active_kp_frac", "active_on_object_frac",
+    "active_off_object_frac", "static_on_object_frac", "dead_off_object_frac",
+    "motion_object_partition_sum", "clean_kp_frac", "sliding_on_object_frac",
+    "val_act_acc",
     # soft gates
     "k10_k1_ratio",
     # reported
     "baseline_MSE", "top1_energy_frac", "mean_speed", "mean_accel",
     "mean_dist_to_object_px", "border_occupancy_pct",
     "closed_orbit_k", "closed_orbit_mse", "canonical_mean_rms",
+    "shared_angle_deg", "shared_target_error", "shared_target_sign",
+    "shared_det", "shared_spectral_radius",
     # diagnostics
     "dim2_frac", "sv_min", "sv_max", "spectral_radius", "orth_err",
     "W_minus_I_fro", "inverse_k1_MSE",
@@ -558,18 +696,22 @@ def write_summary_csv(results: list[dict], output_path: Path):
 
 
 def write_summary_json(results: list[dict], output_path: Path,
-                       object_name: str = None, data_root: str = None):
+                       object_name: str = None, data_root: str = None,
+                       sweep_protocol: str = None, protocol_description: str = None):
     """Write full sweep results as JSON."""
     # Add metadata
     output = {
         "timestamp": datetime.now().isoformat(),
         "object": object_name,
         "data_root": data_root,
+        "sweep_protocol": sweep_protocol,
+        "protocol_description": protocol_description,
         "n_configs": len(results),
         "grid": SWEEP_GRID,
         "fixed_params": FIXED_PARAMS,
         "mandatory_gates": {k: list(v) for k, v in MANDATORY_GATES.items()},
         "soft_gates": {k: list(v) for k, v in SOFT_GATES.items()},
+        "reported_not_gated": REPORTED_NOT_GATED,
         "single_seed_caveat": (
             "This sweep uses seed=42 for screening. Top configs must be "
             "re-run with 2-3 seeds before making claims."
@@ -619,9 +761,9 @@ def plot_summary(results: list[dict], output_path: Path):
                        label=threshold_label or f"threshold={threshold}")
             ax.legend(fontsize=8)
 
-    _bar(axes[0, 0], "identity_ratio", "Identity Ratio (>2.0 = mandatory gate)", 2.0)
+    _bar(axes[0, 0], "identity_ratio", "Identity Ratio (reported; soft >1.0)", 1.0)
     _bar(axes[0, 1], "on_object_pct", "On-Object % (>0.5 = mandatory veto)", 0.5)
-    _bar(axes[0, 2], "val_act_acc", "Action Accuracy (>0.7 = mandatory gate)", 0.7)
+    _bar(axes[0, 2], "active_on_object_frac", "Active+On-Object KP Fraction (>0.5)", 0.5)
     _bar(axes[1, 0], "active_kp_frac", "Active KP Fraction (>0.3 = mandatory gate)", 0.3)
     _bar(axes[1, 1], "k10_k1_ratio", "k10/k1 Ratio (<5.0 = soft gate)", 5.0)
 
@@ -666,6 +808,14 @@ def main():
     parser.add_argument("--operator_type", type=str, default="shared_affine",
                         choices=["dense", "shared_affine"],
                         help="Operator family to use for all sweep configs.")
+    parser.add_argument("--sweep_protocol", type=str, default="full360_main",
+                        choices=sorted(SWEEP_PROTOCOLS),
+                        help=(
+                            "Experimental protocol controlling grid and gates. "
+                            "Use full360_main for closed-orbit compositionality, "
+                            "local_arc_action for restricted-arc action decodability, "
+                            "or legacy for the previous broad grid."
+                        ))
     parser.add_argument("--pairs_index", type=str, default=None,
                         help=(
                             "Pair-index JSON for cyclic training. If omitted and "
@@ -679,9 +829,25 @@ def main():
                         help="Print configs without running anything.")
     args = parser.parse_args()
 
-    # ── Resolve cyclic pair index if available ──
+    protocol_settings = set_sweep_protocol(args.sweep_protocol)
+    print(f"Sweep protocol: {args.sweep_protocol}")
+    print(f"  {protocol_settings['description']}")
+
+    # ── Resolve pair index according to protocol semantics ──
     pairs_index = args.pairs_index
-    if pairs_index is None and args.data_root:
+    if args.sweep_protocol == "local_arc_action":
+        if pairs_index is None and args.data_root:
+            candidate = Path(args.data_root) / "indices" / f"pairs_skip{FIXED_PARAMS['frame_skip']}_arc_pm60.json"
+            if candidate.exists():
+                pairs_index = str(candidate)
+                print(f"Using local-arc pair index: {pairs_index}")
+        if pairs_index is None and not args.dry_run and not args.collect_only:
+            raise SystemExit(
+                "local_arc_action requires an arc pair index. Pass --pairs_index "
+                "or create indices/pairs_skip3_arc_pm60.json. This prevents "
+                "accidentally running action supervision on the full cyclic orbit."
+            )
+    elif pairs_index is None and args.data_root:
         candidate = Path(args.data_root) / "indices" / f"pairs_skip{FIXED_PARAMS['frame_skip']}_cyclic.json"
         if candidate.exists():
             pairs_index = str(candidate)
@@ -844,7 +1010,9 @@ def main():
     print(f"{'='*60}")
 
     write_summary_json(all_results, sweep_out / "sweep_results.json",
-                       object_name=args.object, data_root=args.data_root)
+                       object_name=args.object, data_root=args.data_root,
+                       sweep_protocol=args.sweep_protocol,
+                       protocol_description=protocol_settings["description"])
     write_summary_csv(all_results, sweep_out / "sweep_summary.csv")
     plot_summary(all_results, sweep_out / "sweep_summary.png")
 

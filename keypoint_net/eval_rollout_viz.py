@@ -639,6 +639,10 @@ def compute_participation(
     - per_kp_energy: E_i = mean_t(||delta_p_i(t)||^2) for each keypoint
     - active_kp_frac: fraction with energy > 10% of max energy
     - top1_energy_frac: max single-keypoint energy / total energy
+
+    Note: active_kp_frac is a coarse participation metric, not a semantic
+    quality metric. A jittering keypoint can be active but still slide across
+    object parts. Combine it with mask localization and canonical RMS.
     """
     T = all_keypoints.shape[0]
     kp = all_keypoints.view(T, n_kp, 2).numpy()  # (T, N, 2)
@@ -655,7 +659,8 @@ def compute_participation(
 
     # Active: energy > 10% of max
     threshold = 0.1 * max_energy if max_energy > 0 else 0.0
-    active = sum(1 for e in per_kp_energy if e > threshold)
+    per_kp_active = [bool(e > threshold) for e in per_kp_energy]
+    active = sum(per_kp_active)
     active_frac = active / n_kp if n_kp > 0 else 0.0
 
     # Top-1 fraction
@@ -663,8 +668,136 @@ def compute_participation(
 
     return {
         "active_kp_frac": float(active_frac),
+        "active_count": int(active),
+        "active_energy_threshold": float(threshold),
+        "active_energy_rule": "per_kp_energy > 0.1 * max(per_kp_energy)",
+        "per_kp_active": per_kp_active,
         "top1_energy_frac": float(top1_frac),
         "per_kp_energy": per_kp_energy,
+    }
+
+
+def compute_keypoint_quality(
+    participation: dict,
+    localization: dict,
+    canonical: Optional[dict],
+    n_kp: int,
+    on_object_threshold: float = 0.5,
+    canonical_rms_threshold: float = 0.20,
+) -> dict:
+    """
+    Combine per-keypoint diagnostics into stricter quality summaries.
+
+    This first partitions keypoints by motion and object-mask status:
+    - active_on_object: moving and inside the TDW mask;
+    - active_off_object: moving in the background;
+    - static_on_object: not moving much but inside the TDW mask;
+    - dead_off_object: not moving much and outside the TDW mask.
+
+    If canonical roll metadata is available, active_on_object keypoints are
+    further split into clean vs sliding by canonical RMS.
+    """
+    energies = participation.get("per_kp_energy") or [None] * n_kp
+    active_flags = participation.get("per_kp_active")
+    if active_flags is None:
+        threshold = participation.get("active_energy_threshold", 0.0)
+        active_flags = [
+            bool(e is not None and e > threshold)
+            for e in energies
+        ]
+
+    per_kp_on_object = (
+        localization.get("per_kp_on_object_pct")
+        or localization.get("per_kp_on_foreground_pct")
+        or [None] * n_kp
+    )
+    if len(per_kp_on_object) < n_kp:
+        per_kp_on_object = list(per_kp_on_object) + [None] * (n_kp - len(per_kp_on_object))
+    on_object_flags = [
+        bool(v is not None and v >= on_object_threshold)
+        for v in per_kp_on_object[:n_kp]
+    ]
+
+    canonical_available = bool(canonical and canonical.get("available", False))
+    canonical_rms = [None] * n_kp
+    canonical_flags = [None] * n_kp
+    if canonical_available:
+        locked = canonical.get("locked_minus", {})
+        canonical_rms = locked.get("per_kp_canonical_rms") or canonical_rms
+        canonical_flags = [
+            bool(v is not None and v <= canonical_rms_threshold)
+            for v in canonical_rms[:n_kp]
+        ]
+
+    rows = []
+    active_on_object = 0
+    clean = 0
+    dead_off_object = 0
+    active_off_object = 0
+    static_on_object = 0
+    sliding_on_object = 0
+
+    for i in range(n_kp):
+        active = bool(active_flags[i]) if i < len(active_flags) else False
+        on_object = bool(on_object_flags[i]) if i < len(on_object_flags) else False
+        rms = canonical_rms[i] if i < len(canonical_rms) else None
+        canon_ok = canonical_flags[i] if i < len(canonical_flags) else None
+
+        if active and on_object:
+            active_on_object += 1
+        if active and (not on_object):
+            active_off_object += 1
+        if (not active) and on_object:
+            static_on_object += 1
+        if (not active) and (not on_object):
+            dead_off_object += 1
+        if canonical_available:
+            if active and on_object and (canon_ok is True):
+                clean += 1
+            if active and on_object and canon_ok is False:
+                sliding_on_object += 1
+
+        if active and on_object:
+            motion_object_bucket = "active_on_object"
+        elif active and not on_object:
+            motion_object_bucket = "active_off_object"
+        elif (not active) and on_object:
+            motion_object_bucket = "static_on_object"
+        else:
+            motion_object_bucket = "dead_off_object"
+
+        rows.append({
+            "kp": int(i),
+            "on_object_pct": per_kp_on_object[i] if i < len(per_kp_on_object) else None,
+            "energy": energies[i] if i < len(energies) else None,
+            "active": active,
+            "on_object": on_object,
+            "canonical_rms": rms,
+            "canonical_ok": canon_ok,
+            "motion_object_bucket": motion_object_bucket,
+            "active_on_object": bool(active and on_object),
+            "active_off_object": bool(active and (not on_object)),
+            "static_on_object": bool((not active) and on_object),
+            "dead_off_object": bool((not active) and (not on_object)),
+            "clean": bool(active and on_object and (canon_ok is True)),
+        })
+
+    return {
+        "on_object_threshold": float(on_object_threshold),
+        "canonical_rms_threshold": float(canonical_rms_threshold),
+        "canonical_available": bool(canonical_available),
+        "active_on_object_frac": float(active_on_object / n_kp) if n_kp else 0.0,
+        "active_off_object_frac": float(active_off_object / n_kp) if n_kp else 0.0,
+        "static_on_object_frac": float(static_on_object / n_kp) if n_kp else 0.0,
+        "dead_off_object_frac": float(dead_off_object / n_kp) if n_kp else 0.0,
+        "motion_object_partition_sum": float(
+            (active_on_object + active_off_object + static_on_object + dead_off_object) / n_kp
+        ) if n_kp else 0.0,
+        "clean_kp_frac": float(clean / n_kp) if (n_kp and canonical_available) else None,
+        "sliding_on_object_frac": (
+            float(sliding_on_object / n_kp) if (n_kp and canonical_available) else None
+        ),
+        "per_kp": rows,
     }
 
 
@@ -1135,6 +1268,13 @@ def compute_known_success_gates(results: dict) -> dict:
             "threshold": 0.3,
         },
     }
+    quality = results.get("keypoint_quality", {})
+    if quality:
+        gates["active_on_object_frac"] = {
+            "value": quality.get("active_on_object_frac"),
+            "op": ">",
+            "threshold": 0.5,
+        }
     for gate in gates.values():
         value = gate["value"]
         if value is None:
@@ -1154,13 +1294,30 @@ def compute_known_success_gates(results: dict) -> dict:
         )
     if loc.get("border_occupancy_pct", 0.0) > 0.2:
         warnings_list.append("High border_occupancy_pct; inspect for border shortcut.")
+    if quality.get("dead_off_object_frac", 0.0) > 0.0:
+        warnings_list.append(
+            "Some keypoints are both inactive and off-object; inspect per-kp quality table."
+        )
+    if quality.get("active_off_object_frac", 0.0) > 0.0:
+        warnings_list.append(
+            "Some keypoints are active but off-object; inspect for moving background shortcuts."
+        )
+    if (quality.get("sliding_on_object_frac") or 0.0) > 0.0:
+        warnings_list.append(
+            "Some keypoints are active/on-object but have high canonical RMS; inspect for sliding."
+        )
     if results.get("canonical_stability", {}).get("warning_locked_sign_not_lower_variance"):
         warnings_list.append(
             "Canonical sign audit: locked -theta has higher variance than +theta; check sign/pivot/metadata handling."
         )
 
     return {
+        "partial_gates_pass": len(failed) == 0,
         "known_gates_pass": len(failed) == 0,
+        "gate_scope": (
+            "partial rollout-only gates; identity_ratio, val_act_acc, and sweep-level "
+            "promotion logic are not available inside this evaluator"
+        ),
         "and_gate_semantics": "all known gates must pass; any single failed gate blocks promotion",
         "gates": gates,
         "failed_gates": failed,
@@ -1354,12 +1511,12 @@ def main():
     # ── D) Participation ──
     print("\n--- Participation ---")
     participation = compute_participation(all_kp, n_kp)
-    results["participation"] = {
-        "active_kp_frac": participation["active_kp_frac"],
-        "top1_energy_frac": participation["top1_energy_frac"],
-        "per_kp_energy": participation["per_kp_energy"],
-    }
+    results["participation"] = participation
     print(f"  active_kp_frac = {participation['active_kp_frac']:.3f}")
+    print(
+        f"  active_count = {participation['active_count']}/{n_kp}  "
+        f"threshold={participation['active_energy_threshold']:.6f}"
+    )
     print(f"  top1_energy_frac = {participation['top1_energy_frac']:.3f}")
 
     # ── Stability ──
@@ -1428,6 +1585,41 @@ def main():
                 canonical, all_kp, frame_metadata, n_kp,
                 output_dir / "canonical_flatness_probe.png",
             )
+
+    # ── Per-keypoint quality table ──
+    print("\n--- Per-keypoint quality ---")
+    canonical_for_quality = results.get("canonical_stability", {})
+    quality = compute_keypoint_quality(
+        participation=participation,
+        localization=localization,
+        canonical=canonical_for_quality if canonical_for_quality.get("available", False) else None,
+        n_kp=n_kp,
+    )
+    results["keypoint_quality"] = quality
+    print(f"  active_on_object_frac = {quality['active_on_object_frac']:.3f}")
+    print(f"  active_off_object_frac = {quality['active_off_object_frac']:.3f}")
+    print(f"  static_on_object_frac = {quality['static_on_object_frac']:.3f}")
+    print(f"  dead_off_object_frac = {quality['dead_off_object_frac']:.3f}")
+    print(f"  motion_object_partition_sum = {quality['motion_object_partition_sum']:.3f}")
+    if quality["canonical_available"]:
+        print(f"  clean_kp_frac = {quality['clean_kp_frac']:.3f}")
+        print(f"  sliding_on_object_frac = {quality['sliding_on_object_frac']:.3f}")
+    else:
+        print("  clean_kp_frac = n/a (canonical metadata unavailable)")
+        print("  sliding_on_object_frac = n/a (canonical metadata unavailable)")
+    print("  kp  on_obj  energy      canon_rms  active  bucket              clean")
+    for row in quality["per_kp"]:
+        on_obj = row["on_object_pct"]
+        energy = row["energy"]
+        rms = row["canonical_rms"]
+        print(
+            f"  {row['kp']:2d}  "
+            f"{on_obj if on_obj is not None else float('nan'):6.3f}  "
+            f"{energy if energy is not None else float('nan'):10.6f}  "
+            f"{rms if rms is not None else float('nan'):9.6f}  "
+            f"{str(row['active']):>6}  "
+            f"{row['motion_object_bucket']:<18}  {str(row['clean']):>5}"
+        )
 
     # ── Operator spectrum ──
     print("\n--- Operator spectrum (diagnostic) ---")

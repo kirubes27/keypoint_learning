@@ -62,11 +62,13 @@ class KeypointExtractor(nn.Module):
         base_channels: int = 32,
         temperature: float = 1.0,
         padding_mode: str = "reflect",
+        heatmap_res: int = 64,
     ):
         super().__init__()
         self.num_keypoints = num_keypoints
         self.temperature = temperature
         self.padding_mode = padding_mode
+        self.heatmap_res = heatmap_res
         
         # 4-layer CNN encoder (using stride=2 for downsampling)
         self.encoder = nn.Sequential(
@@ -120,9 +122,30 @@ class KeypointExtractor(nn.Module):
             nn.ReLU(inplace=True),
         )
         
-        # Heatmap head: 1x1 conv to N channels
-        self.heatmap_head = nn.Conv2d(base_channels * 4, num_keypoints, kernel_size=1)
-    
+        # Heatmap head. heatmap_res=64 (legacy): 1x1 conv on the /8 feature
+        # map (64x64 at 512 input). heatmap_res=128: bilinear FEATURE
+        # upsample + 3x3 conv computing new features at /4 resolution before
+        # the 1x1 head — a real higher-resolution head, not a resized
+        # 64-res heatmap (soft-argmax cell size halves: 0.03125 -> 0.015625).
+        if heatmap_res == 128:
+            self.head_upsample = nn.Sequential(
+                nn.Upsample(scale_factor=2, mode="bilinear",
+                            align_corners=False),
+                nn.Conv2d(base_channels * 4, base_channels * 2,
+                          kernel_size=3, padding=1,
+                          padding_mode=padding_mode),
+                nn.BatchNorm2d(base_channels * 2),
+                nn.ReLU(inplace=True),
+            )
+            self.heatmap_head = nn.Conv2d(base_channels * 2, num_keypoints,
+                                          kernel_size=1)
+        elif heatmap_res == 64:
+            self.head_upsample = None
+            self.heatmap_head = nn.Conv2d(base_channels * 4, num_keypoints,
+                                          kernel_size=1)
+        else:
+            raise ValueError(f"heatmap_res must be 64 or 128, got {heatmap_res}")
+
     def forward(self, x: torch.Tensor) -> tuple:
         """
         Args:
@@ -133,7 +156,9 @@ class KeypointExtractor(nn.Module):
             heatmaps: (B, N, H', W') intermediate heatmaps (for visualization/entropy)
         """
         features = self.encoder(x)  # (B, 128, H/8, W/8)
-        heatmaps = self.heatmap_head(features)  # (B, N, H/8, W/8)
+        if self.head_upsample is not None:
+            features = self.head_upsample(features)  # (B, 64, H/4, W/4)
+        heatmaps = self.heatmap_head(features)  # (B, N, H/8 or H/4, ...)
         
         # Soft-argmax to get coordinates
         coords = spatial_softmax(heatmaps, self.temperature)  # (B, N, 2)
@@ -276,6 +301,7 @@ class PhaseAModel(nn.Module):
         padding_mode: str = "reflect",
         operator_type: str = "dense",
         learn_inverse_operator: bool = False,
+        heatmap_res: int = 64,
     ):
         super().__init__()
         self.num_keypoints = num_keypoints
@@ -290,6 +316,7 @@ class PhaseAModel(nn.Module):
             base_channels=base_channels,
             temperature=temperature,
             padding_mode=padding_mode,
+            heatmap_res=heatmap_res,
         )
 
         self.operator = make_operator(operator_type, self.keypoint_dim, num_keypoints)

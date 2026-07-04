@@ -5,6 +5,11 @@ __pycache__/
 # Generated datasets / outputs
 _smoke*/
 phase_a_*/
+keypoint_net/runs*/
+keypoint_net/**/__pycache__/
+keypoint_net/diagnostics/outputs/
+keypoint_net/block0/outputs/
+cluster/__pycache__/
 
 # Local notes / docs: do not stage Markdown unless force-added intentionally
 *.md

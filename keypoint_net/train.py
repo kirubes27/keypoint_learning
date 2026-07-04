@@ -323,6 +323,10 @@ def main():
     # Model
     parser.add_argument("--num_keypoints", type=int, default=10, help="N keypoints")
     parser.add_argument("--base_channels", type=int, default=32)
+    parser.add_argument("--heatmap_res", type=int, default=64, choices=[64, 128],
+                        help="Heatmap resolution at 512 input: 64 = legacy /8 head; "
+                             "128 = feature-upsample + 3x3 conv head at /4 "
+                             "(halves the soft-argmax cell size)")
     parser.add_argument("--temperature", type=float, default=1.0, help="Soft-argmax temperature")
     parser.add_argument(
         "--padding_mode",
@@ -527,6 +531,7 @@ def main():
         padding_mode=args.padding_mode,
         operator_type=args.operator_type,
         learn_inverse_operator=learn_inverse_operator,
+        heatmap_res=args.heatmap_res,
     ).to(device)
     
     n_params = sum(p.numel() for p in model.parameters())

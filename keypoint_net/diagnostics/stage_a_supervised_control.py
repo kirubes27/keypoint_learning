@@ -54,7 +54,6 @@ from diagnostics.day45_supervised_control import (  # noqa: E402
 )
 
 
-NUM_KEYPOINTS = 10
 DEFAULT_VALIDATION_AUGMENT_SEED = 2026070401
 DEFAULT_TEST_AUGMENT_SEED = 2026070402
 EXPECTED_RESIDUES = {
@@ -161,7 +160,7 @@ def seed_everything(seed: int) -> None:
 
 def build_extractor(args: argparse.Namespace, device: torch.device) -> KeypointExtractor:
     return KeypointExtractor(
-        num_keypoints=NUM_KEYPOINTS,
+        num_keypoints=args.num_keypoints,
         base_channels=args.base_channels,
         temperature=1.0,
         padding_mode="reflect",
@@ -175,7 +174,11 @@ def load_problem(args: argparse.Namespace) -> dict[str, Any]:
     split = load_phase_split(split_path, args.object)
     images, masks, frame_paths = load_arrays(args.data_root, args.object)
     center = (args.center_x, args.center_y)
-    frame0_points = farthest_interior_points(masks[0])
+    frame0_points = farthest_interior_points(masks[0], count=args.num_keypoints)
+    if len(frame0_points) != args.num_keypoints:
+        raise RuntimeError(
+            f"requested {args.num_keypoints} targets, constructed {len(frame0_points)}"
+        )
     targets = transported_targets(
         frame0_points,
         len(images),
@@ -263,7 +266,7 @@ def evaluate_pair(
 
 def run_name(args: argparse.Namespace) -> str:
     architecture = "native_quarter" if args.native_quarter else "standard64"
-    return f"coordinate_{architecture}_seed{args.seed}"
+    return f"coordinate_{architecture}_k{args.num_keypoints}_seed{args.seed}"
 
 
 def base_config(args: argparse.Namespace, problem: dict[str, Any], device: torch.device) -> dict:
@@ -279,6 +282,7 @@ def base_config(args: argparse.Namespace, problem: dict[str, Any], device: torch
         "validation_frames": list(split.validation),
         "test_frames_committed_not_evaluated": list(split.test),
         "seed": args.seed,
+        "num_keypoints": args.num_keypoints,
         "device": str(device),
         "base_channels": args.base_channels,
         "architecture": "native_quarter" if args.native_quarter else "standard64",
@@ -402,7 +406,7 @@ def train_control(args: argparse.Namespace) -> Path:
     else:
         existing = json.loads(config_path.read_text())
         immutable = (
-            "split_sha256", "seed", "base_channels", "architecture", "learning_rate",
+            "split_sha256", "seed", "num_keypoints", "base_channels", "architecture", "learning_rate",
             "weight_decay", "batch_size", "min_epochs", "max_epochs", "eval_every",
             "plateau_patience_epochs", "relative_improvement",
         )
@@ -462,7 +466,7 @@ def train_control(args: argparse.Namespace) -> Path:
             image = batch["image"].to(device)
             target = batch["target"].to(device)
             flat, heatmaps = extractor(image)
-            coordinates = flat.view(-1, NUM_KEYPOINTS, 2)
+            coordinates = flat.view(-1, args.num_keypoints, 2)
             loss = supervised_loss("coordinate", coordinates, heatmaps, target)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -584,7 +588,7 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
     for step in range(1, args.tiny_max_steps + 1):
         extractor.train()
         flat, heatmaps = extractor(image)
-        coordinates = flat.view(-1, NUM_KEYPOINTS, 2)
+        coordinates = flat.view(-1, args.num_keypoints, 2)
         loss = supervised_loss("coordinate", coordinates, heatmaps, target)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -593,11 +597,16 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
         if step == 1 or step % args.tiny_eval_every == 0:
             eval_metrics, _, _, _ = evaluate(extractor, loader, device)
             channel = np.asarray(eval_metrics["channel_median_error_cells64"])
+            channel_errors = channel.tolist()
             metrics = {
                 "step": step,
                 "loss": float(loss.detach().cpu()),
                 "median_error_cells64": float(np.median(channel)),
                 "max_channel_median_error_cells64": float(np.max(channel)),
+                "channel_median_error_cells64": channel_errors,
+                "failed_channel_indices": [
+                    int(index) for index, value in enumerate(channel_errors) if value > 0.20
+                ],
             }
             print(json.dumps(metrics), flush=True)
             passed = (
@@ -615,6 +624,7 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
             "max_channel_median_error_cells64_max": 0.20,
         },
         "tiny_frames": indices,
+        "num_keypoints": args.num_keypoints,
         "completed_steps": completed_steps,
         "metrics": metrics,
         "device": str(device),
@@ -631,7 +641,7 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
         run_dir / "model.pt",
     )
     print(json.dumps(result, indent=2), flush=True)
-    if not passed:
+    if not passed and not args.allow_gate_failure:
         raise RuntimeError("A0 tiny-subset gate failed")
     return run_dir
 
@@ -644,6 +654,7 @@ def args_from_run_config(config: dict[str, Any], template: argparse.Namespace) -
             "split_json": Path(config["split_json"]),
             "object": config["object"],
             "seed": int(config["seed"]),
+            "num_keypoints": int(config["num_keypoints"]),
             "base_channels": int(config["base_channels"]),
             "native_quarter": bool(config["true_quarter_res"]),
             "batch_size": int(config["batch_size"]),
@@ -692,7 +703,7 @@ def finalize_three_runs(args: argparse.Namespace) -> Path:
     if len(seeds) != 3:
         raise ValueError(f"expected three distinct seeds, got {sorted(seeds)}")
     comparable = (
-        "split_sha256", "architecture", "base_channels", "learning_rate",
+        "split_sha256", "architecture", "num_keypoints", "base_channels", "learning_rate",
         "weight_decay", "batch_size", "min_epochs", "max_epochs", "eval_every",
         "plateau_patience_epochs", "relative_improvement",
     )
@@ -769,7 +780,9 @@ def finalize_three_runs(args: argparse.Namespace) -> Path:
         ),
     }
 
-    output = args.output_root / f"instrument_gate_{reference['architecture']}.json"
+    output = args.output_root / (
+        f"instrument_gate_{reference['architecture']}_k{reference['num_keypoints']}.json"
+    )
     if output.exists():
         raise FileExistsError(f"aggregate test output already exists: {output}")
     # Stage all evaluations in memory; write only after every run evaluated successfully.
@@ -802,6 +815,7 @@ def write_prelaunch_lock(args: argparse.Namespace) -> Path:
         "split_json": str(problem["split_path"].resolve()),
         "split_sha256": problem["split"].sha256,
         "semantic_gate": {
+            "num_keypoints": args.num_keypoints,
             "tiny_median_cells64_max": 0.10,
             "tiny_max_channel_median_cells64_max": 0.20,
             "instrument_pass_seeds": 2,
@@ -848,6 +862,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=HERE / "outputs" / "stage_a")
     parser.add_argument("--run-dirs", nargs="*", default=[])
     parser.add_argument("--native-quarter", action="store_true")
+    parser.add_argument("--num-keypoints", type=int, default=10)
     parser.add_argument("--base-channels", type=int, default=32)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -863,6 +878,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tiny-frames", type=int, default=4)
     parser.add_argument("--tiny-max-steps", type=int, default=5000)
     parser.add_argument("--tiny-eval-every", type=int, default=100)
+    parser.add_argument("--allow-gate-failure", action="store_true")
     parser.add_argument("--center-x", type=float, default=255.49998435893767)
     parser.add_argument("--center-y", type=float, default=255.50001568508694)
     parser.add_argument("--roll-sign", type=int, choices=(-1, 1), default=1)
@@ -875,6 +891,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("plateau patience must be a positive multiple of eval-every")
     if args.min_epochs > args.max_epochs:
         parser.error("min-epochs cannot exceed max-epochs")
+    if args.num_keypoints < 2:
+        parser.error("num-keypoints must be at least 2")
     return args
 
 

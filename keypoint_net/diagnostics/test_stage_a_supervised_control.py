@@ -1,5 +1,6 @@
 import json
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -11,8 +12,10 @@ sys.path.insert(0, str(KEYPOINT_ROOT))
 
 from model import KeypointExtractor  # noqa: E402
 from diagnostics.stage_a_supervised_control import (  # noqa: E402
+    build_extractor,
     instrument_gate,
     load_phase_split,
+    run_name,
 )
 
 
@@ -97,3 +100,20 @@ def test_native_quarter_is_encoder_resolution_not_upsampling() -> None:
 def test_true_quarter_requires_128_heatmaps() -> None:
     with pytest.raises(ValueError):
         KeypointExtractor(heatmap_res=64, true_quarter_res=True)
+
+
+@pytest.mark.parametrize("k", [5, 10, 15, 20])
+def test_stage_a_extractor_and_run_name_follow_k(k: int) -> None:
+    args = Namespace(
+        num_keypoints=k,
+        base_channels=4,
+        native_quarter=False,
+        seed=43,
+    )
+    extractor = build_extractor(args, torch.device("cpu"))
+    image = torch.randn(1, 3, 64, 64)
+    with torch.no_grad():
+        coords, heatmaps = extractor(image)
+    assert coords.shape == (1, 2 * k)
+    assert heatmaps.shape[1] == k
+    assert run_name(args) == f"coordinate_standard64_k{k}_seed43"

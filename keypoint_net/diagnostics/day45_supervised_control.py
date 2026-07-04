@@ -362,7 +362,7 @@ def save_overlay(
     image = Image.open(image_path).convert("RGB")
     draw = ImageDraw.Draw(image)
     for index, (pred_px, target_px) in enumerate(zip(to_px(prediction), to_px(target))):
-        color = COLORS[index]
+        color = COLORS[index % len(COLORS)]
         px, py = map(float, pred_px)
         tx, ty = map(float, target_px)
         draw.ellipse((px - 5, py - 5, px + 5, py + 5), outline=color, width=3)

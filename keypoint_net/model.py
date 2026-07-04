@@ -63,12 +63,16 @@ class KeypointExtractor(nn.Module):
         temperature: float = 1.0,
         padding_mode: str = "reflect",
         heatmap_res: int = 64,
+        true_quarter_res: bool = False,
     ):
         super().__init__()
         self.num_keypoints = num_keypoints
         self.temperature = temperature
         self.padding_mode = padding_mode
         self.heatmap_res = heatmap_res
+        self.true_quarter_res = bool(true_quarter_res)
+        if self.true_quarter_res and heatmap_res != 128:
+            raise ValueError("true_quarter_res requires heatmap_res=128")
         
         # 4-layer CNN encoder (using stride=2 for downsampling)
         self.encoder = nn.Sequential(
@@ -102,7 +106,7 @@ class KeypointExtractor(nn.Module):
                 base_channels * 2,
                 base_channels * 4,
                 kernel_size=3,
-                stride=2,
+                stride=1 if self.true_quarter_res else 2,
                 padding=1,
                 padding_mode=padding_mode,
             ),
@@ -127,7 +131,7 @@ class KeypointExtractor(nn.Module):
         # upsample + 3x3 conv computing new features at /4 resolution before
         # the 1x1 head — a real higher-resolution head, not a resized
         # 64-res heatmap (soft-argmax cell size halves: 0.03125 -> 0.015625).
-        if heatmap_res == 128:
+        if heatmap_res == 128 and not self.true_quarter_res:
             self.head_upsample = nn.Sequential(
                 nn.Upsample(scale_factor=2, mode="bilinear",
                             align_corners=False),
@@ -139,7 +143,7 @@ class KeypointExtractor(nn.Module):
             )
             self.heatmap_head = nn.Conv2d(base_channels * 2, num_keypoints,
                                           kernel_size=1)
-        elif heatmap_res == 64:
+        elif heatmap_res == 64 or self.true_quarter_res:
             self.head_upsample = None
             self.heatmap_head = nn.Conv2d(base_channels * 4, num_keypoints,
                                           kernel_size=1)

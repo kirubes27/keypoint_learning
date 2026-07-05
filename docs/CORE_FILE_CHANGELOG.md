@@ -67,6 +67,18 @@ behavior, checkpoint/config implications and commit.
   records an archive checksum and creates the local JSON/CSV summary. Terminal
   copy/paste is not part of the analysis workflow.
 
+## 2026-07-05 — read-only soft-argmax gradient audit
+
+- **Training-critical core files:** none.
+- **Diagnostics changed:** added a read-only analytic/autograd audit comparing
+  coordinate-MSE and Gaussian-heatmap gradients on identical saved logits.
+- **Default training behavior:** unchanged. The audit never updates weights and
+  does not modify `model.py`, `train.py`, losses, datasets or checkpoints.
+- **Purpose:** test whether failed coordinate channels receive negligible
+  target-region gradients while dense heatmap supervision retains them.
+- **Tiebreaker:** added a read-only frozen-logit temperature sensitivity check.
+  It also performs no training and changes no default or checkpoint behavior.
+
 ## Required future entry format
 
 1. Date and purpose.

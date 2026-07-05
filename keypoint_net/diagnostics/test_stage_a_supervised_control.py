@@ -13,6 +13,7 @@ sys.path.insert(0, str(KEYPOINT_ROOT))
 from model import KeypointExtractor  # noqa: E402
 from diagnostics.stage_a_supervised_control import (  # noqa: E402
     build_extractor,
+    channel_to_target_indices,
     instrument_gate,
     load_phase_split,
     run_name,
@@ -108,6 +109,8 @@ def test_stage_a_extractor_and_run_name_follow_k(k: int) -> None:
         num_keypoints=k,
         base_channels=4,
         native_quarter=False,
+        supervision="coordinate",
+        target_shift=0,
         seed=43,
     )
     extractor = build_extractor(args, torch.device("cpu"))
@@ -117,3 +120,26 @@ def test_stage_a_extractor_and_run_name_follow_k(k: int) -> None:
     assert coords.shape == (1, 2 * k)
     assert heatmaps.shape[1] == k
     assert run_name(args) == f"coordinate_standard64_k{k}_seed43"
+
+
+def test_cyclic_target_assignment_moves_hard_targets_off_same_channels() -> None:
+    mapping = channel_to_target_indices(10, 1)
+    assert mapping == [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]
+    assert mapping.index(3) == 2
+    assert mapping.index(6) == 5
+    assert mapping.index(9) == 8
+
+
+def test_run_name_records_supervision_and_shift() -> None:
+    args = Namespace(
+        num_keypoints=10,
+        base_channels=4,
+        native_quarter=False,
+        supervision="heatmap",
+        target_shift=0,
+        seed=42,
+    )
+    assert run_name(args) == "heatmap_standard64_k10_seed42"
+    args.supervision = "coordinate"
+    args.target_shift = 1
+    assert run_name(args) == "coordinate_standard64_k10_shift1_seed42"

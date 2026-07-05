@@ -169,22 +169,38 @@ def build_extractor(args: argparse.Namespace, device: torch.device) -> KeypointE
     ).to(device)
 
 
+def channel_to_target_indices(num_keypoints: int, target_shift: int) -> list[int]:
+    """Physical target assigned to each numerical output channel."""
+    return [
+        int((channel + target_shift) % num_keypoints)
+        for channel in range(num_keypoints)
+    ]
+
+
 def load_problem(args: argparse.Namespace) -> dict[str, Any]:
     split_path = args.split_json or (args.data_root / "indices" / "split_phase_mod6.json")
     split = load_phase_split(split_path, args.object)
     images, masks, frame_paths = load_arrays(args.data_root, args.object)
     center = (args.center_x, args.center_y)
-    frame0_points = farthest_interior_points(masks[0], count=args.num_keypoints)
-    if len(frame0_points) != args.num_keypoints:
+    physical_frame0_points = farthest_interior_points(
+        masks[0], count=args.num_keypoints
+    )
+    if len(physical_frame0_points) != args.num_keypoints:
         raise RuntimeError(
-            f"requested {args.num_keypoints} targets, constructed {len(frame0_points)}"
+            f"requested {args.num_keypoints} targets, constructed "
+            f"{len(physical_frame0_points)}"
         )
-    targets = transported_targets(
-        frame0_points,
+    physical_targets = transported_targets(
+        physical_frame0_points,
         len(images),
         center_xy=center,
         roll_sign=args.roll_sign,
     )
+    channel_to_target = channel_to_target_indices(
+        args.num_keypoints, args.target_shift
+    )
+    targets = physical_targets[:, channel_to_target]
+    frame0_points = physical_frame0_points[channel_to_target]
     grounding = target_mask_fraction(targets, masks)
     if grounding < 0.98:
         raise RuntimeError(f"transported target grounding failed: {grounding:.6f} < 0.98")
@@ -195,7 +211,10 @@ def load_problem(args: argparse.Namespace) -> dict[str, Any]:
         "masks": masks,
         "frame_paths": frame_paths,
         "targets": targets,
+        "physical_targets": physical_targets,
         "frame0_points": frame0_points,
+        "physical_frame0_points": physical_frame0_points,
+        "channel_to_physical_target": channel_to_target,
         "target_grounding": grounding,
         "center": center,
     }
@@ -266,7 +285,10 @@ def evaluate_pair(
 
 def run_name(args: argparse.Namespace) -> str:
     architecture = "native_quarter" if args.native_quarter else "standard64"
-    return f"coordinate_{architecture}_k{args.num_keypoints}_seed{args.seed}"
+    base = f"{args.supervision}_{architecture}_k{args.num_keypoints}"
+    if args.target_shift:
+        base += f"_shift{args.target_shift}"
+    return f"{base}_seed{args.seed}"
 
 
 def base_config(args: argparse.Namespace, problem: dict[str, Any], device: torch.device) -> dict:
@@ -283,6 +305,9 @@ def base_config(args: argparse.Namespace, problem: dict[str, Any], device: torch
         "test_frames_committed_not_evaluated": list(split.test),
         "seed": args.seed,
         "num_keypoints": args.num_keypoints,
+        "supervision": args.supervision,
+        "target_shift": args.target_shift,
+        "channel_to_physical_target": problem["channel_to_physical_target"],
         "device": str(device),
         "base_channels": args.base_channels,
         "architecture": "native_quarter" if args.native_quarter else "standard64",
@@ -304,7 +329,8 @@ def base_config(args: argparse.Namespace, problem: dict[str, Any], device: torch
         "train_augmentation": {"rotation_deg": [-5, 5], "translation_px": [-8, 8]},
         "validation_augmentation_seed": DEFAULT_VALIDATION_AUGMENT_SEED,
         "test_augmentation_seed": DEFAULT_TEST_AUGMENT_SEED,
-        "frame0_targets_px": problem["frame0_points"].tolist(),
+        "frame0_targets_px_in_channel_order": problem["frame0_points"].tolist(),
+        "physical_frame0_targets_px": problem["physical_frame0_points"].tolist(),
         "transported_target_on_mask_fraction_all_frames": problem["target_grounding"],
         "test_policy": "not evaluated during train; finalize requires three frozen runs",
         "statistical_scope": (
@@ -406,7 +432,8 @@ def train_control(args: argparse.Namespace) -> Path:
     else:
         existing = json.loads(config_path.read_text())
         immutable = (
-            "split_sha256", "seed", "num_keypoints", "base_channels", "architecture", "learning_rate",
+            "split_sha256", "seed", "num_keypoints", "supervision", "target_shift",
+            "base_channels", "architecture", "learning_rate",
             "weight_decay", "batch_size", "min_epochs", "max_epochs", "eval_every",
             "plateau_patience_epochs", "relative_improvement",
         )
@@ -467,7 +494,7 @@ def train_control(args: argparse.Namespace) -> Path:
             target = batch["target"].to(device)
             flat, heatmaps = extractor(image)
             coordinates = flat.view(-1, args.num_keypoints, 2)
-            loss = supervised_loss("coordinate", coordinates, heatmaps, target)
+            loss = supervised_loss(args.supervision, coordinates, heatmaps, target)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -589,7 +616,7 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
         extractor.train()
         flat, heatmaps = extractor(image)
         coordinates = flat.view(-1, args.num_keypoints, 2)
-        loss = supervised_loss("coordinate", coordinates, heatmaps, target)
+        loss = supervised_loss(args.supervision, coordinates, heatmaps, target)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -608,6 +635,10 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
                     int(index) for index, value in enumerate(channel_errors) if value > 0.20
                 ],
             }
+            metrics["failed_physical_target_indices"] = [
+                int(problem["channel_to_physical_target"][index])
+                for index in metrics["failed_channel_indices"]
+            ]
             print(json.dumps(metrics), flush=True)
             passed = (
                 metrics["median_error_cells64"] <= 0.10
@@ -625,6 +656,9 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
         },
         "tiny_frames": indices,
         "num_keypoints": args.num_keypoints,
+        "supervision": args.supervision,
+        "target_shift": args.target_shift,
+        "channel_to_physical_target": problem["channel_to_physical_target"],
         "completed_steps": completed_steps,
         "metrics": metrics,
         "device": str(device),
@@ -655,6 +689,8 @@ def args_from_run_config(config: dict[str, Any], template: argparse.Namespace) -
             "object": config["object"],
             "seed": int(config["seed"]),
             "num_keypoints": int(config["num_keypoints"]),
+            "supervision": config.get("supervision", "coordinate"),
+            "target_shift": int(config.get("target_shift", 0)),
             "base_channels": int(config["base_channels"]),
             "native_quarter": bool(config["true_quarter_res"]),
             "batch_size": int(config["batch_size"]),
@@ -703,7 +739,8 @@ def finalize_three_runs(args: argparse.Namespace) -> Path:
     if len(seeds) != 3:
         raise ValueError(f"expected three distinct seeds, got {sorted(seeds)}")
     comparable = (
-        "split_sha256", "architecture", "num_keypoints", "base_channels", "learning_rate",
+        "split_sha256", "architecture", "num_keypoints", "supervision", "target_shift",
+        "base_channels", "learning_rate",
         "weight_decay", "batch_size", "min_epochs", "max_epochs", "eval_every",
         "plateau_patience_epochs", "relative_improvement",
     )
@@ -781,7 +818,8 @@ def finalize_three_runs(args: argparse.Namespace) -> Path:
     }
 
     output = args.output_root / (
-        f"instrument_gate_{reference['architecture']}_k{reference['num_keypoints']}.json"
+        f"instrument_gate_{reference['supervision']}_{reference['architecture']}"
+        f"_k{reference['num_keypoints']}_shift{reference['target_shift']}.json"
     )
     if output.exists():
         raise FileExistsError(f"aggregate test output already exists: {output}")
@@ -816,6 +854,11 @@ def write_prelaunch_lock(args: argparse.Namespace) -> Path:
         "split_sha256": problem["split"].sha256,
         "semantic_gate": {
             "num_keypoints": args.num_keypoints,
+            "supervision": args.supervision,
+            "target_shift": args.target_shift,
+            "channel_to_physical_target": channel_to_target_indices(
+                args.num_keypoints, args.target_shift
+            ),
             "tiny_median_cells64_max": 0.10,
             "tiny_max_channel_median_cells64_max": 0.20,
             "instrument_pass_seeds": 2,
@@ -863,6 +906,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dirs", nargs="*", default=[])
     parser.add_argument("--native-quarter", action="store_true")
     parser.add_argument("--num-keypoints", type=int, default=10)
+    parser.add_argument(
+        "--supervision", choices=("coordinate", "heatmap"), default="coordinate"
+    )
+    parser.add_argument("--target-shift", type=int, default=0)
     parser.add_argument("--base-channels", type=int, default=32)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -893,6 +940,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("min-epochs cannot exceed max-epochs")
     if args.num_keypoints < 2:
         parser.error("num-keypoints must be at least 2")
+    if not 0 <= args.target_shift < args.num_keypoints:
+        parser.error("target-shift must be in [0, num-keypoints)")
     return args
 
 

@@ -51,6 +51,18 @@ behavior, checkpoint/config implications and commit.
 - **Default training behavior:** unchanged. `model.py` and `train.py` were not
   modified in this commit.
 
+## 2026-07-05 — target/readout attribution diagnostic
+
+- **Training-critical core files:** none.
+- **Diagnostics changed:** Stage A accepts a recorded target-channel cyclic
+  shift and either coordinate-MSE or Gaussian target-heatmap supervision. A
+  six-task cluster array and attribution summarizer were added.
+- **Default behavior:** remains coordinate supervision, identity assignment
+  (`target_shift=0`) and K=10. Normal `train.py`, `model.py`, losses and Phase-A
+  training behavior are unchanged.
+- **Purpose:** distinguish physical target difficulty, numerical channel
+  identity and coordinate-only soft-argmax gradient failure.
+
 ## Required future entry format
 
 1. Date and purpose.

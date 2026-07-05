@@ -79,6 +79,16 @@ behavior, checkpoint/config implications and commit.
 - **Tiebreaker:** added a read-only frozen-logit temperature sensitivity check.
   It also performs no training and changes no default or checkpoint behavior.
 
+## 2026-07-05 — Stage-R0 shape-constraint implementation
+
+- **Training-critical core files:** none.
+- **Diagnostics changed:** added a prediction-centred, detached-centre Gaussian
+  Jensen-Shannon shape constraint, semantic tests and one-shot calibration.
+- **Default training behavior:** unchanged. The constraint is not imported by
+  `model.py`, `train.py` or the shared losses and no weights are trained in R0.
+- **Purpose:** prove the proposed shape term's meaning and freeze its weight
+  before the R1 tiny supervised coordinate experiment.
+
 ## Required future entry format
 
 1. Date and purpose.

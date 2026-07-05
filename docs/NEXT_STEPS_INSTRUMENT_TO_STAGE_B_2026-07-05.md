@@ -1,6 +1,6 @@
 # Next Steps: Instrument Repair to Main Hypothesis Test (2026-07-05)
 
-**Status:** proposed execution plan. This replaces only Stage A of
+**Status:** execution authority; R0 passed on 2026-07-05 and R1 is next. This replaces only Stage A of
 `FINAL_MATERIAL_KEYPOINT_DECISION_PLAN_2026-07-04.md`. The five-arm Stage-B
 design and its decision branches remain unchanged.
 

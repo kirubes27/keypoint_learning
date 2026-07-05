@@ -1,0 +1,63 @@
+{
+  "audit_valid": true,
+  "decision": "loss_conflict_supported",
+  "formulas": {
+    "attenuation_ratio": "repaired_gain / matched_control_gain",
+    "coordinate_descent_multiplier": "dot(g_coord, g_coord + g_shape) / ||g_coord||^2",
+    "gradient_transmission_gain": "||g_parameter|| / ||g_logits||",
+    "harmful_cancellation_fraction": "max(0, 1 - coordinate_descent_multiplier)"
+  },
+  "loss_conflict": {
+    "status": "supported",
+    "support_count_out_of_3_by_level": {
+      "backbone": 2,
+      "head": 3
+    },
+    "supported_levels": [
+      "head",
+      "backbone"
+    ],
+    "values_by_level_and_seed": {
+      "backbone": [
+        0.9467916561734685,
+        0.8276588097674871,
+        0.3171899401078695
+      ],
+      "head": [
+        0.8976398721226552,
+        0.9516722723681561,
+        0.9010739752095526
+      ]
+    }
+  },
+  "max_gradient_reconstruction_relative_error": 4.554849384206945e-12,
+  "network_attenuation": {
+    "status": "mixed",
+    "support_count_out_of_3_by_level": {
+      "backbone": 0,
+      "head": 0
+    },
+    "supported_levels": [],
+    "values_by_level_and_seed": {
+      "backbone": [
+        11.993505358276192,
+        24.839529143401617,
+        8.906386065715695
+      ],
+      "head": [
+        0.875831863656425,
+        1.8449856188068874,
+        0.4925986959285127
+      ]
+    }
+  },
+  "statistical_scope": "descriptive one-object/four-correlated-frame checkpoint audit; n=3 optimization seeds per condition; seed is the replication unit; no error bars, hypothesis test, or population inference",
+  "thresholds": {
+    "attenuation_reject_repaired_to_control_ratio_above": 0.5,
+    "attenuation_support_repaired_to_control_ratio_max": 0.25,
+    "conflict_reject_cancellation_fraction_below": 0.25,
+    "conflict_support_cancellation_fraction_min": 0.5,
+    "gradient_reconstruction_relative_error_max": 1e-05,
+    "replications_required_out_of_3": 2
+  }
+}

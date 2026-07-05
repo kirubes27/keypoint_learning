@@ -62,6 +62,10 @@ behavior, checkpoint/config implications and commit.
   training behavior are unchanged.
 - **Purpose:** distinguish physical target difficulty, numerical channel
   identity and coordinate-only soft-argmax gradient failure.
+- **Artifact handling:** `cluster/fetch_stage_a_attribution_to_mac.sh` validates
+  all six runs, downloads results and scheduler logs to `cluster_downloads/`,
+  records an archive checksum and creates the local JSON/CSV summary. Terminal
+  copy/paste is not part of the analysis workflow.
 
 ## Required future entry format
 

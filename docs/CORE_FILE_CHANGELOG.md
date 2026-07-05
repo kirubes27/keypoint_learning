@@ -89,6 +89,16 @@ behavior, checkpoint/config implications and commit.
 - **Purpose:** prove the proposed shape term's meaning and freeze its weight
   before the R1 tiny supervised coordinate experiment.
 
+## 2026-07-05 — Stage-R1 diagnostic integration
+
+- **Training-critical core files:** none.
+- **Diagnostics changed:** the supervised diagnostic can optionally add the
+  frozen R0 shape term and records joint coordinate, shape and counterfactual-
+  gradient gates. Default commands retain the exact legacy objective and run
+  names. Added the fixed three-seed cluster job, aggregator and Mac collector.
+- **Default training behavior:** unchanged. Ordinary `train.py`, `model.py` and
+  shared Phase-A losses do not import the repair.
+
 ## Required future entry format
 
 1. Date and purpose.

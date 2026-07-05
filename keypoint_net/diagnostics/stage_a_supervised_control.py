@@ -22,6 +22,7 @@ cross-object generalization result.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import hashlib
 import json
@@ -43,6 +44,7 @@ sys.path.insert(0, str(KEYPOINT_ROOT))
 
 from model import KeypointExtractor  # noqa: E402
 from diagnostics.day45_supervised_control import (  # noqa: E402
+    CELL64_NORM,
     SupervisedRollDataset,
     evaluate,
     farthest_interior_points,
@@ -51,6 +53,11 @@ from diagnostics.day45_supervised_control import (  # noqa: E402
     supervised_loss,
     target_mask_fraction,
     transported_targets,
+)
+from diagnostics.stage_a_shape_constraint import (  # noqa: E402
+    coordinate_logit_gradients_per_unit,
+    heatmap_shape_metrics,
+    prediction_centered_js,
 )
 
 
@@ -61,6 +68,11 @@ EXPECTED_RESIDUES = {
     "validation": {1, 4},
     "test": {2, 5},
 }
+R1_MAX_PROBABILITY_RANGE = (0.08, 0.30)
+R1_EFFECTIVE_SUPPORT_RANGE = (8.0, 32.0)
+R1_RUN_GRADIENT_RATIO_MIN = 0.10
+R1_CHANNEL_GRADIENT_RATIO_MIN = 0.01
+COUNTERFACTUAL_SHIFT_CELLS64 = 0.50
 
 
 @dataclass(frozen=True)
@@ -288,7 +300,122 @@ def run_name(args: argparse.Namespace) -> str:
     base = f"{args.supervision}_{architecture}_k{args.num_keypoints}"
     if args.target_shift:
         base += f"_shift{args.target_shift}"
+    if getattr(args, "shape_constraint", "none") == "prediction_centered_js":
+        base += "_shapejs"
     return f"{base}_seed{args.seed}"
+
+
+def shape_constraint_enabled(args: argparse.Namespace) -> bool:
+    return getattr(args, "shape_constraint", "none") == "prediction_centered_js"
+
+
+def supervised_objective(
+    args: argparse.Namespace,
+    coordinates: torch.Tensor,
+    heatmaps: torch.Tensor,
+    target: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    base = supervised_loss(args.supervision, coordinates, heatmaps, target)
+    shape = torch.zeros((), device=heatmaps.device, dtype=heatmaps.dtype)
+    if shape_constraint_enabled(args):
+        shape = prediction_centered_js(
+            heatmaps,
+            sigma_cells=float(args.shape_sigma_cells),
+        ).loss
+    total = base + float(getattr(args, "shape_weight", 0.0)) * shape
+    return total, {
+        "base_loss": float(base.detach()),
+        "shape_loss": float(shape.detach()),
+        "shape_weight": float(getattr(args, "shape_weight", 0.0)),
+        "total_loss": float(total.detach()),
+    }
+
+
+def counterfactual_gradient_norms(
+    heatmaps: torch.Tensor,
+    coordinates: torch.Tensor,
+) -> torch.Tensor:
+    """BxKx4 logit-gradient norms for fixed half-cell ±x/±y moves."""
+    delta = COUNTERFACTUAL_SHIFT_CELLS64 * CELL64_NORM
+    directions = torch.tensor(
+        ((delta, 0.0), (-delta, 0.0), (0.0, delta), (0.0, -delta)),
+        device=heatmaps.device,
+        dtype=heatmaps.dtype,
+    )
+    norms = []
+    detached_coordinate = coordinates.detach()
+    for direction in directions:
+        counterfactual_target = detached_coordinate + direction
+        gradient = coordinate_logit_gradients_per_unit(
+            heatmaps, counterfactual_target
+        )
+        norms.append(torch.linalg.vector_norm(gradient, dim=-1))
+    return torch.stack(norms, dim=-1)
+
+
+def r1_probe_metrics(
+    extractor: KeypointExtractor,
+    image: torch.Tensor,
+    initial_gradient_norms: torch.Tensor,
+) -> dict[str, Any]:
+    """Read-only training-mode R1 shape and sensitivity probe."""
+    probe = copy.deepcopy(extractor)
+    probe.train()
+    flat, heatmaps = probe(image)
+    coordinates = flat.view(image.shape[0], -1, 2)
+    shape = heatmap_shape_metrics(heatmaps)
+    gradient_norms = counterfactual_gradient_norms(heatmaps, coordinates)
+    ratios = gradient_norms / initial_gradient_norms.clamp_min(1e-30)
+    max_probability_by_channel = torch.median(
+        shape["max_probability"], dim=0
+    ).values
+    support_by_channel = torch.median(
+        shape["effective_support_cells"], dim=0
+    ).values
+    gradient_ratio_by_channel = torch.median(
+        ratios.reshape(ratios.shape[0], ratios.shape[1], -1), dim=0
+    ).values.median(dim=-1).values
+    run_gradient_ratio = torch.median(ratios)
+    max_low, max_high = R1_MAX_PROBABILITY_RANGE
+    support_low, support_high = R1_EFFECTIVE_SUPPORT_RANGE
+    shape_pass = bool(
+        torch.all((max_probability_by_channel >= max_low)
+                  & (max_probability_by_channel <= max_high))
+        and torch.all((support_by_channel >= support_low)
+                      & (support_by_channel <= support_high))
+    )
+    gradient_pass = bool(
+        run_gradient_ratio >= R1_RUN_GRADIENT_RATIO_MIN
+        and torch.all(gradient_ratio_by_channel >= R1_CHANNEL_GRADIENT_RATIO_MIN)
+    )
+    return {
+        "per_channel_median_max_probability": max_probability_by_channel.detach().cpu().tolist(),
+        "per_channel_median_effective_support_cells": support_by_channel.detach().cpu().tolist(),
+        "counterfactual_shift_cells64": COUNTERFACTUAL_SHIFT_CELLS64,
+        "counterfactual_directions": ["+x", "-x", "+y", "-y"],
+        "run_median_counterfactual_gradient_final_initial_ratio": float(
+            run_gradient_ratio.detach().cpu()
+        ),
+        "per_channel_median_counterfactual_gradient_final_initial_ratio": (
+            gradient_ratio_by_channel.detach().cpu().tolist()
+        ),
+        "shape_gate_pass": shape_pass,
+        "counterfactual_gradient_gate_pass": gradient_pass,
+        "thresholds": {
+            "per_channel_median_max_probability_range": list(
+                R1_MAX_PROBABILITY_RANGE
+            ),
+            "per_channel_median_effective_support_cells_range": list(
+                R1_EFFECTIVE_SUPPORT_RANGE
+            ),
+            "run_median_counterfactual_gradient_ratio_min": (
+                R1_RUN_GRADIENT_RATIO_MIN
+            ),
+            "per_channel_median_counterfactual_gradient_ratio_min": (
+                R1_CHANNEL_GRADIENT_RATIO_MIN
+            ),
+        },
+    }
 
 
 def base_config(args: argparse.Namespace, problem: dict[str, Any], device: torch.device) -> dict:
@@ -307,6 +434,10 @@ def base_config(args: argparse.Namespace, problem: dict[str, Any], device: torch
         "num_keypoints": args.num_keypoints,
         "supervision": args.supervision,
         "target_shift": args.target_shift,
+        "shape_constraint": getattr(args, "shape_constraint", "none"),
+        "shape_weight": float(getattr(args, "shape_weight", 0.0)),
+        "shape_sigma_cells": float(getattr(args, "shape_sigma_cells", 1.0)),
+        "shape_center_gradient": "stopped",
         "channel_to_physical_target": problem["channel_to_physical_target"],
         "device": str(device),
         "base_channels": args.base_channels,
@@ -431,8 +562,13 @@ def train_control(args: argparse.Namespace) -> Path:
         write_json(config_path, config)
     else:
         existing = json.loads(config_path.read_text())
+        existing.setdefault("shape_constraint", "none")
+        existing.setdefault("shape_weight", 0.0)
+        existing.setdefault("shape_sigma_cells", 1.0)
+        existing.setdefault("shape_center_gradient", "stopped")
         immutable = (
             "split_sha256", "seed", "num_keypoints", "supervision", "target_shift",
+            "shape_constraint", "shape_weight", "shape_sigma_cells",
             "base_channels", "architecture", "learning_rate",
             "weight_decay", "batch_size", "min_epochs", "max_epochs", "eval_every",
             "plateau_patience_epochs", "relative_improvement",
@@ -494,7 +630,9 @@ def train_control(args: argparse.Namespace) -> Path:
             target = batch["target"].to(device)
             flat, heatmaps = extractor(image)
             coordinates = flat.view(-1, args.num_keypoints, 2)
-            loss = supervised_loss(args.supervision, coordinates, heatmaps, target)
+            loss, _ = supervised_objective(
+                args, coordinates, heatmaps, target
+            )
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -608,6 +746,15 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
     batch = next(iter(loader))
     image = batch["image"].to(device)
     target = batch["target"].to(device)
+    initial_gradient_norms = None
+    if shape_constraint_enabled(args):
+        initial_probe = copy.deepcopy(extractor)
+        initial_probe.train()
+        initial_flat, initial_heatmaps = initial_probe(image)
+        initial_coordinates = initial_flat.view(-1, args.num_keypoints, 2)
+        initial_gradient_norms = counterfactual_gradient_norms(
+            initial_heatmaps, initial_coordinates
+        ).detach()
     start = time.perf_counter()
     passed = False
     metrics: dict[str, Any] = {}
@@ -616,7 +763,9 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
         extractor.train()
         flat, heatmaps = extractor(image)
         coordinates = flat.view(-1, args.num_keypoints, 2)
-        loss = supervised_loss(args.supervision, coordinates, heatmaps, target)
+        loss, loss_components = supervised_objective(
+            args, coordinates, heatmaps, target
+        )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -628,6 +777,7 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
             metrics = {
                 "step": step,
                 "loss": float(loss.detach().cpu()),
+                "loss_components": loss_components,
                 "median_error_cells64": float(np.median(channel)),
                 "max_channel_median_error_cells64": float(np.max(channel)),
                 "channel_median_error_cells64": channel_errors,
@@ -639,16 +789,34 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
                 int(problem["channel_to_physical_target"][index])
                 for index in metrics["failed_channel_indices"]
             ]
-            print(json.dumps(metrics), flush=True)
-            passed = (
+            coordinate_gate_pass = (
                 metrics["median_error_cells64"] <= 0.10
                 and metrics["max_channel_median_error_cells64"] <= 0.20
             )
+            metrics["coordinate_gate_pass"] = coordinate_gate_pass
+            if shape_constraint_enabled(args):
+                assert initial_gradient_norms is not None
+                metrics["r1_probe"] = r1_probe_metrics(
+                    extractor, image, initial_gradient_norms
+                )
+                passed = bool(
+                    coordinate_gate_pass
+                    and metrics["r1_probe"]["shape_gate_pass"]
+                    and metrics["r1_probe"]["counterfactual_gradient_gate_pass"]
+                )
+            else:
+                passed = coordinate_gate_pass
+            metrics["joint_gate_pass"] = passed
+            print(json.dumps(metrics), flush=True)
             if passed:
                 break
 
     result = {
-        "gate": "A0_tiny_subset_overfit",
+        "gate": (
+            "R1_shape_repaired_tiny_coordinate_overfit"
+            if shape_constraint_enabled(args)
+            else "A0_tiny_subset_overfit"
+        ),
         "passed": passed,
         "thresholds": {
             "median_error_cells64_max": 0.10,
@@ -658,15 +826,36 @@ def tiny_overfit(args: argparse.Namespace) -> Path:
         "num_keypoints": args.num_keypoints,
         "supervision": args.supervision,
         "target_shift": args.target_shift,
+        "shape_constraint": getattr(args, "shape_constraint", "none"),
+        "shape_weight": float(getattr(args, "shape_weight", 0.0)),
+        "shape_sigma_cells": float(getattr(args, "shape_sigma_cells", 1.0)),
         "channel_to_physical_target": problem["channel_to_physical_target"],
         "completed_steps": completed_steps,
+        "run_scope": (
+            "authoritative_r1_tiny_gate"
+            if args.tiny_max_steps >= 5000
+            else "implementation_smoke_only"
+        ),
+        "gate_authoritative": bool(args.tiny_max_steps >= 5000),
         "metrics": metrics,
         "device": str(device),
         "runtime_seconds": time.perf_counter() - start,
         "semantic_read": (
-            "implementation can fit the fixed coordinate targets"
-            if passed
-            else "critical implementation/optimization gate failed; do not launch convergence runs"
+            "short implementation smoke; no R1 scientific verdict"
+            if shape_constraint_enabled(args) and args.tiny_max_steps < 5000
+            else (
+                (
+                    "coordinate, shape, and counterfactual-gradient gates jointly pass"
+                    if passed
+                    else "R1 joint gate failed; do not launch convergence runs"
+                )
+                if shape_constraint_enabled(args)
+                else (
+                    "implementation can fit the fixed coordinate targets"
+                    if passed
+                    else "critical implementation/optimization gate failed; do not launch convergence runs"
+                )
+            )
         ),
     }
     write_json(run_dir / "metrics.json", result)
@@ -691,6 +880,9 @@ def args_from_run_config(config: dict[str, Any], template: argparse.Namespace) -
             "num_keypoints": int(config["num_keypoints"]),
             "supervision": config.get("supervision", "coordinate"),
             "target_shift": int(config.get("target_shift", 0)),
+            "shape_constraint": config.get("shape_constraint", "none"),
+            "shape_weight": float(config.get("shape_weight", 0.0)),
+            "shape_sigma_cells": float(config.get("shape_sigma_cells", 1.0)),
             "base_channels": int(config["base_channels"]),
             "native_quarter": bool(config["true_quarter_res"]),
             "batch_size": int(config["batch_size"]),
@@ -727,6 +919,9 @@ def finalize_three_runs(args: argparse.Namespace) -> Path:
         if (run_dir / "test_metrics.json").exists():
             raise RuntimeError(f"test was already evaluated for {run_dir}")
         config = json.loads((run_dir / "config.json").read_text())
+        config.setdefault("shape_constraint", "none")
+        config.setdefault("shape_weight", 0.0)
+        config.setdefault("shape_sigma_cells", 1.0)
         summary = json.loads((run_dir / "training_summary.json").read_text())
         if summary.get("test_evaluated"):
             raise RuntimeError(f"training summary says test was already evaluated: {run_dir}")
@@ -740,6 +935,7 @@ def finalize_three_runs(args: argparse.Namespace) -> Path:
         raise ValueError(f"expected three distinct seeds, got {sorted(seeds)}")
     comparable = (
         "split_sha256", "architecture", "num_keypoints", "supervision", "target_shift",
+        "shape_constraint", "shape_weight", "shape_sigma_cells",
         "base_channels", "learning_rate",
         "weight_decay", "batch_size", "min_epochs", "max_epochs", "eval_every",
         "plateau_patience_epochs", "relative_improvement",
@@ -856,6 +1052,9 @@ def write_prelaunch_lock(args: argparse.Namespace) -> Path:
             "num_keypoints": args.num_keypoints,
             "supervision": args.supervision,
             "target_shift": args.target_shift,
+            "shape_constraint": getattr(args, "shape_constraint", "none"),
+            "shape_weight": float(getattr(args, "shape_weight", 0.0)),
+            "shape_sigma_cells": float(getattr(args, "shape_sigma_cells", 1.0)),
             "channel_to_physical_target": channel_to_target_indices(
                 args.num_keypoints, args.target_shift
             ),
@@ -910,6 +1109,13 @@ def parse_args() -> argparse.Namespace:
         "--supervision", choices=("coordinate", "heatmap"), default="coordinate"
     )
     parser.add_argument("--target-shift", type=int, default=0)
+    parser.add_argument(
+        "--shape-constraint",
+        choices=("none", "prediction_centered_js"),
+        default="none",
+    )
+    parser.add_argument("--shape-weight", type=float, default=0.0)
+    parser.add_argument("--shape-sigma-cells", type=float, default=1.0)
     parser.add_argument("--base-channels", type=int, default=32)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -942,6 +1148,15 @@ def parse_args() -> argparse.Namespace:
         parser.error("num-keypoints must be at least 2")
     if not 0 <= args.target_shift < args.num_keypoints:
         parser.error("target-shift must be in [0, num-keypoints)")
+    if args.shape_constraint == "none" and args.shape_weight != 0.0:
+        parser.error("shape-weight must be zero when shape-constraint is none")
+    if args.shape_constraint != "none":
+        if args.supervision != "coordinate":
+            parser.error("R1 shape constraint is authorized only with coordinate supervision")
+        if args.shape_weight <= 0.0:
+            parser.error("shape-weight must be positive when shape constraint is enabled")
+        if not np.isclose(args.shape_sigma_cells, 1.0, rtol=0.0, atol=1e-12):
+            parser.error("R1 shape-sigma-cells is frozen at 1.0")
     return args
 
 

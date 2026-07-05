@@ -8,10 +8,12 @@ KEYPOINT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KEYPOINT_ROOT))
 
 from diagnostics.stage_a_shape_constraint import (  # noqa: E402
+    coordinate_logit_gradients_per_unit,
     heatmap_shape_metrics,
     prediction_centered_js,
     probability_and_detached_gaussian,
 )
+from model import spatial_softmax  # noqa: E402
 
 
 def _take_normalized_step(logits: torch.Tensor, step: float = 0.1) -> torch.Tensor:
@@ -104,3 +106,14 @@ def test_exact_symmetry_and_extreme_collapse_are_finite() -> None:
         assert torch.isfinite(output.loss)
         assert torch.isfinite(output.per_channel_loss).all()
         assert torch.isfinite(gradient).all()
+
+
+def test_coordinate_logit_gradient_matches_autograd() -> None:
+    logits = torch.randn(2, 3, 9, 9, requires_grad=True)
+    target = torch.empty(2, 3, 2).uniform_(-0.5, 0.5)
+    coordinate = spatial_softmax(logits)
+    loss = torch.nn.functional.mse_loss(coordinate, target)
+    autograd = torch.autograd.grad(loss, logits)[0].flatten(-2)
+    analytic = coordinate_logit_gradients_per_unit(logits.detach(), target)
+    analytic = analytic / (logits.shape[0] * logits.shape[1])
+    assert torch.allclose(autograd, analytic, atol=1e-7, rtol=1e-5)

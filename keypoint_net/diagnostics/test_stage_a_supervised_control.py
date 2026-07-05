@@ -5,18 +5,23 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.nn as nn
 
 
 KEYPOINT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KEYPOINT_ROOT))
 
-from model import KeypointExtractor  # noqa: E402
+from model import KeypointExtractor, spatial_softmax  # noqa: E402
+from diagnostics.day45_supervised_control import supervised_loss  # noqa: E402
 from diagnostics.stage_a_supervised_control import (  # noqa: E402
     build_extractor,
     channel_to_target_indices,
+    counterfactual_gradient_norms,
     instrument_gate,
     load_phase_split,
+    r1_probe_metrics,
     run_name,
+    supervised_objective,
 )
 
 
@@ -143,3 +148,59 @@ def test_run_name_records_supervision_and_shift() -> None:
     args.supervision = "coordinate"
     args.target_shift = 1
     assert run_name(args) == "coordinate_standard64_k10_shift1_seed42"
+
+
+def test_shape_constraint_run_name_is_explicit_and_default_name_is_unchanged() -> None:
+    args = Namespace(
+        num_keypoints=10,
+        native_quarter=False,
+        supervision="coordinate",
+        target_shift=0,
+        seed=42,
+        shape_constraint="none",
+    )
+    assert run_name(args) == "coordinate_standard64_k10_seed42"
+    args.shape_constraint = "prediction_centered_js"
+    assert run_name(args) == "coordinate_standard64_k10_shapejs_seed42"
+
+
+def test_default_supervised_objective_is_exact_legacy_loss() -> None:
+    coordinates = torch.randn(2, 3, 2)
+    heatmaps = torch.randn(2, 3, 8, 8)
+    target = torch.randn(2, 3, 2)
+    args = Namespace(
+        supervision="coordinate",
+        shape_constraint="none",
+        shape_weight=0.0,
+        shape_sigma_cells=1.0,
+    )
+    total, parts = supervised_objective(args, coordinates, heatmaps, target)
+    expected = supervised_loss("coordinate", coordinates, heatmaps, target)
+    assert torch.equal(total, expected)
+    assert parts["shape_loss"] == 0.0
+
+
+class _FixedHeatmapExtractor(nn.Module):
+    def __init__(self, logits: torch.Tensor):
+        super().__init__()
+        self.logits = nn.Parameter(logits)
+
+    def forward(self, image: torch.Tensor):
+        logits = self.logits.expand(image.shape[0], -1, -1, -1)
+        coords = spatial_softmax(logits)
+        return coords.flatten(1), logits
+
+
+def test_r1_probe_accepts_healthy_one_cell_gaussian_shape_and_gradient() -> None:
+    size = 33
+    y, x = torch.meshgrid(torch.arange(size), torch.arange(size), indexing="ij")
+    logits = (-0.5 * ((x - 16) ** 2 + (y - 16) ** 2)).float()[None, None]
+    extractor = _FixedHeatmapExtractor(logits)
+    image = torch.zeros(4, 3, 16, 16)
+    flat, heatmaps = extractor(image)
+    coordinates = flat.view(4, 1, 2)
+    initial = counterfactual_gradient_norms(heatmaps, coordinates).detach()
+    metrics = r1_probe_metrics(extractor, image, initial)
+    assert metrics["shape_gate_pass"]
+    assert metrics["counterfactual_gradient_gate_pass"]
+    assert metrics["run_median_counterfactual_gradient_final_initial_ratio"] == pytest.approx(1.0)

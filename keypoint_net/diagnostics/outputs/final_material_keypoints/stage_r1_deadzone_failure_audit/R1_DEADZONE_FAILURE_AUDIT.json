@@ -1,0 +1,34 @@
+{
+  "analysis_dtype": "float64",
+  "audit": "read_only_deadzone_failure_postmortem",
+  "failed_channel_seed_units": 13,
+  "frames": [
+    0,
+    3,
+    6,
+    9
+  ],
+  "interpretation": {
+    "fixed_initial_logit_gradient_calibration_is_state_robust": false,
+    "implementation_path_verified": true,
+    "post_softmax_deadzone_can_reliably_escape_saturation": false,
+    "reason": "The fixed weight was calibrated only on diffuse initial maps. At failed checkpoints the weighted repair is generally weaker, and saturated maps attenuate both losses through the softmax Jacobian.",
+    "stride_change_active": false
+  },
+  "median_global_deadzone_to_coordinate_gradient_ratio_by_level": {
+    "backbone": 0.1037563756108284,
+    "head": 0.15547849237918854,
+    "logits": 0.17995059490203857
+  },
+  "optimization_seed_n": 3,
+  "optimization_seeds": [
+    42,
+    43,
+    44
+  ],
+  "saturated_and_failed_channel_seed_units": 7,
+  "saturated_failed_fraction": 0.5384615384615384,
+  "shape_weight": 8.723808430294485e-06,
+  "statistical_scope": "Descriptive audit of one object, four correlated frames and three optimization seeds. The seed is the replication unit; no population inference or hypothesis test is made.",
+  "updates_per_run": 5000
+}

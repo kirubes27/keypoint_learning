@@ -5,6 +5,11 @@
 
 set -euo pipefail
 
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "This collector must be run on the Mac after leaving the cluster with: exit" >&2
+  exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MAC_PHD_ROOT="$(cd "$REPO_ROOT/.." && pwd)"

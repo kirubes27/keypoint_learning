@@ -162,6 +162,8 @@ def test_shape_constraint_run_name_is_explicit_and_default_name_is_unchanged() -
     assert run_name(args) == "coordinate_standard64_k10_seed42"
     args.shape_constraint = "prediction_centered_js"
     assert run_name(args) == "coordinate_standard64_k10_shapejs_seed42"
+    args.shape_constraint = "conditional_deadzone"
+    assert run_name(args) == "coordinate_standard64_k10_deadzone_seed42"
 
 
 def test_default_supervised_objective_is_exact_legacy_loss() -> None:
@@ -178,6 +180,23 @@ def test_default_supervised_objective_is_exact_legacy_loss() -> None:
     expected = supervised_loss("coordinate", coordinates, heatmaps, target)
     assert torch.equal(total, expected)
     assert parts["shape_loss"] == 0.0
+
+
+def test_conditional_deadzone_objective_is_zero_on_healthy_heatmap() -> None:
+    size = 33
+    y, x = torch.meshgrid(torch.arange(size), torch.arange(size), indexing="ij")
+    heatmaps = (-0.5 * ((x - 16) ** 2 + (y - 16) ** 2)).float()[None, None]
+    coordinates = spatial_softmax(heatmaps)
+    target = coordinates.detach().clone()
+    args = Namespace(
+        supervision="coordinate",
+        shape_constraint="conditional_deadzone",
+        shape_weight=8.723808430294485e-06,
+        shape_sigma_cells=1.0,
+    )
+    total, parts = supervised_objective(args, coordinates, heatmaps, target)
+    assert parts["shape_loss"] == 0.0
+    assert float(total) == 0.0
 
 
 class _FixedHeatmapExtractor(nn.Module):
@@ -203,4 +222,5 @@ def test_r1_probe_accepts_healthy_one_cell_gaussian_shape_and_gradient() -> None
     metrics = r1_probe_metrics(extractor, image, initial)
     assert metrics["shape_gate_pass"]
     assert metrics["counterfactual_gradient_gate_pass"]
+    assert min(metrics["per_channel_median_dominant_mass_r2"]) >= 0.70
     assert metrics["run_median_counterfactual_gradient_final_initial_ratio"] == pytest.approx(1.0)

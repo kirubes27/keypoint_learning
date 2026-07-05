@@ -55,6 +55,8 @@ from diagnostics.day45_supervised_control import (  # noqa: E402
     transported_targets,
 )
 from diagnostics.stage_a_shape_constraint import (  # noqa: E402
+    DEADZONE_DOMINANT_MASS_R2_MIN,
+    conditional_deadzone_shape,
     coordinate_logit_gradients_per_unit,
     heatmap_shape_metrics,
     prediction_centered_js,
@@ -302,11 +304,13 @@ def run_name(args: argparse.Namespace) -> str:
         base += f"_shift{args.target_shift}"
     if getattr(args, "shape_constraint", "none") == "prediction_centered_js":
         base += "_shapejs"
+    elif getattr(args, "shape_constraint", "none") == "conditional_deadzone":
+        base += "_deadzone"
     return f"{base}_seed{args.seed}"
 
 
 def shape_constraint_enabled(args: argparse.Namespace) -> bool:
-    return getattr(args, "shape_constraint", "none") == "prediction_centered_js"
+    return getattr(args, "shape_constraint", "none") != "none"
 
 
 def supervised_objective(
@@ -317,11 +321,14 @@ def supervised_objective(
 ) -> tuple[torch.Tensor, dict[str, float]]:
     base = supervised_loss(args.supervision, coordinates, heatmaps, target)
     shape = torch.zeros((), device=heatmaps.device, dtype=heatmaps.dtype)
-    if shape_constraint_enabled(args):
+    constraint = getattr(args, "shape_constraint", "none")
+    if constraint == "prediction_centered_js":
         shape = prediction_centered_js(
             heatmaps,
             sigma_cells=float(args.shape_sigma_cells),
         ).loss
+    elif constraint == "conditional_deadzone":
+        shape = conditional_deadzone_shape(heatmaps).loss
     total = base + float(getattr(args, "shape_weight", 0.0)) * shape
     return total, {
         "base_loss": float(base.detach()),
@@ -364,6 +371,7 @@ def r1_probe_metrics(
     flat, heatmaps = probe(image)
     coordinates = flat.view(image.shape[0], -1, 2)
     shape = heatmap_shape_metrics(heatmaps)
+    deadzone = conditional_deadzone_shape(heatmaps)
     gradient_norms = counterfactual_gradient_norms(heatmaps, coordinates)
     ratios = gradient_norms / initial_gradient_norms.clamp_min(1e-30)
     max_probability_by_channel = torch.median(
@@ -371,6 +379,9 @@ def r1_probe_metrics(
     ).values
     support_by_channel = torch.median(
         shape["effective_support_cells"], dim=0
+    ).values
+    dominant_mass_by_channel = torch.median(
+        deadzone.dominant_mass_r2, dim=0
     ).values
     gradient_ratio_by_channel = torch.median(
         ratios.reshape(ratios.shape[0], ratios.shape[1], -1), dim=0
@@ -383,6 +394,9 @@ def r1_probe_metrics(
                   & (max_probability_by_channel <= max_high))
         and torch.all((support_by_channel >= support_low)
                       & (support_by_channel <= support_high))
+        and torch.all(
+            dominant_mass_by_channel >= DEADZONE_DOMINANT_MASS_R2_MIN
+        )
     )
     gradient_pass = bool(
         run_gradient_ratio >= R1_RUN_GRADIENT_RATIO_MIN
@@ -391,6 +405,9 @@ def r1_probe_metrics(
     return {
         "per_channel_median_max_probability": max_probability_by_channel.detach().cpu().tolist(),
         "per_channel_median_effective_support_cells": support_by_channel.detach().cpu().tolist(),
+        "per_channel_median_dominant_mass_r2": (
+            dominant_mass_by_channel.detach().cpu().tolist()
+        ),
         "counterfactual_shift_cells64": COUNTERFACTUAL_SHIFT_CELLS64,
         "counterfactual_directions": ["+x", "-x", "+y", "-y"],
         "run_median_counterfactual_gradient_final_initial_ratio": float(
@@ -407,6 +424,9 @@ def r1_probe_metrics(
             ),
             "per_channel_median_effective_support_cells_range": list(
                 R1_EFFECTIVE_SUPPORT_RANGE
+            ),
+            "per_channel_median_dominant_mass_r2_min": (
+                DEADZONE_DOMINANT_MASS_R2_MIN
             ),
             "run_median_counterfactual_gradient_ratio_min": (
                 R1_RUN_GRADIENT_RATIO_MIN
@@ -437,7 +457,13 @@ def base_config(args: argparse.Namespace, problem: dict[str, Any], device: torch
         "shape_constraint": getattr(args, "shape_constraint", "none"),
         "shape_weight": float(getattr(args, "shape_weight", 0.0)),
         "shape_sigma_cells": float(getattr(args, "shape_sigma_cells", 1.0)),
-        "shape_center_gradient": "stopped",
+        "shape_center_gradient": (
+            "stopped_expectation"
+            if getattr(args, "shape_constraint", "none") == "prediction_centered_js"
+            else "detached_argmax"
+            if getattr(args, "shape_constraint", "none") == "conditional_deadzone"
+            else "not_applicable"
+        ),
         "channel_to_physical_target": problem["channel_to_physical_target"],
         "device": str(device),
         "base_channels": args.base_channels,
@@ -1111,7 +1137,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-shift", type=int, default=0)
     parser.add_argument(
         "--shape-constraint",
-        choices=("none", "prediction_centered_js"),
+        choices=("none", "prediction_centered_js", "conditional_deadzone"),
         default="none",
     )
     parser.add_argument("--shape-weight", type=float, default=0.0)
@@ -1155,7 +1181,10 @@ def parse_args() -> argparse.Namespace:
             parser.error("R1 shape constraint is authorized only with coordinate supervision")
         if args.shape_weight <= 0.0:
             parser.error("shape-weight must be positive when shape constraint is enabled")
-        if not np.isclose(args.shape_sigma_cells, 1.0, rtol=0.0, atol=1e-12):
+        if (
+            args.shape_constraint == "prediction_centered_js"
+            and not np.isclose(args.shape_sigma_cells, 1.0, rtol=0.0, atol=1e-12)
+        ):
             parser.error("R1 shape-sigma-cells is frozen at 1.0")
     return args
 

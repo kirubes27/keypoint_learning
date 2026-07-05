@@ -1,0 +1,157 @@
+{
+  "channel_to_physical_target": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "completed_steps": 200,
+  "device": "cpu",
+  "gate": "R1_shape_repaired_tiny_coordinate_overfit",
+  "gate_authoritative": false,
+  "metrics": {
+    "channel_median_error_cells64": [
+      0.22171145677566528,
+      4.441045761108398,
+      3.915452241897583,
+      4.691048622131348,
+      9.081242561340332,
+      0.04543962702155113,
+      3.975827693939209,
+      0.0875757709145546,
+      16.62004852294922,
+      1.7259094715118408
+    ],
+    "coordinate_gate_pass": false,
+    "failed_channel_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      6,
+      8,
+      9
+    ],
+    "failed_physical_target_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      6,
+      8,
+      9
+    ],
+    "joint_gate_pass": false,
+    "loss": 0.04288762807846069,
+    "loss_components": {
+      "base_loss": 0.02202049270272255,
+      "shape_loss": 2391.975341796875,
+      "shape_weight": 8.723808430294485e-06,
+      "total_loss": 0.04288762807846069
+    },
+    "max_channel_median_error_cells64": 16.62004852294922,
+    "median_error_cells64": 3.945639967918396,
+    "r1_probe": {
+      "counterfactual_directions": [
+        "+x",
+        "-x",
+        "+y",
+        "-y"
+      ],
+      "counterfactual_gradient_gate_pass": true,
+      "counterfactual_shift_cells64": 0.5,
+      "per_channel_median_counterfactual_gradient_final_initial_ratio": [
+        5.171523571014404,
+        0.06974507123231888,
+        0.14934612810611725,
+        0.013829868286848068,
+        1.0584287643432617,
+        2.759329080581665,
+        0.6783533096313477,
+        2.734692096710205,
+        1.0288430452346802,
+        0.06555037945508957
+      ],
+      "per_channel_median_dominant_mass_r2": [
+        0.2463310807943344,
+        0.9745246171951294,
+        0.9442625641822815,
+        0.9945264458656311,
+        0.0024353088811039925,
+        0.40378743410110474,
+        0.7081080675125122,
+        0.1544150710105896,
+        0.0025838722940534353,
+        0.984226644039154
+      ],
+      "per_channel_median_effective_support_cells": [
+        71.6615982055664,
+        1.2860885858535767,
+        1.239737629890442,
+        1.0731067657470703,
+        3528.08154296875,
+        45.72350311279297,
+        2.3284318447113037,
+        106.47280883789062,
+        3524.338623046875,
+        1.0799484252929688
+      ],
+      "per_channel_median_max_probability": [
+        0.20414720475673676,
+        0.9558085799217224,
+        0.9438526034355164,
+        0.9869124889373779,
+        0.0002893292985390872,
+        0.16282103955745697,
+        0.5797265768051147,
+        0.133375346660614,
+        0.0002889720199164003,
+        0.9836997985839844
+      ],
+      "run_median_counterfactual_gradient_final_initial_ratio": 1.0428422689437866,
+      "shape_gate_pass": false,
+      "thresholds": {
+        "per_channel_median_counterfactual_gradient_ratio_min": 0.01,
+        "per_channel_median_dominant_mass_r2_min": 0.7,
+        "per_channel_median_effective_support_cells_range": [
+          8.0,
+          32.0
+        ],
+        "per_channel_median_max_probability_range": [
+          0.08,
+          0.3
+        ],
+        "run_median_counterfactual_gradient_ratio_min": 0.1
+      }
+    },
+    "step": 200
+  },
+  "num_keypoints": 10,
+  "passed": false,
+  "run_scope": "implementation_smoke_only",
+  "runtime_seconds": 43.08743645763025,
+  "semantic_read": "short implementation smoke; no R1 scientific verdict",
+  "shape_constraint": "conditional_deadzone",
+  "shape_sigma_cells": 1.0,
+  "shape_weight": 8.723808430294485e-06,
+  "supervision": "coordinate",
+  "target_shift": 0,
+  "thresholds": {
+    "max_channel_median_error_cells64_max": 0.2,
+    "median_error_cells64_max": 0.1
+  },
+  "tiny_frames": [
+    0,
+    3,
+    6,
+    9
+  ]
+}

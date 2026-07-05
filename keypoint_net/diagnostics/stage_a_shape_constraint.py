@@ -23,6 +23,38 @@ class ShapeConstraintOutput:
     detached_center_cells: torch.Tensor
 
 
+@dataclass(frozen=True)
+class ConditionalDeadzoneOutput:
+    loss: torch.Tensor
+    per_channel_loss: torch.Tensor
+    probability: torch.Tensor
+    max_probability: torch.Tensor
+    effective_support_cells: torch.Tensor
+    dominant_mass_r2: torch.Tensor
+    detached_dominant_index: torch.Tensor
+
+
+DEADZONE_MAX_PROBABILITY_RANGE = (0.08, 0.30)
+DEADZONE_EFFECTIVE_SUPPORT_RANGE = (8.0, 32.0)
+DEADZONE_DOMINANT_MASS_R2_MIN = 0.70
+DEADZONE_DOMINANT_RADIUS_CELLS = 2.0
+
+
+def normalized_squared_hinge_band(
+    value: torch.Tensor, low: float, high: float
+) -> torch.Tensor:
+    return (
+        torch.relu((low - value) / low) ** 2
+        + torch.relu((value - high) / high) ** 2
+    )
+
+
+def normalized_squared_hinge_minimum(
+    value: torch.Tensor, minimum: float
+) -> torch.Tensor:
+    return torch.relu((minimum - value) / minimum) ** 2
+
+
 def _cell_grid(
     height: int,
     width: int,
@@ -91,6 +123,66 @@ def prediction_centered_js(
         probability=probability,
         target_gaussian=gaussian,
         detached_center_cells=center,
+    )
+
+
+def conditional_deadzone_shape(
+    logits: torch.Tensor,
+    *,
+    temperature: float = 1.0,
+    eps: float = 1e-30,
+) -> ConditionalDeadzoneOutput:
+    """Location-free squared-hinge constraint with an exact healthy dead zone.
+
+    The dominant-neighbourhood mask follows a detached argmax. This is
+    piecewise differentiable and deliberately breaks exact mode ties in the
+    deterministic direction chosen by ``torch.max``.
+    """
+    if logits.ndim != 4:
+        raise ValueError(f"expected BxKxHxW logits, got {tuple(logits.shape)}")
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+    batch, channels, height, width = logits.shape
+    probability = torch.softmax(logits.reshape(batch, channels, -1) / temperature, dim=-1)
+    max_probability, dominant_index = probability.max(dim=-1)
+    dominant_index = dominant_index.detach()
+    entropy = -torch.sum(
+        probability * torch.log(probability.clamp_min(eps)), dim=-1
+    )
+    effective_support = torch.exp(entropy)
+
+    yy, xx = torch.meshgrid(
+        torch.arange(height, device=logits.device),
+        torch.arange(width, device=logits.device),
+        indexing="ij",
+    )
+    dominant_y = torch.div(dominant_index, width, rounding_mode="floor")
+    dominant_x = dominant_index % width
+    dominant_mask = (
+        (xx[None, None] - dominant_x[:, :, None, None]) ** 2
+        + (yy[None, None] - dominant_y[:, :, None, None]) ** 2
+        <= DEADZONE_DOMINANT_RADIUS_CELLS**2
+    ).flatten(-2)
+    dominant_mass = torch.sum(probability * dominant_mask, dim=-1)
+
+    max_low, max_high = DEADZONE_MAX_PROBABILITY_RANGE
+    support_low, support_high = DEADZONE_EFFECTIVE_SUPPORT_RANGE
+    dominant_min = DEADZONE_DOMINANT_MASS_R2_MIN
+    per_channel = (
+        normalized_squared_hinge_band(max_probability, max_low, max_high)
+        + normalized_squared_hinge_band(
+            effective_support, support_low, support_high
+        )
+        + normalized_squared_hinge_minimum(dominant_mass, dominant_min)
+    )
+    return ConditionalDeadzoneOutput(
+        loss=per_channel.mean(),
+        per_channel_loss=per_channel,
+        probability=probability,
+        max_probability=max_probability,
+        effective_support_cells=effective_support,
+        dominant_mass_r2=dominant_mass,
+        detached_dominant_index=dominant_index,
     )
 
 

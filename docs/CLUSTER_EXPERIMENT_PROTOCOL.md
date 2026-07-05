@@ -93,7 +93,7 @@ summary can be read without cluster access.
 | Expected runs | 6 |
 | Mac collector | `cluster/fetch_stage_a_attribution_to_mac.sh` |
 | Architecture | Standard 64x64 path; `true_quarter_res=False` |
-| Current state | Cluster results complete; local collection/review pending |
+| Current state | Collected and reviewed locally; result report saved in `docs/STAGE_A_ATTRIBUTION_RESULTS_2026-07-05.md` |
 
 ## Current collection command
 
@@ -103,4 +103,3 @@ This command is run from the **Mac**, not from inside SSH:
 cd "/Users/kirubeso.r/Documents/PhD/keypoint_learning_fitted_operator"
 ./cluster/fetch_stage_a_attribution_to_mac.sh
 ```
-

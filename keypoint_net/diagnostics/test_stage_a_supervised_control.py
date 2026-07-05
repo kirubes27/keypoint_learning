@@ -14,8 +14,10 @@ sys.path.insert(0, str(KEYPOINT_ROOT))
 from model import KeypointExtractor, spatial_softmax  # noqa: E402
 from diagnostics.day45_supervised_control import supervised_loss  # noqa: E402
 from diagnostics.stage_a_supervised_control import (  # noqa: E402
+    add_probe_ratios,
     build_extractor,
     channel_to_target_indices,
+    coordinate_path_probe,
     counterfactual_gradient_norms,
     instrument_gate,
     load_phase_split,
@@ -224,3 +226,20 @@ def test_r1_probe_accepts_healthy_one_cell_gaussian_shape_and_gradient() -> None
     assert metrics["counterfactual_gradient_gate_pass"]
     assert min(metrics["per_channel_median_dominant_mass_r2"]) >= 0.70
     assert metrics["run_median_counterfactual_gradient_final_initial_ratio"] == pytest.approx(1.0)
+
+
+def test_coordinate_path_probe_records_shape_and_relative_sensitivity() -> None:
+    size = 33
+    y, x = torch.meshgrid(torch.arange(size), torch.arange(size), indexing="ij")
+    logits = (-0.5 * ((x - 16) ** 2 + (y - 16) ** 2)).float()[None, None]
+    extractor = _FixedHeatmapExtractor(logits)
+    extractor.train()
+    loader = [{"image": torch.zeros(4, 3, 16, 16)}]
+    initial = coordinate_path_probe(extractor, loader, torch.device("cpu"))
+    relative = add_probe_ratios(initial, initial)
+    assert extractor.training
+    assert initial["n_frames"] == 4
+    assert len(initial["per_channel_median_max_probability"]) == 1
+    assert initial["per_channel_median_counterfactual_gradient_l2"][0] > 0
+    assert relative["minimum_channel_counterfactual_gradient_initial_ratio"] == pytest.approx(1.0)
+    assert relative["collapsed_gradient_channel_indices"] == []

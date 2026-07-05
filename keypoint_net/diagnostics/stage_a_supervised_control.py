@@ -360,6 +360,85 @@ def counterfactual_gradient_norms(
     return torch.stack(norms, dim=-1)
 
 
+def coordinate_path_probe(
+    extractor: KeypointExtractor,
+    loader: DataLoader,
+    device: torch.device,
+) -> dict[str, Any]:
+    """Read-only eval-mode heatmap shape and coordinate-sensitivity probe."""
+    was_training = extractor.training
+    extractor.eval()
+    maximum_probability = []
+    effective_support = []
+    counterfactual_gradient = []
+    with torch.no_grad():
+        for batch in loader:
+            image = batch["image"].to(device)
+            flat, heatmaps = extractor(image)
+            coordinates = flat.view(image.shape[0], -1, 2)
+            shape = heatmap_shape_metrics(heatmaps)
+            maximum_probability.append(shape["max_probability"].cpu())
+            effective_support.append(shape["effective_support_cells"].cpu())
+            counterfactual_gradient.append(
+                counterfactual_gradient_norms(heatmaps, coordinates).cpu()
+            )
+    extractor.train(was_training)
+    maximum_probability_tensor = torch.cat(maximum_probability, dim=0)
+    effective_support_tensor = torch.cat(effective_support, dim=0)
+    gradient_tensor = torch.cat(counterfactual_gradient, dim=0)
+    gradient_by_channel = torch.median(
+        gradient_tensor.permute(1, 0, 2).reshape(gradient_tensor.shape[1], -1),
+        dim=1,
+    ).values
+    return {
+        "mode": "eval",
+        "sample_unit": "validation frame; one correlated cyclic orbit",
+        "n_frames": int(maximum_probability_tensor.shape[0]),
+        "counterfactual_shift_cells64": COUNTERFACTUAL_SHIFT_CELLS64,
+        "per_channel_median_max_probability": torch.median(
+            maximum_probability_tensor, dim=0
+        ).values.tolist(),
+        "per_channel_median_effective_support_cells": torch.median(
+            effective_support_tensor, dim=0
+        ).values.tolist(),
+        "per_channel_median_counterfactual_gradient_l2": (
+            gradient_by_channel.tolist()
+        ),
+        "run_median_counterfactual_gradient_l2": float(
+            torch.median(gradient_tensor)
+        ),
+    }
+
+
+def add_probe_ratios(
+    probe: dict[str, Any], initial_probe: dict[str, Any]
+) -> dict[str, Any]:
+    current = np.asarray(
+        probe["per_channel_median_counterfactual_gradient_l2"], dtype=float
+    )
+    initial = np.asarray(
+        initial_probe["per_channel_median_counterfactual_gradient_l2"],
+        dtype=float,
+    )
+    ratio = current / np.maximum(initial, 1e-30)
+    result = dict(probe)
+    result["per_channel_counterfactual_gradient_initial_ratio"] = ratio.tolist()
+    result["minimum_channel_counterfactual_gradient_initial_ratio"] = float(
+        np.min(ratio)
+    )
+    result["saturated_channel_indices"] = [
+        int(index)
+        for index, value in enumerate(
+            result["per_channel_median_max_probability"]
+        )
+        if value >= 0.99
+    ]
+    result["collapsed_gradient_channel_indices"] = [
+        int(index) for index, value in enumerate(ratio) if value < 0.01
+    ]
+    return result
+
+
 def r1_probe_metrics(
     extractor: KeypointExtractor,
     image: torch.Tensor,
@@ -633,6 +712,14 @@ def train_control(args: argparse.Namespace) -> Path:
     significant_best = float("inf")
     last_significant_epoch = 0
     history = read_history(run_dir / "history.csv")
+    probe_history_path = run_dir / "coordinate_path_probe_history.json"
+    if probe_history_path.exists():
+        probe_history = json.loads(probe_history_path.read_text())
+        initial_probe = probe_history[0]["probe"]
+    else:
+        initial_probe = coordinate_path_probe(extractor, val_plain_loader, device)
+        probe_history = [{"epoch": 0, "probe": initial_probe}]
+        write_json(probe_history_path, probe_history)
     last_path = run_dir / "last_checkpoint.pt"
     if args.resume:
         if not last_path.exists():
@@ -676,6 +763,26 @@ def train_control(args: argparse.Namespace) -> Path:
             split_name="validation",
         )
         score = float(val_metrics["selection_score_cells64"])
+        path_probe = add_probe_ratios(
+            coordinate_path_probe(extractor, val_plain_loader, device),
+            initial_probe,
+        )
+        plain_channel_error = val_metrics["unaugmented"][
+            "channel_median_error_cells64"
+        ]
+        path_probe["inaccurate_saturated_channel_indices"] = [
+            int(index)
+            for index, (error, maximum_probability) in enumerate(
+                zip(
+                    plain_channel_error,
+                    path_probe["per_channel_median_max_probability"],
+                    strict=True,
+                )
+            )
+            if error > 0.75 and maximum_probability >= 0.99
+        ]
+        probe_history.append({"epoch": current_epoch, "probe": path_probe})
+        write_json(probe_history_path, probe_history)
         row = {
             "epoch": current_epoch,
             "train_loss": float(np.mean(losses)),
@@ -705,6 +812,7 @@ def train_control(args: argparse.Namespace) -> Path:
                 loader_generator=loader_generator,
             )
             write_json(run_dir / "best_validation_metrics.json", val_metrics)
+            write_json(run_dir / "best_coordinate_path_probe.json", path_probe)
 
         threshold = significant_best * (1.0 - args.relative_improvement)
         if not np.isfinite(significant_best) or score <= threshold:
@@ -743,6 +851,9 @@ def train_control(args: argparse.Namespace) -> Path:
         "stop_reason": stop_reason,
         "runtime_seconds_this_invocation": time.perf_counter() - start_time,
         "test_evaluated": False,
+        "best_coordinate_path_probe": str(
+            (run_dir / "best_coordinate_path_probe.json").resolve()
+        ),
         "interpretation": (
             "validation converged" if stop_reason == "validation_plateau"
             else "hard cap reached; capability may be shown by test but no ceiling claim is allowed"

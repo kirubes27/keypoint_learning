@@ -110,3 +110,31 @@ Overturn ledger: shape-constraint-first ordering overturned by Run A artifact; R
 5. RUNFILE BINDING: all five Decision 2.3 Slurm runfiles are SHA-256-bound
    into the prelaunch lock, configs, D1 report, finalization plans, and
    aggregate reports before any cluster execution.
+
+## v2.5 AMENDMENTS (2026-07-26, Decision 2.3 result and re-plan)
+
+1. DECISION 2.3 CLOSED: arms A (centered raw-logit shared linear), B
+   (probability-space shared linear), and C (fixed production expectation)
+   each passed all frozen supervised instrument thresholds for seeds 42, 43,
+   and 44. Every arm is 3/3 pass. The seeds-45/46 extension is not triggered
+   and must not run under the Decision 2.3 label.
+2. HEAD DECISION: no coordinate-head redesign is justified. Keep the fixed
+   production expectation as the baseline; do not promote A/B and do not
+   reopen the Gate 0 windowing branch.
+3. CLAIM CALIBRATION: the machine aggregate's shorthand "matched seed
+   variability dominates the seed-41 result" is too strong. The supported
+   claim is that the Gate 0 failure is not architecturally forced and belongs
+   to the specific seed-41 realization (random seed and/or training
+   trajectory), which this panel does not decompose.
+4. CONVERGENCE BOUNDARY: five of nine runs reached the 3,000-epoch hard cap.
+   This does not change their frozen threshold-capability passes, but it
+   forbids an asymptotic A/B/C ranking. No architecture-superiority claim is
+   made.
+5. DOWNSTREAM BOUNDARY RETAINED: this one-object supervised result does not
+   establish identifiability, material attachment, operator benefit,
+   other-object transfer, or yaw/pitch readiness.
+6. NEXT ACTION: freeze `COINCIDENCE_RUNFILE.md` with Gate 3a's numeric
+   antisymmetric-gradient, separation, on-mask, assignment-churn,
+   stochastic-draw, and tie-breaking criteria. Gate 3a remains blocked until
+   that artifact is frozen; a pass authorizes only Gate 3b, while a failure
+   redirects the coincidence branch.

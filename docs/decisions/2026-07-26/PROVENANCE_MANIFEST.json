@@ -12,8 +12,11 @@
     "execution_branch": "agent/preoperator-gates-20260726"
   },
   "decision_sources": {
-    "decision_synthesis_v2_sha256": "7a58073faba7e7a661da7ad2ffcf34e7a794c56938d6b1316f1bf680d371a036",
+    "decision_synthesis_v2_sha256": "98a3889d7dadaf693318e8ebdd6100c7043fd035b5cb6f4e6ea092a1a30b8dc2",
     "fable5_high_decision23_d0_review_sha256": "46faa39cbabfdfe8f9e04db451b719a97d43dc04a6d0bc41ce256ce6797aa575",
+    "fable5_high_decision23_final_review_sha256": "33d2548ad7a73dcc43e5af96f060d3512b9fe92c0bb0582aa684da68babe4d19",
+    "decision23_final_result_sha256": "1077c7bdc26039f5c24319545c88c9fc50eaf8d41778eff81da766b684ab30c5",
+    "decision23_d1_execution_attempts_sha256": "2dd74cd56b3541c4a747adbc2ddb91e7c2add510cf10e508c593c3e3bc223415",
     "v2_review_sol_sha256": "20ac4be3126bf6d8254d528e6934a9c9c2e223a26f0313a4e8ade46d708c7aa9",
     "v2_review_opus_sha256": "54b52c67b9c883103ba91a6d0f90dfba0d55180b1ded71a195fccb3a8a03db06"
   },
@@ -55,7 +58,7 @@
       "decision23_spec_sha256": "3ef019aed4de662f16487de109f81ae133f89c781bc72df7562c414d71760561",
       "amendments": [
         "DECISION_2_3_DIAGNOSTIC_HEAD_SPEC_v1.md v1.2",
-        "DECISION_SYNTHESIS_v2_2026-07-26.md v2.4"
+        "DECISION_SYNTHESIS_v2_2026-07-26.md v2.5"
       ],
       "slurm_runfiles_sha256": {
         "d1_smoke": "e8760480f8ef2057a000a10520a44f7f87d4fd853f50f85a5dcb8d5a1ed338f7",
@@ -67,6 +70,9 @@
     },
     "d1": {
       "seed": 42,
+      "slurm_job_id": "53632077",
+      "status": "pass",
+      "report_sha256": "dd018c1609017cfbe94d08a96297a7673fb818464391eb4c919fd7faefc3f671",
       "arms_sequential": [
         "raw_linear",
         "probability_linear",
@@ -76,6 +82,8 @@
       "slurm": "1 GPU, 8 CPUs, 5000 MB per CPU, 30 minutes"
     },
     "d2": {
+      "slurm_array_job_id": "53632209",
+      "status": "all_nine_tasks_completed",
       "arms": 3,
       "seeds": [
         42,
@@ -84,6 +92,45 @@
       ],
       "array": "0-8%2",
       "slurm_per_task": "1 GPU, 8 CPUs, 5000 MB per CPU, 1 hour"
+    },
+    "d3": {
+      "slurm_job_id": "53632862",
+      "status": "pass",
+      "first_test_content_access": true,
+      "test_content_manifest_sha256": "fc033324b777ec4e80a526209d17db2b5929b68378f5985b3e656832fef5b60c",
+      "ledger_event_id": "3fd214630a0ef180cb473627263610c00fdbb80a59015157741f4b384e64906b"
+    },
+    "result": {
+      "scientific_commit": "490bffac39f67cca2a8f2d0f363ea413c0ec6fb0",
+      "raw_linear": "3/3 pass",
+      "probability_linear": "3/3 pass",
+      "fixed_expectation": "3/3 pass",
+      "extension": "not triggered; seeds 45 and 46 forbidden under the frozen Decision 2.3 label",
+      "decision": "no coordinate-head redesign",
+      "claim_calibration": "the seed-41 failure is not architecturally forced; seed versus trajectory remains unresolved",
+      "hard_cap_unconverged_runs": 5,
+      "validator": "PASS after immutable D3 finalization",
+      "statistical_scope": {
+        "quantity": "raw per-seed descriptive localization metrics; no error bars",
+        "sample_unit": "optimization seed",
+        "n_per_arm": 3,
+        "within_seed_dependence": "60 test frames are one correlated cyclic orbit",
+        "inference": "one-object descriptive capability only; no population inference"
+      },
+      "artifacts": {
+        "d1_report": {
+          "path": "decision23_results/DECISION23_D1_SMOKE_REPORT.json",
+          "sha256": "dd018c1609017cfbe94d08a96297a7673fb818464391eb4c919fd7faefc3f671"
+        },
+        "initial_test_report": {
+          "path": "decision23_results/DECISION23_INITIAL_TEST_REPORT.json",
+          "sha256": "45f967066bf0f5bae08a747e6a44f6622a21ef736cfffd8c39bf671247e9873d"
+        },
+        "initial_test_ledger": {
+          "path": "decision23_results/DECISION23_INITIAL_TEST_LEDGER.jsonl",
+          "sha256": "cc9c9c886e5d70bac25da96e5fba8cf969e54dbc3a67db2e9c35126590308c77"
+        }
+      }
     },
     "test_content_policy": "not opened during lock, train, or probe; one immutable committed result per checkpoint, with crash recovery only for no-artifact or fully validated two-artifact states"
   }

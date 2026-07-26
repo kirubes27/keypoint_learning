@@ -88,3 +88,28 @@ Read-only Fable 5 High verdict:
 > regression test meaningfully pins `map_location="cpu"` and exact generator
 > restoration. A different visible-GPU count at resume would remain a risk;
 > Decision 2.3 requests exactly one visible GPU for every training task.
+
+## Attempt 3 — Slurm job 53632077 — passed
+
+- Commit: `490bffac39f67cca2a8f2d0f363ea413c0ec6fb0`
+- Cluster: Lichtenberg, node `ghqd0001`
+- State: `COMPLETED`, exit `0:0`, elapsed `00:00:37`
+- Hardware: one NVIDIA H100 80GB HBM3
+- Scope: Arm A, B, and C sequentially for seed 42, exactly two epochs each
+- Result: forward, backward, optimizer, epoch-0/1/2 validation, gradient audit,
+  checkpoint save/restore, source/provenance binding, and no-test-access
+  assertions all passed
+- D1 report:
+  `decision23_results/DECISION23_D1_SMOKE_REPORT.json`
+- D1 report SHA-256:
+  `dd018c1609017cfbe94d08a96297a7673fb818464391eb4c919fd7faefc3f671`
+- Test policy: the report records `scientific_result=false`, and every arm
+  records `test_evaluated=false`
+
+The exact D1 report then received a read-only Fable 5 High `PASS D1` review.
+Only after this successful attempt were the frozen D2 arm-by-seed runs
+submitted.
+
+The two failed attempts carry no scientific result and never authorized D2.
+They are retained here because they exposed and closed two checkpoint-resume
+failure modes before the decision-bearing matrix.

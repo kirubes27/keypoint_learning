@@ -1,0 +1,88 @@
+{
+  "arms": [
+    {
+      "arm": "raw_linear",
+      "best_epoch": 1,
+      "checkpoint_restore": "pass",
+      "checkpoint_sha256": "3a0b4c4ae6c0a35a6052dda461e6e016798ce6fb191e283176cb2e77b5336ef2",
+      "completed_epoch": 2,
+      "config_sha256": "9012e269a0a2cfe888469f0f67525b67ef17c0e05b22694cd254dfdac446a622",
+      "run_dir": "/work/scratch/ko75kamy/keypoint_preoperator_runs/decision23_490bffac39f67cca2a8f2d0f363ea413c0ec6fb0/smoke/runs/e2e_raw_linear_standard64_k10_seed42",
+      "seed": 42,
+      "test_evaluated": false
+    },
+    {
+      "arm": "probability_linear",
+      "best_epoch": 2,
+      "checkpoint_restore": "pass",
+      "checkpoint_sha256": "0d5efdb31329bf50b622abfbdfbcbf7af970a562b8b1033ac83448702a05cc00",
+      "completed_epoch": 2,
+      "config_sha256": "1d71bbde5ef70f9ecd5a9c2245d7f92ac177109f94606b03734064fcdc2c41af",
+      "run_dir": "/work/scratch/ko75kamy/keypoint_preoperator_runs/decision23_490bffac39f67cca2a8f2d0f363ea413c0ec6fb0/smoke/runs/e2e_probability_linear_standard64_k10_seed42",
+      "seed": 42,
+      "test_evaluated": false
+    },
+    {
+      "arm": "fixed_expectation",
+      "best_epoch": 2,
+      "checkpoint_restore": "pass",
+      "checkpoint_sha256": "cba4d011aab849b80328298e43569d124de32bf2d8daac481c6fa768659dfdb3",
+      "completed_epoch": 2,
+      "config_sha256": "571875a9700e0b7d2356b000791094d1bf33b324e59dd9f71f4880e16fbccdfb",
+      "run_dir": "/work/scratch/ko75kamy/keypoint_preoperator_runs/decision23_490bffac39f67cca2a8f2d0f363ea413c0ec6fb0/smoke/runs/e2e_fixed_expectation_standard64_k10_seed42",
+      "seed": 42,
+      "test_evaluated": false
+    }
+  ],
+  "budget": {
+    "batch_size": 16,
+    "eval_every": 1,
+    "lr": 0.0001,
+    "max_epochs": 2,
+    "min_epochs": 2,
+    "plateau_patience": 1,
+    "relative_improvement": 0.01,
+    "weight_decay": 1e-05
+  },
+  "decision_spec_sha256": "3ef019aed4de662f16487de109f81ae133f89c781bc72df7562c414d71760561",
+  "gate": "Decision_2_3_D1_smoke",
+  "git_commit": "490bffac39f67cca2a8f2d0f363ea413c0ec6fb0",
+  "meaning": "wiring, CUDA, optimizer, validation, checkpoint, restore, and active gradient paths passed; no localization claim follows",
+  "runtime": {
+    "cuda_device_capability": [
+      9,
+      0
+    ],
+    "cuda_device_index": 0,
+    "cuda_device_name": "NVIDIA H100 80GB HBM3",
+    "cuda_device_total_memory_bytes": 85009367040,
+    "cuda_runtime": "12.1",
+    "cudnn_benchmark": false,
+    "cudnn_deterministic": false,
+    "cudnn_version": 90100,
+    "deterministic_algorithms_enabled": false,
+    "numpy": "2.4.4",
+    "pillow": "12.2.0",
+    "python": "3.11.14 (main, Feb  6 2026, 09:21:36) [GCC 11.5.0 20240719 (Red Hat 11.5.0-5)]",
+    "torch": "2.5.1+cu121"
+  },
+  "schema_version": 1,
+  "scientific_result": false,
+  "seed": 42,
+  "slurm_job_id": "53632077",
+  "slurm_runfiles_sha256": {
+    "d1_smoke": "e8760480f8ef2057a000a10520a44f7f87d4fd853f50f85a5dcb8d5a1ed338f7",
+    "d2_full": "f9a95648ac4c0663909db28c69192cabb6e151f16e4d434c2951d27fab00b278",
+    "d3_finalize": "3d428b4e483f0fd0a267d0001e51c710414a250530a6dfb04817d0851d04d776",
+    "extension": "acb3783bb90ccf7de2157b1adeae7c1b7e1f7737daa1cab61d8db54173d7fdbe",
+    "extension_finalize": "26e1e8ed740ccd39792fe879aea90ffbcfeedea83f50f07b8f6cbe016619093c"
+  },
+  "source_dependencies_sha256": {
+    "day45_supervised_control": "2cda904d8a1cc69741cb04826e957d93acefc9c341b30a1dae8a881ff0de0705",
+    "model": "bc86a495dcb2ec982468fea7a7e2bfad8e0f2cac8f3a1e8c83a14976986fab83",
+    "stage_a_supervised_control": "2a7b9ee24a89d7784ab54f34c6f2844212f12c6859d5208bceb3475d0fcf92f1"
+  },
+  "source_sha256": "243c47f6961f2f1742550cc86dd18617fd64821afe0ee99462ad0adfa07f969e",
+  "status": "pass",
+  "test_policy": "no test frame loaded or evaluated"
+}

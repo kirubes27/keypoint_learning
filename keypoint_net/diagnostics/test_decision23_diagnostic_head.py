@@ -1,4 +1,5 @@
 import copy
+import io
 import itertools
 import json
 import math
@@ -194,6 +195,19 @@ def test_cross_job_runtime_match_ignores_gpu_hardware_but_not_software() -> None
     assert d23.runtime_software_identity(first) != d23.runtime_software_identity(
         incompatible
     )
+
+
+def test_runtime_identity_is_safe_for_weights_only_checkpoint_loading() -> None:
+    runtime = d23.runtime_identity(None)
+    for key in ("python", "torch", "numpy", "pillow"):
+        assert type(runtime[key]) is str
+    if runtime["cuda_runtime"] is not None:
+        assert type(runtime["cuda_runtime"]) is str
+    buffer = io.BytesIO()
+    torch.save({"config": {"runtime": runtime}}, buffer)
+    buffer.seek(0)
+    restored = torch.load(buffer, map_location="cpu", weights_only=True)
+    assert restored["config"]["runtime"] == runtime
 
 
 def test_slurm_runfiles_are_frozen_into_immutable_provenance() -> None:

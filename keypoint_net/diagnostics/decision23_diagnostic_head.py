@@ -931,11 +931,13 @@ def runtime_identity(device: torch.device | None = None) -> dict[str, Any]:
         cuda_capability = [int(properties.major), int(properties.minor)]
         cuda_total_memory = int(properties.total_memory)
     return {
-        "python": sys.version,
-        "torch": torch.__version__,
-        "numpy": np.__version__,
-        "pillow": PILLOW_VERSION,
-        "cuda_runtime": torch.version.cuda,
+        "python": str(sys.version),
+        "torch": str(torch.__version__),
+        "numpy": str(np.__version__),
+        "pillow": str(PILLOW_VERSION),
+        "cuda_runtime": (
+            None if torch.version.cuda is None else str(torch.version.cuda)
+        ),
         "cudnn_version": torch.backends.cudnn.version(),
         "cuda_device_index": cuda_index,
         "cuda_device_name": cuda_name,

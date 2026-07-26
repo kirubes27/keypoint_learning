@@ -850,6 +850,49 @@ def test_checkpoint_restore_reproduces_next_two_optimizer_steps(
         assert torch.equal(restored_generator.get_state(), expected_state[3])
 
 
+def test_checkpoint_restore_keeps_rng_tensors_on_cpu_for_cuda_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    model = nn.Linear(3, 2)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    loader_generator = torch.Generator().manual_seed(456)
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    save_checkpoint(
+        checkpoint_path,
+        extractor=model,
+        optimizer=optimizer,
+        epoch=1,
+        config={"test": "cuda-target-cpu-rng"},
+        best_score=1.0,
+        significant_best=1.0,
+        last_significant_epoch=1,
+        loader_generator=loader_generator,
+    )
+    real_load = torch.load
+    observed: dict[str, object] = {}
+
+    def recording_load(*args, **kwargs):
+        observed["map_location"] = kwargs.get("map_location")
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "load", recording_load)
+    restored_model = nn.Linear(3, 2)
+    restored_optimizer = torch.optim.Adam(restored_model.parameters(), lr=1e-3)
+    restored_generator = torch.Generator().manual_seed(999)
+    restore_checkpoint(
+        checkpoint_path,
+        restored_model,
+        restored_optimizer,
+        restored_generator,
+        torch.device("cuda"),
+    )
+    assert observed["map_location"] == "cpu"
+    assert torch.equal(
+        restored_generator.get_state(), loader_generator.get_state()
+    )
+
+
 def test_resume_records_reject_duplicates_and_checkpoint_skew() -> None:
     history = [{"epoch": 1}, {"epoch": 25}]
     audits = [{"epoch": 0}, {"epoch": 1}, {"epoch": 25}]

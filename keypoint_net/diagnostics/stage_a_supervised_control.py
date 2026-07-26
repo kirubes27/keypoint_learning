@@ -611,13 +611,19 @@ def restore_checkpoint(
     loader_generator: torch.Generator,
     device: torch.device,
 ) -> dict[str, Any]:
-    checkpoint = torch.load(path, map_location=device, weights_only=True)
+    # Keep RNG tensors on CPU. Mapping the whole checkpoint to CUDA turns the
+    # loader-generator state into a CUDA ByteTensor, which a CPU Generator
+    # correctly rejects. Model and optimizer loaders move their own tensors to
+    # the parameter device.
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     extractor.load_state_dict(checkpoint["extractor_state_dict"], strict=True)
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    loader_generator.set_state(checkpoint["loader_generator_state"])
+    loader_generator.set_state(checkpoint["loader_generator_state"].cpu())
     torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
     if device.type == "cuda" and "cuda_rng_state_all" in checkpoint:
-        torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state_all"])
+        torch.cuda.set_rng_state_all(
+            [state.cpu() for state in checkpoint["cuda_rng_state_all"]]
+        )
     return checkpoint
 
 

@@ -41,3 +41,50 @@ Read-only Fable 5 High verdict:
 > actual failure path. Since D2 was never submitted and epochs 1-2 of the
 > failed smoke carry no decision weight, rerunning D1 under the patched code
 > introduces no frozen-programme violation.
+
+## Attempt 2 — Slurm job 53631881 — failed during restore verification
+
+- Commit: `5262185801e691069034d92c7316707626f36f8d`
+- Cluster: Lichtenberg, node `ghqd0001`
+- State: `FAILED`, exit `1:0`, elapsed `00:00:17`
+- Progress: the prelaunch lock and Arm A smoke epochs 1 and 2 completed.
+  The safe checkpoint load succeeded. Arms B/C and the D1 summarizer did not
+  run; D2 was not submitted.
+- Test policy: no test finalization command ran.
+
+Failure:
+
+```text
+TypeError: RNG state must be a torch.ByteTensor
+```
+
+Read-only inspection of the saved checkpoint showed:
+
+```text
+loader_generator_state: torch.Tensor, dtype=torch.uint8
+torch_rng_state: torch.Tensor
+runtime.torch: str
+```
+
+Cause: `restore_checkpoint()` loaded the entire checkpoint with
+`map_location=device`. On a CUDA smoke job this moved the CPU loader-generator
+state to a CUDA ByteTensor; `torch.Generator()` is a CPU generator and rejects
+that state.
+
+Bounded correction: load the checkpoint on CPU, let model/optimizer restoration
+move their own state to parameter devices, and explicitly keep loader, Torch,
+and CUDA RNG-state tensors on CPU for the RNG restoration APIs. A regression
+test passes a CUDA target device without requiring CUDA execution and asserts
+that checkpoint loading remains CPU-mapped and the loader-generator state is
+restored exactly.
+
+Read-only Fable 5 High verdict:
+
+> PASS FIX. Loading on CPU is safe for model and optimizer because
+> `nn.Module.load_state_dict` copies into existing device-resident parameters
+> and `Optimizer.load_state_dict` casts state tensors to each parameter's
+> device. CUDA RNG handling is semantically correct because both
+> `get_rng_state_all` and `set_rng_state_all` use CPU ByteTensors. The
+> regression test meaningfully pins `map_location="cpu"` and exact generator
+> restoration. A different visible-GPU count at resume would remain a risk;
+> Decision 2.3 requests exactly one visible GPU for every training task.

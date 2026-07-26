@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "programme": "preoperator-gates-20260726",
+  "git": {
+    "source_repository": "https://github.com/kirubes27/keypoint_learning.git",
+    "source_repository_visibility": "public",
+    "publication_policy": "do not push new unpublished artifacts to the public source remote; private remote required",
+    "private_publication_remote": null,
+    "base_branch": "fitted-operator-diagnostics-20260704",
+    "base_commit": "2f98e93f5e7efa179c33df5f7fdfd696b47f837a",
+    "execution_branch": "agent/preoperator-gates-20260726"
+  },
+  "decision_sources": {
+    "decision_synthesis_v2_sha256": "fc934321c2de9284fe6c542bda227dea0971fca7a1cf20539696db8457ca4f61",
+    "v2_review_sol_sha256": "20ac4be3126bf6d8254d528e6934a9c9c2e223a26f0313a4e8ade46d708c7aa9",
+    "v2_review_opus_sha256": "54b52c67b9c883103ba91a6d0f90dfba0d55180b1ded71a195fccb3a8a03db06"
+  },
+  "canonical_current_dataset": {
+    "basename": "_tdw_world_z_roll_base_panel_512_v2",
+    "transformation": "absolute TDW world-Z roll about centroid",
+    "frames_per_object": 180,
+    "angle_step_deg": 2,
+    "cyclic": true,
+    "split_sha256": "49f9d2a34c352d3ebb84809ec36e0a46572b0cde6b7a6d357f317dc44e3da486"
+  },
+  "representative_checkpoint": {
+    "object": "engineers_hammer_vray",
+    "seed": 41,
+    "sha256": "d4777e3abfed3d81698ab07edf0563484b49ed314130aa8e925a0de2e1188c3d",
+    "config_sha256": "2df6bfd4d0d8487e6f74fb3e63b0eeaa4c2e5604c2ba845c1d7bd56253b9e750"
+  },
+  "code_at_base": {
+    "keypoint_net/model.py": "bc86a495dcb2ec982468fea7a7e2bfad8e0f2cac8f3a1e8c83a14976986fab83",
+    "keypoint_net/diagnostics/stage_a_supervised_control.py": "b0e8c9c7688cbcac18c9d0fb3777a8770603ed748ca979ae0a4b37b2805c526e",
+    "docs/REPRESENTATIVE_COORDINATE_PILOT_RESULTS_2026-07-05.md": "c13cb523e53bb465cb390151a3d0072d9dacc895becab944d8cd35883f538ce3"
+  },
+  "statistical_scope": {
+    "gate0_optimization_seeds": 1,
+    "gate0_object_count": 1,
+    "gate0_validation_frames": 60,
+    "gate0_channels": 10,
+    "gate0_sample_unit": "validation frame x supervised channel",
+    "frame_dependence": "one correlated cyclic orbit",
+    "interpretation": "descriptive mechanism ranking only; no population inference"
+  }
+}

@@ -1,7 +1,10 @@
 # Decision 2.3 diagnostic-head specification v1 — 2026-07-26
 
-Status: frozen for implementation review; no cluster launch until a private
-Git remote exists and the implementation passes Fable 5 high review.
+Status: frozen for implementation review. Kirubes explicitly authorized the
+existing public GitHub repository and branch on 2026-07-26, superseding the
+earlier private-remote prerequisite. No cluster launch is allowed until the
+implementation, D0 evidence, exact Slurm runfiles, and this amendment pass a
+read-only Fable 5 high review.
 
 ## Decision lock
 
@@ -39,9 +42,12 @@ augmentation, optimizer, stopping rule, and checkpoint selector; test remains
 unread until all initial arm/seed checkpoints and the finalizer are frozen.
 
 **Next gate.** Unit and semantic tests plus one Slurm smoke covering all three
-arms. Any semantic mismatch, test-split access, non-finite value, zero upstream
-gradient caused by wiring, provenance mismatch, or inability to reproduce the
-fixed baseline stops the full launch.
+arms. Train/probe may enumerate the committed split metadata but may open only
+train/validation image and mask contents; finalization may open only test image
+and mask contents and reconstructs targets from each frozen run config. Any
+semantic mismatch, forbidden frame-content read, non-finite value, zero
+upstream gradient caused by wiring, provenance mismatch, or inability to
+reproduce the fixed baseline stops the full launch.
 
 ## Bound data and training recipe
 
@@ -195,8 +201,12 @@ Required:
 
 ### D1 — implementation smoke
 
-One Slurm job runs Arm A, B, and C sequentially for seed 42 with a short frozen
-budget. It must:
+One Slurm job runs Arm A, B, and C sequentially for seed 42. The frozen budget
+is exactly two epochs per arm, validation and gradient audit at epochs 0, 1,
+and 2, batch size 16, Adam `lr=1e-4`, weight decay `1e-5`, and no early exit.
+The Slurm request is exactly one GPU, one task, eight CPUs,
+`--mem-per-cpu=5000`, and 30 minutes; no account or partition is specified.
+Maximum arm concurrency inside the job is one. It must:
 
 - record the exact Git commit/config hash and CUDA device;
 - complete forward, backward, optimizer, validation, checkpoint, restore, and
@@ -217,6 +227,13 @@ finalization may resolve a smoke checkpoint as a scientific run.
 
 After D0 and D1 pass, train Arm A/B/C for seeds 42/43/44: nine matched runs.
 No arm is promoted, dropped, or tuned from interim results.
+
+The frozen D2 Slurm request is an array `0-8%2`: at most two concurrent tasks,
+each with one GPU, one task, eight CPUs, `--mem-per-cpu=5000`, and a one-hour
+walltime. No account or partition is specified; Lichtenberg's submit plugin
+assigns project `10003029`. Every task must run from one clean independent
+clone of `agent/preoperator-gates-20260726`, bind the exact expected commit via
+the submission environment, and write outside the Git checkout.
 
 ### D3 — one frozen test finalization
 
@@ -294,6 +311,8 @@ margin, and degeneracy guards for collapse and off-object points.
 - Fable's raw independent design and blocker review;
 - implementation and unit tests;
 - exact dataset/split/checkpoint/code hashes;
+- hashes of the imported model, data, augmentation, checkpoint, and evaluation
+  modules, plus the exact Git commit and clean-worktree assertion;
 - D1 smoke report and Slurm job ID;
 - per-arm/per-seed config, checkpoint, validation history, gradient audit, and
   parameter-count record;
@@ -303,3 +322,43 @@ margin, and degeneracy guards for collapse and off-object points.
 No error bars are required. If any plot later adds a band, its artifact must
 state the statistic, exact computation, seed-level sample unit and `n`, and
 that it is descriptive rather than inferential.
+
+## v1.1 execution amendment — 2026-07-26
+
+1. Public-branch publication is authorized by the owner; the obsolete
+   private-remote prerequisite is removed.
+2. D1 and D2 budgets, concurrency, walltime, CPU, GPU, and memory requests are
+   frozen above.
+3. "Test untouched" now means test image/mask contents are not opened by
+   lock/train/probe, not merely that a test `DataLoader` is absent.
+4. Probe A/B is bound to seed-41 checkpoint SHA-256
+   `d4777e3abfed3d81698ab07edf0563484b49ed314130aa8e925a0de2e1188c3d`
+   and sibling config SHA-256
+   `2df6bfd4d0d8487e6f74fb3e63b0eeaa4c2e5604c2ba845c1d7bd56253b9e750`.
+5. Test finalization verifies all nine configs, checkpoints, histories,
+   gradient audits, imported-source hashes, and the absence of either test
+   artifact before constructing test data. Extension seeds 45/46 require the
+   immutable initial report to record exactly 2/3 for that arm.
+
+## v1.2 pre-D1 blocker amendment — 2026-07-26
+
+1. Full runtime and GPU identity remain recorded in every config. Cross-job
+   matching is required only for the Python/Torch/NumPy/Pillow/CUDA/cuDNN
+   software versions and deterministic-algorithm flags; D2 tasks, resumes,
+   extensions, and finalization are not required to land on identical GPU
+   hardware.
+2. "Evaluated exactly once" means one committed, immutable test-result pair
+   per checkpoint. If a finalizer is interrupted while a matching claim has
+   neither test artifact, the attempt exposed no result and may resume. If
+   both immutable artifacts exist, they are hash- and identity-validated and
+   committed without reevaluation. Exactly one artifact, an identity
+   mismatch, or any inconsistent ledger state fails closed. No architecture,
+   hyperparameter, or checkpoint choice may change between attempts.
+3. D1 records full validation metrics at epoch 0 as a separate artifact, in
+   addition to the epoch-0 gradient audit and epoch-1/2 history.
+4. Every D2 and extension array task uses its own clean clone at the bound
+   commit and writes outputs outside that clone. A task resumes only from its
+   matching immutable config and `last_checkpoint.pt`.
+5. The SHA-256 of every D1, D2, finalization, extension, and extension-
+   finalization Slurm runfile is bound into the prelaunch lock, every run
+   config, the D1 report, finalization plans, and aggregate reports.

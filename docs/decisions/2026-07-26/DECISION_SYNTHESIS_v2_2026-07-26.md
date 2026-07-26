@@ -62,3 +62,51 @@ Overturn ledger: shape-constraint-first ordering overturned by Run A artifact; R
 5. SECONDARY-MODE NON-GATE: no target-local-secondary-mode analysis is inserted before Decision 2.3. The saved Gate 0 artifact lacks nondominant peaks, and the proposed 50 percent rule was not frozen. Any later topology audit is descriptive and requires its own changelog.
 6. TINY-GATE ROLE: the historical four-frame control remains mechanism evidence but is not a scientific stop gate for the representative 60-frame Decision 2.3 panel. D0 semantic tests and a three-arm Slurm smoke are the full-run gate.
 7. DOWNSTREAM BOUNDARY: supervised diagnostic success is not downstream benefit. No identifiability or operator claim is authorized until a separate versioned spec fixes a no-coordinate-label metric, margin, matched seeds/budget, and collapse/off-object guards.
+
+## v2.3 AMENDMENTS (2026-07-26, Decision 2.3 execution control)
+
+1. PUBLICATION AUTHORITY: Kirubes explicitly approved using the existing
+   public repository and branch `agent/preoperator-gates-20260726`. This
+   supersedes the earlier private-remote prerequisite; it does not relax the
+   one-branch, clean-checkout, immutable-artifact, or reviewer-read-only rules.
+2. PHYSICAL TEST ISOLATION: Decision 2.3 lock/train/probe may enumerate frozen
+   split metadata but may open only train/validation image and mask contents.
+   Test image/mask contents may first be opened inside the one frozen
+   finalization command after all run artifacts pass preflight.
+3. D1 BUDGET: one sequential A/B/C seed-42 Slurm job; exactly two epochs per
+   arm; evaluation/audit at epochs 0, 1, and 2; one GPU, eight CPUs,
+   `--mem-per-cpu=5000`, 30 minutes, no explicit account or partition.
+4. D2 RESOURCES: one `0-8%2` Slurm array for A/B/C crossed with seeds
+   42/43/44; at most two GPUs concurrently; each task requests one GPU, eight
+   CPUs, `--mem-per-cpu=5000`, and one hour. No interim arm tuning, dropping,
+   or promotion is permitted.
+5. SOURCE BINDING: configs and finalization bind the Decision 2.3 script,
+   imported model/data/augmentation/checkpoint/evaluation modules, exact Git
+   commit, dataset semantic/index/operator metadata hashes, and clean-worktree
+   state.
+6. PROBE BINDING: the optional A/B frozen probe accepts only the canonical
+   seed-41 checkpoint and config hashes recorded in the provenance manifest.
+7. ONE-SHOT TEST ARTIFACTS: preflight refuses either an existing test-metrics
+   or test-predictions artifact, verifies the selected checkpoint, history,
+   validation metric, and gradient audit, then evaluates each frozen
+   arm/seed checkpoint exactly once. Seeds 45/46 require a hash-bound immutable
+   initial report with exactly 2/3 for that arm.
+
+## v2.4 AMENDMENTS (2026-07-26, pre-D1 blocker closure)
+
+1. RUNTIME MATCHING: record complete GPU identity, but compare only the
+   software and determinism environment across D2 tasks, resumes, extensions,
+   and finalization. Scheduler-selected GPU hardware need not be identical.
+2. ONE COMMITTED TEST RESULT: an interrupted finalizer with no test artifact
+   may resume unchanged; two matching artifacts are recovered without
+   reevaluation; any observable partial or inconsistent state fails closed.
+   This operationally defines "exactly once" as one immutable committed result
+   per frozen checkpoint and forbids adaptive changes between attempts.
+3. D1 EPOCH ZERO: store full unaugmented/fixed-augmented validation metrics at
+   epoch 0 separately from the epoch-1/2 training history.
+4. ARRAY ISOLATION AND RESUME: each D2/extension task runs from its own clean
+   clone at the expected commit and passes `--resume` only when a matching
+   incomplete run has a last checkpoint.
+5. RUNFILE BINDING: all five Decision 2.3 Slurm runfiles are SHA-256-bound
+   into the prelaunch lock, configs, D1 report, finalization plans, and
+   aggregate reports before any cluster execution.

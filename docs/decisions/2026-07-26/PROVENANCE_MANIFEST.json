@@ -4,14 +4,16 @@
   "git": {
     "source_repository": "https://github.com/kirubes27/keypoint_learning.git",
     "source_repository_visibility": "public",
-    "publication_policy": "do not push new unpublished artifacts to the public source remote; private remote required",
+    "publication_policy": "owner explicitly approved publishing the isolated execution branch to the existing public remote on 2026-07-26",
+    "public_branch_approved": true,
     "private_publication_remote": null,
     "base_branch": "fitted-operator-diagnostics-20260704",
     "base_commit": "2f98e93f5e7efa179c33df5f7fdfd696b47f837a",
     "execution_branch": "agent/preoperator-gates-20260726"
   },
   "decision_sources": {
-    "decision_synthesis_v2_sha256": "fc934321c2de9284fe6c542bda227dea0971fca7a1cf20539696db8457ca4f61",
+    "decision_synthesis_v2_sha256": "7a58073faba7e7a661da7ad2ffcf34e7a794c56938d6b1316f1bf680d371a036",
+    "fable5_high_decision23_d0_review_sha256": "46faa39cbabfdfe8f9e04db451b719a97d43dc04a6d0bc41ce256ce6797aa575",
     "v2_review_sol_sha256": "20ac4be3126bf6d8254d528e6934a9c9c2e223a26f0313a4e8ade46d708c7aa9",
     "v2_review_opus_sha256": "54b52c67b9c883103ba91a6d0f90dfba0d55180b1ded71a195fccb3a8a03db06"
   },
@@ -21,7 +23,10 @@
     "frames_per_object": 180,
     "angle_step_deg": 2,
     "cyclic": true,
-    "split_sha256": "49f9d2a34c352d3ebb84809ec36e0a46572b0cde6b7a6d357f317dc44e3da486"
+    "split_sha256": "49f9d2a34c352d3ebb84809ec36e0a46572b0cde6b7a6d357f317dc44e3da486",
+    "semantic_lock_sha256": "c625cc590e8de42b6d8162b044ff6398c0f2e1c04cd6b5ce0cea6f6bccb152aa",
+    "dataset_index_sha256": "719645aee0b092d647cbc29a4cd807d7cd7ca4da1ec2608baacf1c2a12224c6b",
+    "operator_reference_sha256": "668c79a1a1f7ce789293b4355e3130517c567cd40181fbfd8e02237a151ca856"
   },
   "representative_checkpoint": {
     "object": "engineers_hammer_vray",
@@ -42,5 +47,44 @@
     "gate0_sample_unit": "validation frame x supervised channel",
     "frame_dependence": "one correlated cyclic orbit",
     "interpretation": "descriptive mechanism ranking only; no population inference"
+  },
+  "decision23_execution": {
+    "reviewer": "Fable 5 high, read-only with tools disabled",
+    "gate0_policy": "complete; never rerun",
+    "change_control": {
+      "decision23_spec_sha256": "3ef019aed4de662f16487de109f81ae133f89c781bc72df7562c414d71760561",
+      "amendments": [
+        "DECISION_2_3_DIAGNOSTIC_HEAD_SPEC_v1.md v1.2",
+        "DECISION_SYNTHESIS_v2_2026-07-26.md v2.4"
+      ],
+      "slurm_runfiles_sha256": {
+        "d1_smoke": "e8760480f8ef2057a000a10520a44f7f87d4fd853f50f85a5dcb8d5a1ed338f7",
+        "d2_full": "f9a95648ac4c0663909db28c69192cabb6e151f16e4d434c2951d27fab00b278",
+        "d3_finalize": "3d428b4e483f0fd0a267d0001e51c710414a250530a6dfb04817d0851d04d776",
+        "extension": "acb3783bb90ccf7de2157b1adeae7c1b7e1f7737daa1cab61d8db54173d7fdbe",
+        "extension_finalize": "26e1e8ed740ccd39792fe879aea90ffbcfeedea83f50f07b8f6cbe016619093c"
+      }
+    },
+    "d1": {
+      "seed": 42,
+      "arms_sequential": [
+        "raw_linear",
+        "probability_linear",
+        "fixed_expectation"
+      ],
+      "epochs_per_arm": 2,
+      "slurm": "1 GPU, 8 CPUs, 5000 MB per CPU, 30 minutes"
+    },
+    "d2": {
+      "arms": 3,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "array": "0-8%2",
+      "slurm_per_task": "1 GPU, 8 CPUs, 5000 MB per CPU, 1 hour"
+    },
+    "test_content_policy": "not opened during lock, train, or probe; one immutable committed result per checkpoint, with crash recovery only for no-artifact or fully validated two-artifact states"
   }
 }

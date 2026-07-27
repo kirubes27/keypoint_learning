@@ -1,0 +1,39 @@
+{
+  "source_commit": "9c692f62b37d9f9758387250ab6b0d82fbfa9980",
+  "registry_file_sha256": "2853b8d70cc25dc3acae6e7988baabda34072bc2ab0cb244ce17b391e7b84920",
+  "registry_content_hash_sha256": "02612a4dd10863d0dc78a2b2e078689aa588d91b99e667d452fa0c9b2ac45c75",
+  "checkpoint_verification": [
+    {
+      "fixture_id": "saved_task20_seed42_collapsed_negative_control",
+      "task_id": 20,
+      "role": "collapsed_negative_control",
+      "absolute_path": "/Users/kirubeso.r/Documents/PhD/cluster_downloads/hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared/phase_a_engineers_hammer_vray_20260606_050434_151501_seed42_pid2116969/best_model.pt",
+      "size_bytes": 2994210,
+      "sha256": "96433168767659ae9144a35a4f7889c3226b65a7a0c5341197d48232a66fe622",
+      "verification_status": "hashed_as_opaque_bytes_not_loaded"
+    },
+    {
+      "fixture_id": "saved_task55_seed42_clean_baseline",
+      "task_id": 55,
+      "role": "clean_baseline_replay_only",
+      "absolute_path": "/Users/kirubeso.r/Documents/PhD/cluster_downloads/hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared/phase_a_engineers_hammer_vray_20260606_131311_378814_seed42_pid606096/best_model.pt",
+      "size_bytes": 2991906,
+      "sha256": "942a32082b6bfe83526253cc2dd39e49792b8260d12fc1361a11bae812992418",
+      "verification_status": "hashed_as_opaque_bytes_not_loaded"
+    },
+    {
+      "fixture_id": "saved_task80_seed42_assisted_baseline",
+      "task_id": 80,
+      "role": "assisted_baseline_replay_only",
+      "absolute_path": "/Users/kirubeso.r/Documents/PhD/cluster_downloads/hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared/phase_a_engineers_hammer_vray_20260606_151123_941396_seed42_pid3289780/best_model.pt",
+      "size_bytes": 2994210,
+      "sha256": "ccb613c87788a229929b1f6ead002d626819e970237d0e0ad5ca75c9318004f3",
+      "verification_status": "hashed_as_opaque_bytes_not_loaded"
+    }
+  ],
+  "checkpoint_hash_preflight_passed": true,
+  "checkpoint_load_authorized_by_this_receipt": false,
+  "remaining_load_gate": "separate_fable_reviewed_execution_commit_and_runtime_provenance",
+  "training_or_weight_update_authorized": false,
+  "selection_use_authorized": false
+}

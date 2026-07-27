@@ -1,0 +1,63 @@
+{
+  "schema_version": "representation-geometry-binding-registry-v1",
+  "artifact_type": "representation_geometry_binding_registry",
+  "date": "2026-07-27",
+  "status": "blocked_pending_semantic_geometry_evidence",
+  "purpose": "Fail closed until dataset-backed projected centres, camera-plane translation calibration, and yaw/pitch projection-depth records are derived from named raw evidence and independently checked.",
+  "execution_boundary": {
+    "planted_synthetic_geometry_authorized": true,
+    "dataset_backed_geometry_authorized": false,
+    "saved_checkpoint_replay_authorized": false,
+    "training_authorized": false,
+    "unregistered_geometry_rejected": true
+  },
+  "required_evidence": {
+    "roll": {
+      "quantity": "projected_rotation_centre_xy",
+      "must_be_derived_from": [
+        "render_camera_and_object_transform_metadata",
+        "rendered_mask_or_landmark_motion_check"
+      ],
+      "status": "missing"
+    },
+    "scale": {
+      "quantity": "projected_scale_centre_xy",
+      "must_be_derived_from": [
+        "render_camera_and_object_transform_metadata",
+        "rendered_mask_or_landmark_motion_check"
+      ],
+      "status": "missing"
+    },
+    "translation": {
+      "quantity": "per_frame_normalized_image_offset_xy",
+      "must_be_derived_from": [
+        "world_position_metadata",
+        "rendered_mask_centroid_calibration"
+      ],
+      "locked_camera_sign": {
+        "positive_world_x_to_image_x": -1,
+        "positive_world_y_to_image_y": -1
+      },
+      "status": "missing"
+    },
+    "yaw": {
+      "quantity": "projection_model_depth_configuration_and_visibility",
+      "must_be_derived_from": [
+        "camera_intrinsics_extrinsics",
+        "object_pose_and_depth_evidence"
+      ],
+      "status": "missing"
+    },
+    "pitch": {
+      "quantity": "projection_model_depth_configuration_and_visibility",
+      "must_be_derived_from": [
+        "camera_intrinsics_extrinsics",
+        "object_pose_and_depth_evidence"
+      ],
+      "status": "missing"
+    }
+  },
+  "registered_bindings": [],
+  "stop_condition": "Any dataset-backed adapter construction must stop until a reviewed committed amendment changes dataset_backed_geometry_authorized to true and registers the exact binding file, content hash, object, inventory, preprocessing, derivation method, and evidence roles.",
+  "content_hash_sha256": "4bcbc6541ea5069cddc17f83ea35fea919bf1883ecccefaeec16b40823a6e31a"
+}

@@ -19,6 +19,11 @@ SPEC_PATH = (
     REPOSITORY_ROOT
     / "docs/decisions/2026-07-26/REPRESENTATION_ORACLE_EVALUATOR_SPLIT_SPEC_v1.md"
 )
+HAMMER_ROLL_GEOMETRY = (
+    REPOSITORY_ROOT
+    / "docs/decisions/2026-07-26/representation_oracle_geometry/bindings/"
+    "engineers_hammer_vray__roll__world_z__v1.json"
+)
 
 
 def _sha256_file(path: Path) -> str:
@@ -98,7 +103,7 @@ class SplitAdapterContractTests(unittest.TestCase):
     def test_public_dataset_adapter_is_blocked_without_registered_geometry(self) -> None:
         with self.assertRaisesRegex(
             adapter.SplitAdapterError,
-            "dataset-backed geometry is blocked",
+            "no unique frozen registry entry",
         ):
             adapter.build_split_adapter_rows(
                 split_bundle_root=BUNDLE_ROOT,
@@ -108,6 +113,28 @@ class SplitAdapterContractTests(unittest.TestCase):
                 fit_from_pairs=True,
                 geometry_binding_path=self.scale_geometry,
             )
+
+    def test_registered_hammer_roll_geometry_builds_exact_validation_stratum(
+        self,
+    ) -> None:
+        result = adapter.build_split_adapter_rows(
+            split_bundle_root=BUNDLE_ROOT,
+            evaluation_pair_relpath=(
+                "pairs/roll__world_z__forward__validation.json"
+            ),
+            object_id="engineers_hammer_vray",
+            fit_from_pairs=False,
+            geometry_binding_path=HAMMER_ROLL_GEOMETRY,
+        )
+        self.assertEqual(result["stratum"]["signed_generator"], 6.0)
+        self.assertEqual(
+            result["evaluator_transform"]["projected_centre_xy"],
+            [0.0, 0.0],
+        )
+        self.assertEqual(
+            result["geometry_binding"]["parameters"],
+            {"projected_centre_xy": [0.0, 0.0]},
+        )
 
     def test_scale_uses_exp_of_signed_log_generator(self) -> None:
         generator = math.log(1.07)

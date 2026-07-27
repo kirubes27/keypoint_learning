@@ -15,6 +15,7 @@ variance. This is a dataset geometry check, not a model-selection procedure.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -69,7 +70,20 @@ def _bbox(mask: np.ndarray) -> dict[str, Any]:
     }
 
 
-def _warp_mask_same_eval_sign(mask: np.ndarray, theta_deg: float) -> np.ndarray:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _warp_mask_same_eval_sign(
+    mask: np.ndarray,
+    theta_deg: float,
+    *,
+    center_xy: tuple[float, float] | None = None,
+) -> np.ndarray:
     """
     Apply the same image-coordinate point transform used by eval_rollout_viz,
     but with inverse sampling to avoid holes.
@@ -78,8 +92,9 @@ def _warp_mask_same_eval_sign(mask: np.ndarray, theta_deg: float) -> np.ndarray:
     image origin, i.e. ((W - 1) / 2, (H - 1) / 2).
     """
     h, w = mask.shape
-    cx = (w - 1) / 2.0
-    cy = (h - 1) / 2.0
+    if center_xy is None:
+        center_xy = ((w - 1) / 2.0, (h - 1) / 2.0)
+    cx, cy = (float(value) for value in center_xy)
     theta = np.deg2rad(theta_deg)
     c = np.cos(theta)
     s = np.sin(theta)
@@ -98,6 +113,88 @@ def _warp_mask_same_eval_sign(mask: np.ndarray, theta_deg: float) -> np.ndarray:
     out = np.zeros_like(mask, dtype=bool)
     out[valid] = mask[src_y[valid], src_x[valid]]
     return out
+
+
+def _local_center_audit(
+    *,
+    object_dir: Path,
+    by_frame: dict[int, dict[str, Any]],
+    reference_mask: np.ndarray,
+    sample_frame_indices: list[int],
+) -> dict[str, Any]:
+    """Check that mask motion locally selects the metadata-derived image centre.
+
+    The camera/object code path derives the centre.  This small, fixed 3x3
+    pixel grid is an independent rendered-output check, not a centre-fitting
+    procedure used by the model or evaluator.
+    """
+
+    h, w = reference_mask.shape
+    derived_center = ((w - 1) / 2.0, (h - 1) / 2.0)
+    decisive_indices = [
+        frame_index
+        for frame_index in sample_frame_indices
+        if abs(float(by_frame[frame_index]["theta_deg"]) % 180.0) > 1e-9
+    ]
+    candidates = []
+    for y_offset in (-1.0, 0.0, 1.0):
+        for x_offset in (-1.0, 0.0, 1.0):
+            center = (
+                derived_center[0] + x_offset,
+                derived_center[1] + y_offset,
+            )
+            values = []
+            for frame_index in decisive_indices:
+                metadata = by_frame[frame_index]
+                mask = _load_mask(object_dir / metadata["mask_relpath"])
+                canonical = _warp_mask_same_eval_sign(
+                    mask,
+                    -float(metadata["theta_deg"]),
+                    center_xy=center,
+                )
+                values.append(_iou(canonical, reference_mask))
+            candidates.append(
+                {
+                    "center_pixel_xy": [center[0], center[1]],
+                    "mean_canonical_iou": float(np.mean(values)),
+                    "minimum_canonical_iou": float(np.min(values)),
+                    "n_decisive_frames": len(values),
+                }
+            )
+    ranked = sorted(
+        candidates,
+        key=lambda item: (
+            -item["mean_canonical_iou"],
+            item["center_pixel_xy"][1],
+            item["center_pixel_xy"][0],
+        ),
+    )
+    best = ranked[0]
+    next_best = ranked[1]
+    exact_center_selected = best["center_pixel_xy"] == [
+        derived_center[0],
+        derived_center[1],
+    ]
+    unique_best = (
+        best["mean_canonical_iou"] > next_best["mean_canonical_iou"]
+    )
+    return {
+        "purpose": (
+            "independent_rendered_output_check_of_metadata_derived_center_"
+            "not_model_or_evaluator_fitting"
+        ),
+        "candidate_grid_pixel_offsets_xy": [-1.0, 0.0, 1.0],
+        "decisive_frame_indices": decisive_indices,
+        "derived_center_pixel_xy": [
+            derived_center[0],
+            derived_center[1],
+        ],
+        "derived_center_normalized_xy": [0.0, 0.0],
+        "ranked_candidates": ranked,
+        "exact_center_selected": bool(exact_center_selected),
+        "unique_best": bool(unique_best),
+        "pass": bool(exact_center_selected and unique_best),
+    }
 
 
 def _summarize(values: list[float]) -> dict[str, float | int | None]:
@@ -148,6 +245,12 @@ def check_dataset(
         ref_meta = by_frame[0]
         ref_mask = _load_mask(obj_dir / ref_meta["mask_relpath"])
         ref_bbox = _bbox(ref_mask)
+        local_center_audit = _local_center_audit(
+            object_dir=obj_dir,
+            by_frame=by_frame,
+            reference_mask=ref_mask,
+            sample_frame_indices=sample_frame_indices,
+        )
         plus_ious = []
         minus_ious = []
         sign_samples = []
@@ -234,6 +337,28 @@ def check_dataset(
                 (ref_mask.shape[1] - 1) / 2.0,
                 (ref_mask.shape[0] - 1) / 2.0,
             ],
+            "local_center_audit": local_center_audit,
+            "input_evidence": {
+                "metadata": {
+                    "absolute_path": str(meta_path.resolve()),
+                    "sha256": _sha256_file(meta_path),
+                },
+                "sample_masks": [
+                    {
+                        "frame_index": frame_index,
+                        "absolute_path": str(
+                            (
+                                obj_dir
+                                / by_frame[frame_index]["mask_relpath"]
+                            ).resolve()
+                        ),
+                        "sha256": _sha256_file(
+                            obj_dir / by_frame[frame_index]["mask_relpath"]
+                        ),
+                    }
+                    for frame_index in sample_frame_indices
+                ],
+            },
         }
         object_results.append(result)
 
@@ -247,6 +372,9 @@ def check_dataset(
             "locked_canonical_sign": "-theta",
             "audit_sign": "+theta",
             "theta_source": "meta.jsonl theta_deg",
+            "forward_three_frame_transform": "R_img(+6_deg)",
+            "canonical_unrotation": "R_img(-theta)",
+            "image_axes": "x_right_y_down_positive_angle_appears_clockwise",
         },
         "sample_frame_indices": sample_frame_indices,
         "iou_threshold": iou_threshold,
@@ -255,6 +383,7 @@ def check_dataset(
             all(o["metadata_semantics_pass"] for o in object_results)
             and all(o["all_sample_masks_nonempty"] for o in object_results)
             and all(o["locked_minus_theta_pass"] for o in object_results)
+            and all(o["local_center_audit"]["pass"] for o in object_results)
         ),
     }
 
@@ -288,7 +417,8 @@ def main() -> None:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(results, f, indent=2, allow_nan=False)
+        f.write("\n")
 
     print(json.dumps({
         "pass": results["pass"],
@@ -300,6 +430,8 @@ def main() -> None:
                 "locked_minus_theta": o["locked_minus_theta_pass"],
                 "minus_min": o["decisive_minus_theta_iou_summary"]["min"],
                 "plus_max": o["decisive_plus_theta_iou_summary"]["max"],
+                "center_pixel_xy": o["center_pivot_pixel_xy"],
+                "local_center_pass": o["local_center_audit"]["pass"],
             }
             for o in results["objects"]
         ],

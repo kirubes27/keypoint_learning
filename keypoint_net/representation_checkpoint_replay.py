@@ -34,6 +34,10 @@ GEOMETRY_REGISTRY_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_geometry/"
     "GEOMETRY_BINDING_REGISTRY_v1.json"
 )
+HAMMER_ROLL_GEOMETRY_BINDING_REPO_RELATIVE_PATH = (
+    "docs/decisions/2026-07-26/representation_oracle_geometry/bindings/"
+    "engineers_hammer_vray__roll__world_z__v1.json"
+)
 
 # This is the SHA-256 of canonical sorted compact JSON after removing the
 # top-level content_hash_sha256 field.  It locks every value in the registry,
@@ -42,10 +46,10 @@ EXPECTED_REGISTRY_CONTENT_HASH_SHA256 = (
     "02612a4dd10863d0dc78a2b2e078689aa588d91b99e667d452fa0c9b2ac45c75"
 )
 EXPECTED_GEOMETRY_REGISTRY_FILE_SHA256 = (
-    "55453188e3c49d7f8ffdf7b2128167f721ba76468ba79ec1d10f49444f2ece4f"
+    "22b55959199f76a8056897ba1e291b388fa754e80cca407dc172b8d6a70f880e"
 )
 EXPECTED_GEOMETRY_REGISTRY_CONTENT_HASH_SHA256 = (
-    "4bcbc6541ea5069cddc17f83ea35fea919bf1883ecccefaeec16b40823a6e31a"
+    "27353548998ccbe5346eaa84ba92b30423d955e6d643bb6b53b1995715343fbb"
 )
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -80,11 +84,29 @@ _EXPECTED_EXECUTION_BOUNDARY = {
 
 _EXPECTED_GEOMETRY_EXECUTION_BOUNDARY = {
     "planted_synthetic_geometry_authorized": True,
-    "dataset_backed_geometry_authorized": False,
+    "dataset_backed_geometry_authorized": True,
+    "saved_checkpoint_hash_preflight_authorized": True,
     "saved_checkpoint_replay_authorized": False,
     "training_authorized": False,
     "unregistered_geometry_rejected": True,
 }
+
+_EXPECTED_HAMMER_ROLL_INVENTORY_CONTENT_HASH_SHA256 = (
+    "acfa835813e128b6f3336fe1f51bc14ac6e4cb4cf1b285afe418d4dbdf598d93"
+)
+_EXPECTED_HAMMER_ROLL_SEMANTIC_LOCK_SHA256 = (
+    "c625cc590e8de42b6d8162b044ff6398c0f2e1c04cd6b5ce0cea6f6bccb152aa"
+)
+_EXPECTED_HAMMER_ROLL_EVIDENCE_ROLES = [
+    "roll_corpus_inventory",
+    "dataset_semantic_lock",
+    "verified_generator_snapshot_manifest",
+    "verified_roll_render_driver",
+    "verified_roll_operator_and_recentering_source",
+    "render_camera_and_object_transform_metadata",
+    "mask_pivot_sign_checker_source",
+    "rendered_mask_pivot_and_sign_report",
+]
 
 _EXPECTED_REPLAY_RULE = {
     "scope": "definition_identical_historical_fields_only",
@@ -1221,11 +1243,12 @@ def _require_saved_checkpoint_replay_geometry_authorization(
     *,
     source_commit: str,
 ) -> None:
-    """Reject checkpoint touches until exact reviewed roll geometry permits them.
+    """Reject checkpoint touches until exact reviewed roll geometry permits hashing.
 
     This gate reads only the small committed geometry registry.  In particular,
     it runs before any checkpoint path is inspected, statted, opened, or hashed.
-    The currently frozen registry deliberately keeps saved replay blocked.
+    The frozen registry authorizes opaque checkpoint hashing only.  It
+    deliberately keeps checkpoint loading/replay and training blocked.
     """
 
     _require(
@@ -1285,11 +1308,16 @@ def _require_saved_checkpoint_replay_geometry_authorization(
     )
 
     _require(
-        boundary["saved_checkpoint_replay_authorized"] is True,
-        (
-            "checkpoint hashing is blocked: saved checkpoint replay is not "
-            "authorized by the reviewed geometry registry"
-        ),
+        boundary["saved_checkpoint_hash_preflight_authorized"] is True,
+        "checkpoint hashing is blocked by the reviewed geometry registry",
+    )
+    _require(
+        boundary["saved_checkpoint_replay_authorized"] is False,
+        "geometry registry must not authorize checkpoint loading or replay",
+    )
+    _require(
+        boundary["training_authorized"] is False,
+        "geometry registry must not authorize training",
     )
     _require(
         boundary["dataset_backed_geometry_authorized"] is True,
@@ -1311,6 +1339,207 @@ def _require_saved_checkpoint_replay_geometry_authorization(
         len(matching_roll_bindings) == 1,
         "checkpoint hashing requires one registered hammer roll geometry binding",
     )
+    record = matching_roll_bindings[0]
+    _exact_keys(
+        record,
+        {
+            "transform_family",
+            "object_id",
+            "inventory_content_hash_sha256",
+            "repo_relative_path",
+            "file_sha256",
+            "content_hash_sha256",
+            "derivation_method",
+            "evidence_roles",
+        },
+        "registered hammer roll geometry binding",
+    )
+    _exact_value(
+        record["inventory_content_hash_sha256"],
+        _EXPECTED_HAMMER_ROLL_INVENTORY_CONTENT_HASH_SHA256,
+        "registered hammer roll inventory hash",
+    )
+    _exact_value(
+        record["repo_relative_path"],
+        HAMMER_ROLL_GEOMETRY_BINDING_REPO_RELATIVE_PATH,
+        "registered hammer roll binding path",
+    )
+    _require(
+        isinstance(record["file_sha256"], str)
+        and _SHA256_RE.fullmatch(record["file_sha256"]) is not None,
+        "registered hammer roll binding file hash is invalid",
+    )
+    _require(
+        isinstance(record["content_hash_sha256"], str)
+        and _SHA256_RE.fullmatch(record["content_hash_sha256"]) is not None,
+        "registered hammer roll binding content hash is invalid",
+    )
+    _require(
+        isinstance(record["derivation_method"], str)
+        and bool(record["derivation_method"]),
+        "registered hammer roll derivation method is empty",
+    )
+    _exact_value(
+        record["evidence_roles"],
+        _EXPECTED_HAMMER_ROLL_EVIDENCE_ROLES,
+        "registered hammer roll evidence roles",
+    )
+
+    binding_path = repo_root / HAMMER_ROLL_GEOMETRY_BINDING_REPO_RELATIVE_PATH
+    binding_resolved, binding_data = _regular_file_bytes(
+        binding_path,
+        context="registered hammer roll geometry binding",
+    )
+    _require(
+        binding_resolved == binding_path.resolve(strict=True),
+        "hammer roll geometry binding path differs from registered path",
+    )
+    _require(
+        hashlib.sha256(binding_data).hexdigest() == record["file_sha256"],
+        "registered hammer roll geometry binding file hash mismatch",
+    )
+    committed_binding = _git(
+        repo_root,
+        [
+            "show",
+            f"{source_commit}:{HAMMER_ROLL_GEOMETRY_BINDING_REPO_RELATIVE_PATH}",
+        ],
+        context="cannot read hammer roll geometry binding from source_commit",
+    )
+    _require(
+        committed_binding == binding_data,
+        "working hammer roll geometry binding differs from source_commit",
+    )
+
+    binding = _decode_strict_json(binding_data)
+    _exact_keys(
+        binding,
+        {
+            "schema_version",
+            "artifact_type",
+            "object_id",
+            "transform_family",
+            "inventory_content_hash_sha256",
+            "dataset_semantic_lock_sha256",
+            "estimator_geometry",
+            "parameters",
+            "evidence_files",
+            "content_hash_sha256",
+        },
+        "hammer roll geometry binding",
+    )
+    content_payload = dict(binding)
+    claimed_binding_content_hash = content_payload.pop(
+        "content_hash_sha256",
+        None,
+    )
+    computed_binding_content_hash = hashlib.sha256(
+        canonical_json_bytes(content_payload)
+    ).hexdigest()
+    _require(
+        claimed_binding_content_hash
+        == computed_binding_content_hash
+        == record["content_hash_sha256"],
+        "registered hammer roll geometry binding content hash mismatch",
+    )
+    _exact_value(
+        binding["schema_version"],
+        "representation_geometry_binding.v1",
+        "hammer roll geometry schema",
+    )
+    _exact_value(
+        binding["artifact_type"],
+        "representation_geometry_binding",
+        "hammer roll geometry artifact type",
+    )
+    _exact_value(
+        binding["object_id"],
+        "engineers_hammer_vray",
+        "hammer roll geometry object",
+    )
+    _exact_value(
+        binding["transform_family"],
+        "roll",
+        "hammer roll geometry family",
+    )
+    _exact_value(
+        binding["inventory_content_hash_sha256"],
+        _EXPECTED_HAMMER_ROLL_INVENTORY_CONTENT_HASH_SHA256,
+        "hammer roll geometry inventory hash",
+    )
+    _exact_value(
+        binding["dataset_semantic_lock_sha256"],
+        _EXPECTED_HAMMER_ROLL_SEMANTIC_LOCK_SHA256,
+        "hammer roll geometry semantic-lock hash",
+    )
+    _exact_value(
+        binding["estimator_geometry"],
+        {
+            "coordinate_system": (
+                "normalized_minus1_plus1_endpoint_aligned_xy"
+            ),
+            "image_y_direction": "down",
+            "crop": {"mode": "none"},
+            "resize": [512, 512],
+            "align_corners": None,
+        },
+        "hammer roll estimator geometry",
+    )
+    _exact_value(
+        binding["parameters"],
+        {"projected_centre_xy": [0.0, 0.0]},
+        "hammer roll projected centre",
+    )
+    evidence_files = binding["evidence_files"]
+    _require(
+        isinstance(evidence_files, list),
+        "hammer roll geometry evidence_files must be a list",
+    )
+    _exact_value(
+        [item.get("role") if isinstance(item, Mapping) else None for item in evidence_files],
+        _EXPECTED_HAMMER_ROLL_EVIDENCE_ROLES,
+        "hammer roll geometry evidence-file roles",
+    )
+    for index, evidence in enumerate(evidence_files):
+        _exact_keys(
+            evidence,
+            {"role", "absolute_path", "sha256"},
+            f"hammer roll geometry evidence {index}",
+        )
+        evidence_path_value = evidence["absolute_path"]
+        _require(
+            isinstance(evidence_path_value, str)
+            and Path(evidence_path_value).is_absolute(),
+            f"hammer roll geometry evidence {index} path is invalid",
+        )
+        evidence_resolved, evidence_data = _regular_file_bytes(
+            Path(evidence_path_value),
+            context=f"hammer roll geometry evidence {index}",
+        )
+        try:
+            evidence_relative = evidence_resolved.relative_to(repo_root)
+        except ValueError as exc:
+            raise ReplayRegistryError(
+                f"hammer roll geometry evidence {index} lies outside repository"
+            ) from exc
+        _require(
+            isinstance(evidence["sha256"], str)
+            and _SHA256_RE.fullmatch(evidence["sha256"]) is not None
+            and hashlib.sha256(evidence_data).hexdigest() == evidence["sha256"],
+            f"hammer roll geometry evidence {index} hash mismatch",
+        )
+        committed_evidence = _git(
+            repo_root,
+            ["show", f"{source_commit}:{evidence_relative.as_posix()}"],
+            context=(
+                f"cannot read hammer roll geometry evidence {index} "
+                "from source_commit"
+            ),
+        )
+        _require(
+            committed_evidence == evidence_data,
+            f"hammer roll geometry evidence {index} differs from source_commit",
+        )
 
 
 def preflight_checkpoint_candidates(

@@ -260,7 +260,9 @@ class RepresentationCheckpointReplayTests(unittest.TestCase):
                 replay._require_preflight_authorization(registry, forged)
         checkpoint_hash.assert_not_called()
 
-    def test_geometry_block_prevents_any_checkpoint_touch(self) -> None:
+    def test_geometry_authorizes_hash_preflight_but_not_checkpoint_loading(
+        self,
+    ) -> None:
         registry = replay.load_and_validate_replay_registry(REGISTRY_PATH)
         source_commit = _git(REPO_ROOT, "rev-parse", "HEAD")
         provenance = replay.VerifiedRegistryProvenanceReceipt(
@@ -276,11 +278,57 @@ class RepresentationCheckpointReplayTests(unittest.TestCase):
         with mock.patch.object(
             replay,
             "_hash_checkpoint_candidate",
+            side_effect=lambda candidate: {
+                "fixture_id": candidate.fixture_id,
+                "task_id": candidate.task_id,
+                "verification_status": "test_double_no_checkpoint_touch",
+            },
+        ) as checkpoint_hash:
+            result = replay.preflight_checkpoint_candidates(
+                registry,
+                provenance=provenance,
+            )
+        self.assertEqual(checkpoint_hash.call_count, 3)
+        self.assertTrue(result["checkpoint_hash_preflight_passed"])
+        self.assertFalse(result["checkpoint_load_authorized_by_this_receipt"])
+        self.assertFalse(result["training_or_weight_update_authorized"])
+        self.assertFalse(result["selection_use_authorized"])
+
+    def test_mutated_geometry_binding_fails_before_checkpoint_touch(self) -> None:
+        registry = replay.load_and_validate_replay_registry(REGISTRY_PATH)
+        source_commit = _git(REPO_ROOT, "rev-parse", "HEAD")
+        provenance = replay.VerifiedRegistryProvenanceReceipt(
+            source_commit=source_commit,
+            repository_root=str(REPO_ROOT),
+            registry_absolute_path=registry.registry_absolute_path,
+            registry_file_sha256=registry.registry_file_sha256,
+            registry_content_hash_sha256=registry.content_hash_sha256,
+            git_blob_oid="0" * 40,
+            source_commit_verified=True,
+            _capability=replay._VERIFIED_PROVENANCE_CAPABILITY,
+        )
+        original_reader = replay._regular_file_bytes
+
+        def mutated_reader(path: Path, *, context: str) -> tuple[Path, bytes]:
+            resolved, data = original_reader(path, context=context)
+            if str(path).endswith(
+                replay.HAMMER_ROLL_GEOMETRY_BINDING_REPO_RELATIVE_PATH
+            ):
+                return resolved, data + b" "
+            return resolved, data
+
+        with mock.patch.object(
+            replay,
+            "_regular_file_bytes",
+            side_effect=mutated_reader,
+        ), mock.patch.object(
+            replay,
+            "_hash_checkpoint_candidate",
             side_effect=AssertionError("checkpoint path was touched"),
         ) as checkpoint_hash:
             with self.assertRaisesRegex(
                 replay.ReplayRegistryError,
-                "saved checkpoint replay is not authorized",
+                "geometry binding file hash mismatch",
             ):
                 replay.preflight_checkpoint_candidates(
                     registry,

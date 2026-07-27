@@ -1,0 +1,69 @@
+{
+  "schema_version": "representation_geometry_binding.v1",
+  "artifact_type": "representation_geometry_binding",
+  "object_id": "engineers_hammer_vray",
+  "transform_family": "roll",
+  "inventory_content_hash_sha256": "acfa835813e128b6f3336fe1f51bc14ac6e4cb4cf1b285afe418d4dbdf598d93",
+  "dataset_semantic_lock_sha256": "c625cc590e8de42b6d8162b044ff6398c0f2e1c04cd6b5ce0cea6f6bccb152aa",
+  "estimator_geometry": {
+    "coordinate_system": "normalized_minus1_plus1_endpoint_aligned_xy",
+    "image_y_direction": "down",
+    "crop": {
+      "mode": "none"
+    },
+    "resize": [
+      512,
+      512
+    ],
+    "align_corners": null
+  },
+  "parameters": {
+    "projected_centre_xy": [
+      0.0,
+      0.0
+    ]
+  },
+  "evidence_files": [
+    {
+      "role": "roll_corpus_inventory",
+      "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/docs/decisions/2026-07-26/representation_oracle_splits/inventories/CORPUS_INVENTORY__roll.json",
+      "sha256": "d1b989ac78866be12c06687d9141180845494895f7f03c8d1a3b1438779a8703"
+    },
+    {
+      "role": "dataset_semantic_lock",
+      "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/_tdw_world_z_roll_base_panel_512_v2/semantic_lock.json",
+      "sha256": "c625cc590e8de42b6d8162b044ff6398c0f2e1c04cd6b5ce0cea6f6bccb152aa"
+    },
+    {
+      "role": "verified_generator_snapshot_manifest",
+      "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/docs/decisions/2026-07-26/provenance/verified_generator_snapshot_2026-07-27/SNAPSHOT_MANIFEST.json",
+      "sha256": "1308c73a548b7a08fc9a6755c1a7b62e213b326856b60afd15cc1d44761c20f7"
+    },
+    {
+      "role": "verified_roll_render_driver",
+      "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/docs/decisions/2026-07-26/provenance/verified_generator_snapshot_2026-07-27/generate_tdw_world_z_roll_dataset_post_update.py",
+      "sha256": "a47859508dd145fbea33f184724bf72ec1573fce018a5a3ae3f68fd13782ca8e"
+    },
+    {
+      "role": "verified_roll_operator_and_recentering_source",
+      "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/docs/decisions/2026-07-26/provenance/verified_generator_snapshot_2026-07-27/compare_hammer_rotation_operators.py",
+      "sha256": "1fabedf7590e0f55ba56a27752873f16e4de980dd5db66e6258b319f108ef580"
+    },
+    {
+      "role": "render_camera_and_object_transform_metadata",
+      "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/_tdw_world_z_roll_base_panel_512_v2/train/engineers_hammer_vray/meta.jsonl",
+      "sha256": "eb3aed5fd94711e14f63a429f75c32e60ff02364ed3d9881c2723faf6354bf23"
+    },
+    {
+      "role": "mask_pivot_sign_checker_source",
+      "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/keypoint_net/smoke_geometry.py",
+      "sha256": "b9ba13c24d87c5f70d19a45d44399e27843b12fc11edee1372386262256879be"
+    },
+    {
+      "role": "rendered_mask_pivot_and_sign_report",
+      "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/docs/decisions/2026-07-26/representation_oracle_geometry/HAMMER_ROLL_GEOMETRY_EVIDENCE_v1.json",
+      "sha256": "58638862229d7af24ebc93c184b19a38f913314a91faa9630b2936f213d51613"
+    }
+  ],
+  "content_hash_sha256": "c9887a6ab40532ec9c488af5d64dbf786b91b17a4fdd3bb265a7eda21f61570a"
+}

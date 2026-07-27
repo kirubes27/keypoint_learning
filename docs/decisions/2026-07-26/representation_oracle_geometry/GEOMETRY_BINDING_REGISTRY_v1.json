@@ -2,11 +2,12 @@
   "schema_version": "representation-geometry-binding-registry-v1",
   "artifact_type": "representation_geometry_binding_registry",
   "date": "2026-07-27",
-  "status": "blocked_pending_semantic_geometry_evidence",
-  "purpose": "Fail closed until dataset-backed projected centres, camera-plane translation calibration, and yaw/pitch projection-depth records are derived from named raw evidence and independently checked.",
+  "status": "hammer_roll_geometry_bound_checkpoint_hash_preflight_only",
+  "purpose": "Authorize only the registered engineers_hammer_vray world-Z roll geometry and opaque saved-checkpoint hash preflight. Checkpoint loading, training, all unregistered objects, and all other transformation families remain blocked.",
   "execution_boundary": {
     "planted_synthetic_geometry_authorized": true,
-    "dataset_backed_geometry_authorized": false,
+    "dataset_backed_geometry_authorized": true,
+    "saved_checkpoint_hash_preflight_authorized": true,
     "saved_checkpoint_replay_authorized": false,
     "training_authorized": false,
     "unregistered_geometry_rejected": true
@@ -18,7 +19,7 @@
         "render_camera_and_object_transform_metadata",
         "rendered_mask_or_landmark_motion_check"
       ],
-      "status": "missing"
+      "status": "satisfied_for_engineers_hammer_vray_world_z_roll_only"
     },
     "scale": {
       "quantity": "projected_scale_centre_xy",
@@ -57,7 +58,27 @@
       "status": "missing"
     }
   },
-  "registered_bindings": [],
-  "stop_condition": "Any dataset-backed adapter construction must stop until a reviewed committed amendment changes dataset_backed_geometry_authorized to true and registers the exact binding file, content hash, object, inventory, preprocessing, derivation method, and evidence roles.",
-  "content_hash_sha256": "4bcbc6541ea5069cddc17f83ea35fea919bf1883ecccefaeec16b40823a6e31a"
+  "registered_bindings": [
+    {
+      "transform_family": "roll",
+      "object_id": "engineers_hammer_vray",
+      "inventory_content_hash_sha256": "acfa835813e128b6f3336fe1f51bc14ac6e4cb4cf1b285afe418d4dbdf598d93",
+      "repo_relative_path": "docs/decisions/2026-07-26/representation_oracle_geometry/bindings/engineers_hammer_vray__roll__world_z__v1.json",
+      "file_sha256": "d28603da71ec2657b68315b72387f6c4dddc4e6bb20fe937785d3cdb169805d2",
+      "content_hash_sha256": "c9887a6ab40532ec9c488af5d64dbf786b91b17a4fdd3bb265a7eda21f61570a",
+      "derivation_method": "Camera and object-centre code paths derive pixel centre (255.5,255.5), normalized (0,0); a fixed rendered-mask sign check and 3x3 local centre audit independently confirm R_img(+6 degrees) forward and R_img(-theta) canonical unrotation.",
+      "evidence_roles": [
+        "roll_corpus_inventory",
+        "dataset_semantic_lock",
+        "verified_generator_snapshot_manifest",
+        "verified_roll_render_driver",
+        "verified_roll_operator_and_recentering_source",
+        "render_camera_and_object_transform_metadata",
+        "mask_pivot_sign_checker_source",
+        "rendered_mask_pivot_and_sign_report"
+      ]
+    }
+  ],
+  "stop_condition": "Reject any geometry not matching this exact committed hammer-roll binding. Opaque checkpoint hash preflight must stop on any registry, binding, evidence, inventory, semantic-lock, or Git-blob mismatch. Checkpoint loading and all training remain blocked pending a separately committed runtime, full provenance manifests, and substantive Fable review.",
+  "content_hash_sha256": "27353548998ccbe5346eaa84ba92b30423d955e6d643bb6b53b1995715343fbb"
 }

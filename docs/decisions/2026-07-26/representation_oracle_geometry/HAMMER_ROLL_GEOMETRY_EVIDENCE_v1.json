@@ -1,0 +1,389 @@
+{
+  "data_root": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/_tdw_world_z_roll_base_panel_512_v2",
+  "check": "world_z_roll_mask_iou_sign_and_pivot",
+  "coordinate_convention": {
+    "keypoint_space": "normalized [-1, 1]",
+    "normalized_pivot": [
+      0.0,
+      0.0
+    ],
+    "pixel_pivot_rule": "((W - 1) / 2, (H - 1) / 2)",
+    "locked_canonical_sign": "-theta",
+    "audit_sign": "+theta",
+    "theta_source": "meta.jsonl theta_deg",
+    "forward_three_frame_transform": "R_img(+6_deg)",
+    "canonical_unrotation": "R_img(-theta)",
+    "image_axes": "x_right_y_down_positive_angle_appears_clockwise"
+  },
+  "sample_frame_indices": [
+    0,
+    30,
+    60,
+    90,
+    120,
+    150
+  ],
+  "iou_threshold": 0.75,
+  "objects": [
+    {
+      "object": "engineers_hammer_vray",
+      "n_frames": 180,
+      "reference_frame": {
+        "frame_index": 0,
+        "theta_deg": 0.0,
+        "bbox": {
+          "nonempty": true,
+          "x0": 167,
+          "x1": 343,
+          "y0": 52,
+          "y1": 458,
+          "area_frac": 0.078643798828125,
+          "margin_frac": 0.1015625,
+          "centroid_xy": [
+            238.90730500582072,
+            292.56955762514553
+          ]
+        }
+      },
+      "metadata_semantics": {
+        "operator_names": [
+          "tdw_world_z_roll"
+        ],
+        "tdw_axes": [
+          "roll"
+        ],
+        "is_world_values": [
+          true
+        ],
+        "rotation_is_tdw_rerendered_values": [
+          true
+        ],
+        "use_centroid_values": [
+          true
+        ],
+        "theta_step_values": [
+          2.0
+        ]
+      },
+      "metadata_semantics_pass": true,
+      "sample_bbox": [
+        {
+          "frame_index": 0,
+          "theta_deg": 0.0,
+          "nonempty": true,
+          "x0": 167,
+          "x1": 343,
+          "y0": 52,
+          "y1": 458,
+          "area_frac": 0.078643798828125,
+          "margin_frac": 0.1015625,
+          "centroid_xy": [
+            238.90730500582072,
+            292.56955762514553
+          ]
+        },
+        {
+          "frame_index": 30,
+          "theta_deg": 60.0,
+          "nonempty": true,
+          "x0": 44,
+          "x1": 431,
+          "y0": 116,
+          "y1": 419,
+          "area_frac": 0.0787811279296875,
+          "margin_frac": 0.0859375,
+          "centroid_xy": [
+            214.9093066046872,
+            259.672767770676
+          ]
+        },
+        {
+          "frame_index": 60,
+          "theta_deg": 120.0,
+          "nonempty": true,
+          "x0": 59,
+          "x1": 452,
+          "y0": 82,
+          "y1": 360,
+          "area_frac": 0.07887649536132812,
+          "margin_frac": 0.115234375,
+          "centroid_xy": [
+            231.50839096580742,
+            222.46080185713595
+          ]
+        },
+        {
+          "frame_index": 90,
+          "theta_deg": 180.0,
+          "nonempty": true,
+          "x0": 168,
+          "x1": 344,
+          "y0": 53,
+          "y1": 459,
+          "area_frac": 0.078643798828125,
+          "margin_frac": 0.1015625,
+          "centroid_xy": [
+            272.0926949941793,
+            218.4304423748545
+          ]
+        },
+        {
+          "frame_index": 120,
+          "theta_deg": 240.0,
+          "nonempty": true,
+          "x0": 80,
+          "x1": 467,
+          "y0": 92,
+          "y1": 395,
+          "area_frac": 0.07878494262695312,
+          "margin_frac": 0.0859375,
+          "centroid_xy": [
+            296.0962087832276,
+            251.32164818670412
+          ]
+        },
+        {
+          "frame_index": 150,
+          "theta_deg": 300.0,
+          "nonempty": true,
+          "x0": 59,
+          "x1": 452,
+          "y0": 151,
+          "y1": 429,
+          "area_frac": 0.07887649536132812,
+          "margin_frac": 0.115234375,
+          "centroid_xy": [
+            279.4916090341926,
+            288.53919814286405
+          ]
+        }
+      ],
+      "sign_samples": [
+        {
+          "frame_index": 0,
+          "theta_deg": 0.0,
+          "plus_theta_iou": 1.0,
+          "minus_theta_iou": 1.0,
+          "ambiguous_for_sign": true
+        },
+        {
+          "frame_index": 30,
+          "theta_deg": 60.0,
+          "plus_theta_iou": 0.034908525108540166,
+          "minus_theta_iou": 0.9897369181844464,
+          "ambiguous_for_sign": false
+        },
+        {
+          "frame_index": 60,
+          "theta_deg": 120.0,
+          "plus_theta_iou": 0.0350525286462904,
+          "minus_theta_iou": 0.989170196380439,
+          "ambiguous_for_sign": false
+        },
+        {
+          "frame_index": 90,
+          "theta_deg": 180.0,
+          "plus_theta_iou": 1.0,
+          "minus_theta_iou": 1.0,
+          "ambiguous_for_sign": true
+        },
+        {
+          "frame_index": 120,
+          "theta_deg": 240.0,
+          "plus_theta_iou": 0.03490764906645252,
+          "minus_theta_iou": 0.9897851016671485,
+          "ambiguous_for_sign": false
+        },
+        {
+          "frame_index": 150,
+          "theta_deg": 300.0,
+          "plus_theta_iou": 0.0350525286462904,
+          "minus_theta_iou": 0.989170196380439,
+          "ambiguous_for_sign": false
+        }
+      ],
+      "plus_theta_iou_summary_all_samples": {
+        "n": 6,
+        "min": 0.03490764906645252,
+        "mean": 0.356653538577929,
+        "median": 0.0350525286462904,
+        "max": 1.0
+      },
+      "minus_theta_iou_summary_all_samples": {
+        "n": 6,
+        "min": 0.989170196380439,
+        "mean": 0.9929770687687455,
+        "median": 0.9897610099257974,
+        "max": 1.0
+      },
+      "decisive_plus_theta_iou_summary": {
+        "n": 4,
+        "min": 0.03490764906645252,
+        "mean": 0.03498030786689337,
+        "median": 0.034980526877415284,
+        "max": 0.0350525286462904
+      },
+      "decisive_minus_theta_iou_summary": {
+        "n": 4,
+        "min": 0.989170196380439,
+        "mean": 0.9894656031531183,
+        "median": 0.9894535572824428,
+        "max": 0.9897851016671485
+      },
+      "locked_minus_theta_pass": true,
+      "all_sample_masks_nonempty": true,
+      "min_sample_margin_frac": 0.0859375,
+      "center_pivot_pixel_xy": [
+        255.5,
+        255.5
+      ],
+      "local_center_audit": {
+        "purpose": "independent_rendered_output_check_of_metadata_derived_center_not_model_or_evaluator_fitting",
+        "candidate_grid_pixel_offsets_xy": [
+          -1.0,
+          0.0,
+          1.0
+        ],
+        "decisive_frame_indices": [
+          30,
+          60,
+          120,
+          150
+        ],
+        "derived_center_pixel_xy": [
+          255.5,
+          255.5
+        ],
+        "derived_center_normalized_xy": [
+          0.0,
+          0.0
+        ],
+        "ranked_candidates": [
+          {
+            "center_pixel_xy": [
+              255.5,
+              255.5
+            ],
+            "mean_canonical_iou": 0.9894656031531183,
+            "minimum_canonical_iou": 0.989170196380439,
+            "n_decisive_frames": 4
+          },
+          {
+            "center_pixel_xy": [
+              255.5,
+              256.5
+            ],
+            "mean_canonical_iou": 0.9521486817059963,
+            "minimum_canonical_iou": 0.943011510453371,
+            "n_decisive_frames": 4
+          },
+          {
+            "center_pixel_xy": [
+              256.5,
+              255.5
+            ],
+            "mean_canonical_iou": 0.9498773949546195,
+            "minimum_canonical_iou": 0.9322787476014415,
+            "n_decisive_frames": 4
+          },
+          {
+            "center_pixel_xy": [
+              255.5,
+              254.5
+            ],
+            "mean_canonical_iou": 0.9496962610728023,
+            "minimum_canonical_iou": 0.9404197380158693,
+            "n_decisive_frames": 4
+          },
+          {
+            "center_pixel_xy": [
+              254.5,
+              255.5
+            ],
+            "mean_canonical_iou": 0.9491334157823272,
+            "minimum_canonical_iou": 0.9306671650158849,
+            "n_decisive_frames": 4
+          },
+          {
+            "center_pixel_xy": [
+              256.5,
+              256.5
+            ],
+            "mean_canonical_iou": 0.9374149958125901,
+            "minimum_canonical_iou": 0.9055190903207914,
+            "n_decisive_frames": 4
+          },
+          {
+            "center_pixel_xy": [
+              254.5,
+              256.5
+            ],
+            "mean_canonical_iou": 0.9372812474987915,
+            "minimum_canonical_iou": 0.9070690291620525,
+            "n_decisive_frames": 4
+          },
+          {
+            "center_pixel_xy": [
+              256.5,
+              254.5
+            ],
+            "mean_canonical_iou": 0.9363968404955458,
+            "minimum_canonical_iou": 0.9032615214282419,
+            "n_decisive_frames": 4
+          },
+          {
+            "center_pixel_xy": [
+              254.5,
+              254.5
+            ],
+            "mean_canonical_iou": 0.9360621471910606,
+            "minimum_canonical_iou": 0.9040331873703619,
+            "n_decisive_frames": 4
+          }
+        ],
+        "exact_center_selected": true,
+        "unique_best": true,
+        "pass": true
+      },
+      "input_evidence": {
+        "metadata": {
+          "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/_tdw_world_z_roll_base_panel_512_v2/train/engineers_hammer_vray/meta.jsonl",
+          "sha256": "eb3aed5fd94711e14f63a429f75c32e60ff02364ed3d9881c2723faf6354bf23"
+        },
+        "sample_masks": [
+          {
+            "frame_index": 0,
+            "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/_tdw_world_z_roll_base_panel_512_v2/train/engineers_hammer_vray/masks/a/mask_0000.png",
+            "sha256": "c7098f03f1a832931aa6e0f6444f99e58e329c14789800907886f28ada8055d5"
+          },
+          {
+            "frame_index": 30,
+            "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/_tdw_world_z_roll_base_panel_512_v2/train/engineers_hammer_vray/masks/a/mask_0030.png",
+            "sha256": "b3b5f7db50b02bed87d7b90a0d83b8f7d3baa64e400a4f40e61a171f0286b59c"
+          },
+          {
+            "frame_index": 60,
+            "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/_tdw_world_z_roll_base_panel_512_v2/train/engineers_hammer_vray/masks/a/mask_0060.png",
+            "sha256": "aa5d9e0bdbbad18bf02cad0de3254bea549363340fab2b76b2f641b95ae22c6b"
+          },
+          {
+            "frame_index": 90,
+            "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/_tdw_world_z_roll_base_panel_512_v2/train/engineers_hammer_vray/masks/a/mask_0090.png",
+            "sha256": "deda47140395d36994a1bef691b0e2869730b5f27b2ecf48cb23228e4a077f37"
+          },
+          {
+            "frame_index": 120,
+            "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/_tdw_world_z_roll_base_panel_512_v2/train/engineers_hammer_vray/masks/a/mask_0120.png",
+            "sha256": "1afa2a0a0e3c43334f184d6f6c9fd84a8b67c7134b50cf06cbf24f3dbdce4f11"
+          },
+          {
+            "frame_index": 150,
+            "absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/_tdw_world_z_roll_base_panel_512_v2/train/engineers_hammer_vray/masks/a/mask_0150.png",
+            "sha256": "7bcca6c479496712f7c7daa5e4420de3f869baa1ab10abecf73b79bbbe0b8ffe"
+          }
+        ]
+      }
+    }
+  ],
+  "pass": true
+}

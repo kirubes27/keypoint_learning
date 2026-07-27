@@ -31,10 +31,10 @@ FROZEN_GEOMETRY_REGISTRY_RELPATH = PurePosixPath(
     "GEOMETRY_BINDING_REGISTRY_v1.json"
 )
 FROZEN_GEOMETRY_REGISTRY_FILE_SHA256 = (
-    "55453188e3c49d7f8ffdf7b2128167f721ba76468ba79ec1d10f49444f2ece4f"
+    "22b55959199f76a8056897ba1e291b388fa754e80cca407dc172b8d6a70f880e"
 )
 FROZEN_GEOMETRY_REGISTRY_CONTENT_SHA256 = (
-    "4bcbc6541ea5069cddc17f83ea35fea919bf1883ecccefaeec16b40823a6e31a"
+    "27353548998ccbe5346eaa84ba92b30423d955e6d643bb6b53b1995715343fbb"
 )
 FROZEN_ARTIFACT_COMMIT = "78071297ba46bb22b637a00e1c141eb6e9a8f2de"
 FROZEN_GENERATOR_COMMIT = "d325cdb9bdf07dd3d215b1f9e3153012e2065f5b"
@@ -176,13 +176,13 @@ def _authorize_registered_dataset_geometry(
     family: str,
     object_id: str,
     inventory_content_hash: str,
-) -> None:
+) -> dict[str, Any]:
     """Fail closed unless the exact dataset geometry binding is registered.
 
-    The current registry deliberately authorizes no dataset-backed geometry.
     Keeping this check before ``_load_geometry`` prevents a caller-created,
     self-hashed JSON document from becoming semantic evidence merely because
-    its fields are internally consistent.
+    its fields are internally consistent.  The current registry contains one
+    exact hammer-roll binding; every unregistered object/family stays blocked.
     """
 
     registry_path = (
@@ -277,6 +277,34 @@ def _authorize_registered_dataset_geometry(
         },
         name="registered geometry binding",
     )
+    _require(
+        isinstance(record["repo_relative_path"], str)
+        and bool(record["repo_relative_path"]),
+        "registered geometry binding path is invalid",
+    )
+    _require(
+        isinstance(record["file_sha256"], str)
+        and _SHA256_RE.fullmatch(record["file_sha256"]) is not None,
+        "registered geometry binding file hash is invalid",
+    )
+    _require(
+        isinstance(record["content_hash_sha256"], str)
+        and _SHA256_RE.fullmatch(record["content_hash_sha256"]) is not None,
+        "registered geometry binding content hash is invalid",
+    )
+    _require(
+        isinstance(record["derivation_method"], str)
+        and bool(record["derivation_method"]),
+        "registered geometry binding derivation method is empty",
+    )
+    evidence_roles = record["evidence_roles"]
+    _require(
+        isinstance(evidence_roles, list)
+        and bool(evidence_roles)
+        and all(isinstance(role, str) and bool(role) for role in evidence_roles)
+        and len(set(evidence_roles)) == len(evidence_roles),
+        "registered geometry binding evidence roles are invalid",
+    )
     expected_path = (
         _repository_root() / PurePosixPath(record["repo_relative_path"])
     ).resolve(strict=True)
@@ -288,6 +316,7 @@ def _authorize_registered_dataset_geometry(
         _sha256_file(expected_path) == record["file_sha256"],
         "registered geometry binding file hash mismatch",
     )
+    return dict(record)
 
 
 def _verify_frozen_git_blobs(
@@ -942,7 +971,7 @@ def build_split_adapter_rows(
         for row in evaluation_rows_raw + fit_rows_raw
         for key in ("src_frame_index", "dst_frame_index")
     }
-    _authorize_registered_dataset_geometry(
+    geometry_record = _authorize_registered_dataset_geometry(
         geometry_binding_path=geometry_binding_path,
         family=str(family),
         object_id=object_id,
@@ -957,6 +986,16 @@ def build_split_adapter_rows(
             "dataset_semantic_lock_sha256"
         ],
         required_frame_ids=required_frame_ids,
+    )
+    _require(
+        geometry["content_hash_sha256"]
+        == geometry_record["content_hash_sha256"],
+        "registered geometry binding content hash mismatch",
+    )
+    _require(
+        [record["role"] for record in geometry["evidence_files"]]
+        == geometry_record["evidence_roles"],
+        "registered geometry binding evidence roles mismatch",
     )
     evaluation_frames, evaluation_rows = _frame_records(
         evaluation_rows_raw,

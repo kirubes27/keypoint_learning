@@ -1,0 +1,30 @@
+{
+  "schema_version": "verified-generator-snapshot-v1",
+  "snapshot_date": "2026-07-27",
+  "source_root": "/Users/kirubeso.r/Documents/PhD/recovered_sources/verified_generator",
+  "purpose": "Archival provenance only; no generator was executed by this snapshot.",
+  "authority": {
+    "roll_render_driver": "generate_tdw_world_z_roll_dataset_post_update.py",
+    "future_dataset_driver": "generate_next_datasets.py",
+    "tracked_repository_roll_generator_is_authoritative": false,
+    "tracked_repository_roll_generator_disposition": "Known unfaithful rewrite; do not use as scientific generation authority."
+  },
+  "files": {
+    "README.md": "478e04d8b4d5872f7c6d30f11c38b2ac417235498e0c271035f8ba0e5c27909f",
+    "compare_hammer_rotation_operators.py": "1fabedf7590e0f55ba56a27752873f16e4de980dd5db66e6258b319f108ef580",
+    "create_dataset_affine_xy_scale_rotation.py": "98bd10307d8e24c8224e72918986e310166c5a0f55f8f9d91188cfbf8d9c93c8",
+    "create_true_yaw_from_base_panel_sanity.py": "e4969f9187161885d17d022520b2f05f7dc2ba8f26d0f1ea17630d14aaf44c01",
+    "generate_next_datasets.py": "1f09c245b459f890cd42e9000d276f641fabdf1e812d3ab73efb83d940885d1e",
+    "generate_tdw_world_z_roll_dataset.py": "38189b814a715134e2f161aa184e7749dc179b696817243ae0792866d3e2ce4f",
+    "generate_tdw_world_z_roll_dataset_post_update.py": "a47859508dd145fbea33f184724bf72ec1573fce018a5a3ae3f68fd13782ca8e"
+  },
+  "copy_verification": {
+    "method": "byte-for-byte cmp against each named source file",
+    "result": "pass"
+  },
+  "limitations": [
+    "This snapshot does not include bytecode fossils or large pixel-verification images.",
+    "Roll pixel equivalence was historically sampled rather than checked over all 1080 frames.",
+    "The rendered future corpora remain untracked external inputs and require content-bound manifests."
+  ]
+}

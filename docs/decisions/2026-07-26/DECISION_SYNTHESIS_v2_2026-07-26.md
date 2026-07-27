@@ -236,3 +236,29 @@ Overturn ledger: shape-constraint-first ordering overturned by Run A artifact; R
     development evidence and cannot remain confirmation evidence. Test
     outcomes never authorize tuning or rerunning the same object under the
     same confirmation/final label.
+
+## v2.7 AMENDMENT (2026-07-27, immediate oracle scope clarification)
+
+1. USER-APPROVED IMMEDIATE SCOPE: the current deterministic gate is narrowed
+   to the coordinate estimator, world-Z roll geometry/operator semantics, and
+   the representation-health failures needed to interpret the saved Task
+   20/55/80 roll checkpoints: wrong sign, off-centre bias, reflection,
+   collapse/duplication, sliding, inactivity/off-object behavior, peak
+   switching, and dead heatmaps. This does not authorize training.
+2. EXISTING-DATA BOUNDARY: the rendered datasets remain unchanged. Synthetic
+   planted cases test whether the evaluator reports known answers; they are
+   not new training data, a dataset replacement, or a new experiment.
+3. LATER-TRANSFORMATION BOUNDARY: dataset-backed scale, translation, yaw, and
+   pitch evaluation remains blocked until the separately required projected
+   centre, camera-to-image calibration, and projection/depth evidence is
+   frozen and reviewed. Their absence must produce an explicit stop, never an
+   invented value or a caller-authored self-confirming geometry file.
+4. ORDER PRESERVED: after the immediate planted gate passes, saved Task
+   20/55/80 roll replay may run as a correctness/negative-control check.
+   Tasks 55/80 remain the only candidates for the later matched 64-versus-128
+   roll experiment. Translation, scale, yaw, and pitch remain at programme
+   step v2.6(3h); this amendment does not move them earlier.
+5. REVIEW GATE: Fable may inspect every relevant candidate file read-only.
+   A substantive independent review of the exact committed candidate is
+   mandatory before the official planted command. An error-only or
+   non-substantive response is not a review and blocks execution.

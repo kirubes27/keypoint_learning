@@ -1,0 +1,213 @@
+{
+  "schema_version": "representation-checkpoint-replay-registry-v1",
+  "artifact_type": "representation_checkpoint_replay_registry",
+  "date": "2026-07-27",
+  "status": "preregistered_candidate_paths_checkpoint_bytes_not_opened",
+  "purpose": "Bind the saved Task 20, 55, and 80 replay inputs before any checkpoint is opened by the production replay path.",
+  "execution_boundary": {
+    "registry_must_be_committed_before_checkpoint_hash_or_load": true,
+    "checkpoint_candidate_path_is_not_confirmed_until_post_commit_hash_preflight": true,
+    "hash_mismatch_action": "stop_without_loading_checkpoint",
+    "training_or_weight_update_authorized": false,
+    "selection_use_authorized": false,
+    "official_replay_requires_fable_reviewed_execution_commit": true
+  },
+  "replay_rule": {
+    "scope": "definition_identical_historical_fields_only",
+    "predicate": "absolute_difference <= 2e-6 OR relative_difference <= 5e-4",
+    "absolute_difference_max": 0.000002,
+    "relative_difference_max": 0.0005,
+    "zero_reference_relative_difference": "not_used",
+    "new_metric_policy": "New all-channel collapse, absolute-activity, attachment, switching, and revised canonical-normalization fields are classified by their frozen new definitions and are not numerically forced to equal historical eligible-only fields."
+  },
+  "dataset_binding": {
+    "object_id": "engineers_hammer_vray",
+    "replay_root_absolute_path": "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/_tdw_world_z_roll_base_panel_512_v2",
+    "training_config_declared_data_root": "./_tdw_world_z_roll_base_panel_512_v2",
+    "training_config_declared_pair_index": "_tdw_world_z_roll_base_panel_512_v2/indices/pairs_skip3_cyclic.json",
+    "corpus_inventory": {
+      "repo_relative_path": "docs/decisions/2026-07-26/representation_oracle_splits/inventories/CORPUS_INVENTORY__roll.json",
+      "artifact_commit": "78071297ba46bb22b637a00e1c141eb6e9a8f2de",
+      "file_sha256": "d1b989ac78866be12c06687d9141180845494895f7f03c8d1a3b1438779a8703",
+      "content_hash_sha256": "acfa835813e128b6f3336fe1f51bc14ac6e4cb4cf1b285afe418d4dbdf598d93"
+    },
+    "historical_pair_index": {
+      "relative_path_under_replay_root": "indices/pairs_skip3_cyclic.json",
+      "sha256": "87f51500a080fa964fced92f6382c5d421d74f707c926686d565cabaf9a39fc3",
+      "size_bytes": 640562,
+      "split_semantics": "historical full cyclic plus-3-frame index; not the new train/test split"
+    },
+    "semantic_lock": {
+      "relative_path_under_replay_root": "semantic_lock.json",
+      "sha256": "c625cc590e8de42b6d8162b044ff6398c0f2e1c04cd6b5ce0cea6f6bccb152aa",
+      "size_bytes": 1478
+    },
+    "live_content_requirement": "The committed corpus inventory and historical pair-index hash must validate against the replay root before checkpoint loading."
+  },
+  "definition_identical_fields": {
+    "operator": [
+      {
+        "historical_json": "rollout/rollout_metrics.json",
+        "historical_pointer": "/operator_spectrum/shared_affine/A",
+        "production_pointer": "/operator/learned_A",
+        "comparison": "elementwise_replay_rule"
+      },
+      {
+        "historical_json": "rollout/rollout_metrics.json",
+        "historical_pointer": "/operator_spectrum/shared_affine/bias",
+        "production_pointer": "/operator/learned_b",
+        "comparison": "elementwise_replay_rule"
+      },
+      {
+        "historical_json": "rollout/rollout_metrics.json",
+        "historical_pointer": "/operator_spectrum/shared_affine/det_A",
+        "production_pointer": "/operator/determinant_A",
+        "comparison": "replay_rule"
+      },
+      {
+        "historical_json": "rollout/rollout_metrics.json",
+        "historical_pointer": "/operator_spectrum/shared_affine/singular_values",
+        "production_pointer": "/operator/singular_values",
+        "comparison": "elementwise_replay_rule"
+      },
+      {
+        "historical_json": "rollout/rollout_metrics.json",
+        "historical_pointer": "/operator_spectrum/shared_affine/closest_rotation_angle_deg",
+        "production_pointer": "/operator/proper_rotation_angle_deg",
+        "comparison": "replay_rule"
+      }
+    ],
+    "cyclic_rollout": {
+      "historical_json": "rollout/rollout_metrics.json",
+      "historical_pointer_pattern": "/cyclic_compositionality/errors/{k}/{field}",
+      "production_location": {
+        "intermediate_horizons": {
+          "list_pointer": "/rollout/full_corpus_identity_normalized_auc/horizons",
+          "selector_field": "k",
+          "first": 1,
+          "last": 59
+        },
+        "closure": {
+          "record_pointer": "/rollout/closure",
+          "k": 60
+        }
+      },
+      "production_metric_subpointer_pattern": "/model_mse/{mapped_field}",
+      "k_values": {
+        "first": 1,
+        "last": 60,
+        "closure_k": 60
+      },
+      "field_mapping": {
+        "mean": "mean",
+        "min": "minimum",
+        "max": "maximum",
+        "n_samples": "n"
+      },
+      "comparison": "numeric_fields_replay_rule_and_n_exact",
+      "forbidden_historical_field": "sem"
+    }
+  },
+  "fixtures": [
+    {
+      "fixture_id": "saved_task20_seed42_collapsed_negative_control",
+      "task_id": 20,
+      "role": "collapsed_negative_control",
+      "expected_new_classification": {
+        "structural_negative_control_collapse": true,
+        "candidate_eligibility": "forbidden"
+      },
+      "run_directory": "/Users/kirubeso.r/Documents/PhD/cluster_downloads/hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared/phase_a_engineers_hammer_vray_20260606_050434_151501_seed42_pid2116969",
+      "checkpoint": {
+        "relative_path": "best_model.pt",
+        "candidate_absolute_path": "/Users/kirubeso.r/Documents/PhD/cluster_downloads/hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared/phase_a_engineers_hammer_vray_20260606_050434_151501_seed42_pid2116969/best_model.pt",
+        "expected_sha256": "96433168767659ae9144a35a4f7889c3226b65a7a0c5341197d48232a66fe622",
+        "candidate_size_bytes": 2994210,
+        "verification_status": "not_hashed_or_loaded_in_this_registry_draft"
+      },
+      "config": {
+        "relative_path": "config.json",
+        "sha256": "60db767a5a77da28d001ef0ceb4134d063b749053255955629d6780b278d8f71",
+        "size_bytes": 1020
+      },
+      "metadata": {
+        "relative_path": "history.json",
+        "sha256": "4c5f786f6e531fe7f24b36d7cda61419371f4be8f01dc622377931d41458a199",
+        "size_bytes": 63319
+      },
+      "historical_outputs": [
+        {"relative_path": "rollout/rollout_metrics.json", "sha256": "d2a9bf8255faf824d1069144cd3493cdbc24e66e5fd4df768e9affbd1e7308fe", "size_bytes": 35212},
+        {"relative_path": "visualizations/operator_metrics.json", "sha256": "d7705b7503fceeeb762b8028c09c8d3290dc6b85e8acaf71f7272c656d631b3b", "size_bytes": 4142},
+        {"relative_path": "compositionality/compositionality_results.json", "sha256": "4e44d4c4e9411a5399e9462d8c34d109238e1de1d47e7d4888d3e414d665dc2e", "size_bytes": 2358},
+        {"relative_path": "ablations/ablation_results.json", "sha256": "05502fc1e2a64c276356c3f737f55180b40dc90bb1c4495736a8990ea2f1db59", "size_bytes": 212}
+      ]
+    },
+    {
+      "fixture_id": "saved_task55_seed42_clean_baseline",
+      "task_id": 55,
+      "role": "clean_baseline_replay_only",
+      "expected_new_classification": {
+        "structural_negative_control_collapse": false,
+        "candidate_eligibility": "replay_only_not_selection"
+      },
+      "run_directory": "/Users/kirubeso.r/Documents/PhD/cluster_downloads/hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared/phase_a_engineers_hammer_vray_20260606_131311_378814_seed42_pid606096",
+      "checkpoint": {
+        "relative_path": "best_model.pt",
+        "candidate_absolute_path": "/Users/kirubeso.r/Documents/PhD/cluster_downloads/hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared/phase_a_engineers_hammer_vray_20260606_131311_378814_seed42_pid606096/best_model.pt",
+        "expected_sha256": "942a32082b6bfe83526253cc2dd39e49792b8260d12fc1361a11bae812992418",
+        "candidate_size_bytes": 2991906,
+        "verification_status": "not_hashed_or_loaded_in_this_registry_draft"
+      },
+      "config": {
+        "relative_path": "config.json",
+        "sha256": "9c9bbeb64ba7c79593724700fe6ece92196303d4eb50c05cfaefb0099d5704f8",
+        "size_bytes": 1019
+      },
+      "metadata": {
+        "relative_path": "history.json",
+        "sha256": "c1e2b1fc2cb369fa1d28d6fcef1a682e58a09fbcdeaf922dd7a945b52d4d48e6",
+        "size_bytes": 56044
+      },
+      "historical_outputs": [
+        {"relative_path": "rollout/rollout_metrics.json", "sha256": "e8ebda12dc8dc04443c77ed272ef5861bbd01dfeba9936e6caefb9ea6d25a2c0", "size_bytes": 35225},
+        {"relative_path": "visualizations/operator_metrics.json", "sha256": "8da7a68443096c708b5b5f5050dd9f74fb34f3a417f2a0231c8a8bdcb4b5b056", "size_bytes": 4169},
+        {"relative_path": "compositionality/compositionality_results.json", "sha256": "791720ebe2efd18961db40cd9d667b91c3e1e78c60017ca47e5267a56ebf5d14", "size_bytes": 2357},
+        {"relative_path": "ablations/ablation_results.json", "sha256": "bb7bbc7e56252d36e90c536e9b0a4e06b561c764d47cb24ba2cd0a0123aab96c", "size_bytes": 210}
+      ]
+    },
+    {
+      "fixture_id": "saved_task80_seed42_assisted_baseline",
+      "task_id": 80,
+      "role": "assisted_baseline_replay_only",
+      "expected_new_classification": {
+        "structural_negative_control_collapse": false,
+        "candidate_eligibility": "replay_only_not_selection"
+      },
+      "run_directory": "/Users/kirubeso.r/Documents/PhD/cluster_downloads/hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared/phase_a_engineers_hammer_vray_20260606_151123_941396_seed42_pid3289780",
+      "checkpoint": {
+        "relative_path": "best_model.pt",
+        "candidate_absolute_path": "/Users/kirubeso.r/Documents/PhD/cluster_downloads/hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared/phase_a_engineers_hammer_vray_20260606_151123_941396_seed42_pid3289780/best_model.pt",
+        "expected_sha256": "ccb613c87788a229929b1f6ead002d626819e970237d0e0ad5ca75c9318004f3",
+        "candidate_size_bytes": 2994210,
+        "verification_status": "not_hashed_or_loaded_in_this_registry_draft"
+      },
+      "config": {
+        "relative_path": "config.json",
+        "sha256": "e1fea4fc99c23637f47cb73f904b0f45c330425e15e327ce07a34d59212af9d7",
+        "size_bytes": 1020
+      },
+      "metadata": {
+        "relative_path": "history.json",
+        "sha256": "9371a65d949cdb1388b8a511142ecc6af1c96ef49d3b7a772a5591f206d19d65",
+        "size_bytes": 63233
+      },
+      "historical_outputs": [
+        {"relative_path": "rollout/rollout_metrics.json", "sha256": "580fcbca702b54091d6ffb20c9302140fec00bcde80039f2ec618330de4d2b86", "size_bytes": 35169},
+        {"relative_path": "visualizations/operator_metrics.json", "sha256": "3ca1ba900d80026625fefea9375de12c5486a413c7afa4ccb0f903ce66b3880c", "size_bytes": 4161},
+        {"relative_path": "compositionality/compositionality_results.json", "sha256": "da7258c126a92bf44650f068e16ab30cc989b8e67994bc5998d090ed3ad98f84", "size_bytes": 2357},
+        {"relative_path": "ablations/ablation_results.json", "sha256": "a62455e91a5a2e1509d6a97eb46823d46cc787f839c1105ea795e0749f91e433", "size_bytes": 212}
+      ]
+    }
+  ],
+  "content_hash_sha256": "02612a4dd10863d0dc78a2b2e078689aa588d91b99e667d452fa0c9b2ac45c75"
+}

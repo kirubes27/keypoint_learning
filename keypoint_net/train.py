@@ -12,23 +12,66 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import random
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from model import PhaseAModel, compute_losses
-from dataset import PoseSequenceDataset, SingleObjectDataset, IndexPairDataset
+from dataset import (
+    IndexPairDataset,
+    IndexPairManifest,
+    PoseSequenceDataset,
+    SingleObjectDataset,
+    inspect_index_pair_manifest,
+)
+
+
+@dataclass(frozen=True)
+class TrainingDataPlan:
+    """Fully validated data/checkpoint policy prepared before run creation."""
+
+    mode: str
+    effective_epochs: int
+    train_dataset: Dataset
+    val_dataset: Optional[Dataset]
+    test_manifest: Optional[IndexPairManifest]
+    index_provenance: dict
+    checkpoint_policy: dict
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _source_commit() -> str:
+    repository_root = Path(__file__).resolve().parent.parent
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repository_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("Could not bind the run to an exact Git commit") from exc
 
 
 def _select_device() -> torch.device:
@@ -251,7 +294,7 @@ def evaluate(
     sigma: float,
     num_keypoints: int,
 ) -> dict:
-    """Evaluate on validation set."""
+    """Evaluate one explicitly supplied held-out loader."""
     model.eval()
     
     total_loss = 0.0
@@ -306,6 +349,466 @@ def evaluate(
     }
 
 
+def _validate_positive_int(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+
+
+def _validate_training_arguments(args: argparse.Namespace) -> None:
+    """Fail closed on argument contradictions before device/run allocation."""
+    if args.lambda_act > 0 and args.num_action_classes < 2:
+        raise ValueError("--num_action_classes must be >= 2 when --lambda_act > 0")
+    for name in (
+        "epochs",
+        "batch_size",
+        "save_every",
+        "log_every",
+        "img_size",
+        "frame_skip",
+        "eval_max_k",
+        "num_keypoints",
+        "base_channels",
+    ):
+        _validate_positive_int(getattr(args, name), f"--{name}")
+    if args.frozen_epochs is not None:
+        _validate_positive_int(args.frozen_epochs, "--frozen_epochs")
+    if args.center_crop is not None:
+        _validate_positive_int(args.center_crop, "--center_crop")
+    for name in ("lr", "temperature", "sigma", "yaw_step_deg"):
+        value = getattr(args, name)
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"--{name} must be finite and positive")
+    if not np.isfinite(args.weight_decay) or args.weight_decay < 0:
+        raise ValueError("--weight_decay must be finite and non-negative")
+    for name in (
+        "lambda_smooth",
+        "lambda_disp",
+        "lambda_ent",
+        "lambda_act",
+        "lambda_loc",
+        "lambda_inv",
+        "lambda_cycle",
+    ):
+        value = getattr(args, name)
+        if not np.isfinite(value) or value < 0:
+            raise ValueError(f"--{name} must be finite and non-negative")
+    if (
+        not np.isfinite(args.loc_bg_threshold)
+        or not 0 <= args.loc_bg_threshold <= 255
+    ):
+        raise ValueError("--loc_bg_threshold must be finite and within [0, 255]")
+    if (
+        isinstance(args.num_action_classes, bool)
+        or not isinstance(args.num_action_classes, int)
+        or args.num_action_classes < 0
+    ):
+        raise ValueError("--num_action_classes must be a non-negative integer")
+    if isinstance(args.seed, bool) or not isinstance(args.seed, int):
+        raise ValueError("--seed must be an integer")
+    if not isinstance(args.output_dir, str) or not args.output_dir.strip():
+        raise ValueError("--output_dir must be a non-empty path")
+
+
+def _resolve_index_argument_policy(args: argparse.Namespace) -> dict:
+    """
+    Resolve the explicit indexed-mode argument matrix.
+
+    The historical ``--pairs_index`` spelling remains available only as a
+    deprecated alias for ``--train_pairs_index`` inside an explicit safe mode.
+    It can no longer create a train-as-validation indexed run.
+    """
+    indexed_values = (
+        args.indexed_mode,
+        args.pairs_index,
+        args.train_pairs_index,
+        args.val_pairs_index,
+        args.test_pairs_index,
+        args.dataset_binding_sha256,
+        args.frozen_epochs,
+    )
+    if not any(value is not None for value in indexed_values):
+        return {"mode": "legacy"}
+
+    if args.indexed_mode is None:
+        raise ValueError(
+            "Indexed pair files require explicit --indexed_mode "
+            "development or fixed-final; no train-as-validation fallback exists"
+        )
+    if args.pairs_index is not None and args.train_pairs_index is not None:
+        raise ValueError(
+            "Pass only one of --pairs_index and --train_pairs_index"
+        )
+    train_index = args.train_pairs_index or args.pairs_index
+    if train_index is None:
+        raise ValueError("Indexed mode requires --train_pairs_index")
+    if args.object is None:
+        raise ValueError(
+            "Indexed mode requires --object so each object-specific model has "
+            "one frozen recipe role"
+        )
+    if args.dataset_binding_sha256 is None:
+        raise ValueError(
+            "Indexed mode requires independently verified "
+            "--dataset_binding_sha256"
+        )
+    if args.auto_eval:
+        raise ValueError(
+            "--auto_eval is forbidden for indexed modes because the legacy "
+            "whole-directory evaluator is not partition-aware"
+        )
+
+    holdout_count = sum(
+        value is not None
+        for value in (args.val_pairs_index, args.test_pairs_index)
+    )
+    if holdout_count != 1:
+        raise ValueError(
+            "Indexed mode requires exactly one of --val_pairs_index or "
+            "--test_pairs_index"
+        )
+
+    if args.indexed_mode == "development":
+        if args.val_pairs_index is None or args.test_pairs_index is not None:
+            raise ValueError(
+                "development mode requires train+validation indices and no "
+                "test index"
+            )
+        if args.frozen_epochs is not None:
+            raise ValueError(
+                "--frozen_epochs is reserved for fixed-final mode"
+            )
+        return {
+            "mode": "development",
+            "train_index": train_index,
+            "holdout_index": args.val_pairs_index,
+            "holdout_split": "validation",
+            "effective_epochs": args.epochs,
+        }
+
+    if args.indexed_mode == "fixed-final":
+        if args.test_pairs_index is None or args.val_pairs_index is not None:
+            raise ValueError(
+                "fixed-final mode requires train+test indices and no "
+                "validation index"
+            )
+        if args.frozen_epochs is None:
+            raise ValueError("fixed-final mode requires --frozen_epochs")
+        if args.epochs != args.frozen_epochs:
+            raise ValueError(
+                "--epochs must exactly equal --frozen_epochs in fixed-final mode"
+            )
+        return {
+            "mode": "fixed-final",
+            "train_index": train_index,
+            "holdout_index": args.test_pairs_index,
+            "holdout_split": "test",
+            "effective_epochs": args.frozen_epochs,
+        }
+
+    raise ValueError(f"Unknown indexed mode: {args.indexed_mode!r}")
+
+
+def _normalise_role(role: str) -> str:
+    return role.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _validate_manifest_pair(
+    train_manifest: IndexPairManifest,
+    holdout_manifest: IndexPairManifest,
+    *,
+    object_name: str,
+    mode: str,
+) -> None:
+    """Require one corpus/family and frame-disjoint endpoints for both roles."""
+    train_meta = train_manifest.metadata
+    holdout_meta = holdout_manifest.metadata
+    for key in (
+        "dataset_basename",
+        "dataset_binding_sha256",
+        "dataset_semantic_lock_sha256",
+        "source_pair_index_relpath",
+        "source_pair_index_sha256",
+        "unversioned_source",
+        "generator",
+        "object_roles",
+        "transform",
+        "frame_partition",
+    ):
+        if train_meta.get(key) != holdout_meta.get(key):
+            raise ValueError(
+                f"Train and holdout pair indices disagree on {key!r}"
+            )
+
+    object_roles = train_meta["object_roles"]
+    if object_name not in object_roles:
+        raise ValueError(
+            f"Object {object_name!r} is absent from the pair-index role lock"
+        )
+    role = _normalise_role(object_roles[object_name])
+    if mode == "development" and role != "development":
+        raise ValueError(
+            f"development mode requires a development object, got role={role!r}"
+        )
+    if mode == "fixed-final" and role not in {"confirmation", "final_test"}:
+        raise ValueError(
+            "fixed-final mode requires a confirmation or final_test object, "
+            f"got role={role!r}"
+        )
+
+    overlap = train_manifest.endpoint_ids & holdout_manifest.endpoint_ids
+    if overlap:
+        examples = sorted(overlap)[:5]
+        raise ValueError(
+            "Train and holdout indices share source/target frame endpoints; "
+            f"overlap_count={len(overlap)}, examples={examples}"
+        )
+
+
+def _manifest_provenance(manifest: IndexPairManifest) -> dict:
+    return {
+        "resolved_path": str(manifest.index_path),
+        "file_sha256": manifest.index_sha256,
+        "content_hash_sha256": manifest.content_hash_sha256,
+        "dataset_binding_sha256": manifest.dataset_binding_sha256,
+        "split": manifest.split,
+        "pair_count_after_object_filter": len(manifest.pairs),
+        "endpoint_count_after_object_filter": len(manifest.endpoint_ids),
+        "transform": manifest.transform,
+    }
+
+
+def _prepare_training_data(
+    args: argparse.Namespace,
+    *,
+    include_backward: bool,
+) -> TrainingDataPlan:
+    """
+    Validate every data input before a run directory or device is created.
+
+    In fixed-final mode this inspects test metadata, paths, hashes, and endpoint
+    sets, but deliberately does not instantiate the test Dataset.
+    """
+    policy = _resolve_index_argument_policy(args)
+    mode = policy["mode"]
+
+    if mode in {"development", "fixed-final"}:
+        train_manifest = inspect_index_pair_manifest(
+            data_root=args.data_root,
+            index_path=policy["train_index"],
+            expected_split="train",
+            object_name=args.object,
+            strict_metadata=True,
+            expected_dataset_binding_sha256=args.dataset_binding_sha256,
+            validate_paths=True,
+        )
+        holdout_manifest = inspect_index_pair_manifest(
+            data_root=args.data_root,
+            index_path=policy["holdout_index"],
+            expected_split=policy["holdout_split"],
+            object_name=args.object,
+            strict_metadata=True,
+            expected_dataset_binding_sha256=args.dataset_binding_sha256,
+            validate_paths=True,
+        )
+        _validate_manifest_pair(
+            train_manifest,
+            holdout_manifest,
+            object_name=args.object,
+            mode=mode,
+        )
+
+        train_dataset = IndexPairDataset(
+            data_root=args.data_root,
+            index_path=str(train_manifest.index_path),
+            img_size=args.img_size,
+            center_crop=args.center_crop,
+            include_backward=include_backward,
+            object_name=args.object,
+            strict_metadata=True,
+            expected_split="train",
+            expected_index_sha256=train_manifest.index_sha256,
+            expected_dataset_binding_sha256=args.dataset_binding_sha256,
+            manifest=train_manifest,
+        )
+        index_provenance = {
+            "train": _manifest_provenance(train_manifest),
+            policy["holdout_split"]: _manifest_provenance(holdout_manifest),
+        }
+
+        if mode == "development":
+            val_dataset = IndexPairDataset(
+                data_root=args.data_root,
+                index_path=str(holdout_manifest.index_path),
+                img_size=args.img_size,
+                center_crop=args.center_crop,
+                include_backward=include_backward,
+                object_name=args.object,
+                strict_metadata=True,
+                expected_split="validation",
+                expected_index_sha256=holdout_manifest.index_sha256,
+                expected_dataset_binding_sha256=args.dataset_binding_sha256,
+                manifest=holdout_manifest,
+            )
+            checkpoint_policy = {
+                "mode": "development",
+                "selection": "minimum_validation_loss",
+                "authoritative_checkpoint": "best_model.pt",
+                "best_model_written": True,
+                "validation_loader": True,
+                "test_loader": False,
+                "post_training_test_evaluations": 0,
+                "epochs": policy["effective_epochs"],
+            }
+            return TrainingDataPlan(
+                mode=mode,
+                effective_epochs=policy["effective_epochs"],
+                train_dataset=train_dataset,
+                val_dataset=val_dataset,
+                test_manifest=None,
+                index_provenance=index_provenance,
+                checkpoint_policy=checkpoint_policy,
+            )
+
+        checkpoint_policy = {
+            "mode": "fixed-final",
+            "selection": "none",
+            "authoritative_checkpoint": "final_model.pt",
+            "best_model_written": False,
+            "validation_loader": False,
+            "test_loader": "constructed_after_final_model",
+            "post_training_test_evaluations": 1,
+            "epochs": policy["effective_epochs"],
+            "epochs_source": "--frozen_epochs",
+        }
+        return TrainingDataPlan(
+            mode=mode,
+            effective_epochs=policy["effective_epochs"],
+            train_dataset=train_dataset,
+            val_dataset=None,
+            test_manifest=holdout_manifest,
+            index_provenance=index_provenance,
+            checkpoint_policy=checkpoint_policy,
+        )
+
+    # Historical whole-directory modes remain available and retain their
+    # historical checkpoint semantics. No index file can reach this branch.
+    if args.object:
+        train_frames = Path(args.data_root) / "train" / args.object / "frames" / "a"
+        test_frames = Path(args.data_root) / "test" / args.object / "frames" / "a"
+
+        if train_frames.exists():
+            train_dataset = SingleObjectDataset(
+                str(train_frames),
+                img_size=args.img_size,
+                frame_skip=args.frame_skip,
+                center_crop=args.center_crop,
+                include_backward=include_backward,
+            )
+            val_dataset = train_dataset
+        elif test_frames.exists():
+            train_dataset = SingleObjectDataset(
+                str(test_frames),
+                img_size=args.img_size,
+                frame_skip=args.frame_skip,
+                center_crop=args.center_crop,
+                include_backward=include_backward,
+            )
+            val_dataset = train_dataset
+        else:
+            train_dataset = PoseSequenceDataset(
+                args.data_root,
+                split="train",
+                object_name=args.object,
+                img_size=args.img_size,
+                frame_skip=args.frame_skip,
+                center_crop=args.center_crop,
+                include_backward=include_backward,
+            )
+            val_dataset = train_dataset
+    else:
+        train_dataset = PoseSequenceDataset(
+            args.data_root,
+            split="train",
+            img_size=args.img_size,
+            frame_skip=args.frame_skip,
+            center_crop=args.center_crop,
+            include_backward=include_backward,
+        )
+        try:
+            val_dataset = PoseSequenceDataset(
+                args.data_root,
+                split="test",
+                img_size=args.img_size,
+                frame_skip=args.frame_skip,
+                center_crop=args.center_crop,
+                include_backward=include_backward,
+            )
+        except (FileNotFoundError, ValueError, KeyError):
+            print("No test split found, using train for legacy validation")
+            val_dataset = train_dataset
+
+    return TrainingDataPlan(
+        mode="legacy",
+        effective_epochs=args.epochs,
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        test_manifest=None,
+        index_provenance={},
+        checkpoint_policy={
+            "mode": "legacy",
+            "selection": "minimum_legacy_validation_loss",
+            "authoritative_checkpoint": "best_model.pt",
+            "best_model_written": True,
+            "validation_loader": True,
+            "test_loader": False,
+            "post_training_test_evaluations": 0,
+            "epochs": args.epochs,
+        },
+    )
+
+
+def _build_fixed_final_test_loader(
+    plan: TrainingDataPlan,
+    args: argparse.Namespace,
+    *,
+    final_model_path: Path,
+    use_cuda: bool,
+    n_workers: int,
+) -> DataLoader:
+    """Construct the still-hashed test Dataset only after final_model exists."""
+    if plan.mode != "fixed-final" or plan.test_manifest is None:
+        raise ValueError("Fixed-final test loader requested for a non-final plan")
+    if not final_model_path.is_file():
+        raise RuntimeError(
+            "Authoritative final_model.pt must exist before test Dataset creation"
+        )
+    manifest = plan.test_manifest
+    test_dataset = IndexPairDataset(
+        data_root=args.data_root,
+        index_path=str(manifest.index_path),
+        img_size=args.img_size,
+        center_crop=args.center_crop,
+        include_backward=args.lambda_act > 0.0,
+        object_name=args.object,
+        strict_metadata=True,
+        expected_split="test",
+        expected_index_sha256=manifest.index_sha256,
+        expected_dataset_binding_sha256=args.dataset_binding_sha256,
+    )
+    overlap = plan.train_dataset.endpoint_ids & test_dataset.endpoint_ids
+    if overlap:
+        raise ValueError(
+            "Test endpoints changed after preflight and now overlap training"
+        )
+    return DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=n_workers,
+        pin_memory=use_cuda,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Phase A Training")
     
@@ -313,11 +816,47 @@ def main():
     parser.add_argument("--data_root", type=str, required=True, help="Path to dataset root")
     parser.add_argument("--object", type=str, default=None, help="Single object name (e.g., coffeemug)")
     parser.add_argument("--pairs_index", type=str, default=None,
-                        help="Path to a precomputed pair-index JSON (e.g. "
-                             "indices/pairs_skip3_cyclic.json), absolute or relative to "
-                             "--data_root. If set, uses IndexPairDataset, which honors "
-                             "cyclic wrap pairs (358->0). Combine with --object to filter "
-                             "to one object. Overrides the frame_skip globbing path.")
+                        help="Deprecated alias for --train_pairs_index. It is "
+                             "accepted only with an explicit --indexed_mode and "
+                             "matching validation/test index; index-only legacy "
+                             "calls fail closed.")
+    parser.add_argument(
+        "--indexed_mode",
+        type=str,
+        default=None,
+        choices=["development", "fixed-final"],
+        help=(
+            "Strict indexed protocol. development requires explicit train and "
+            "validation indices; fixed-final requires train and test indices."
+        ),
+    )
+    parser.add_argument(
+        "--train_pairs_index",
+        type=str,
+        default=None,
+        help="Strict train pair-index JSON, absolute or relative to --data_root.",
+    )
+    parser.add_argument(
+        "--val_pairs_index",
+        type=str,
+        default=None,
+        help="Strict validation pair-index JSON for development mode.",
+    )
+    parser.add_argument(
+        "--test_pairs_index",
+        type=str,
+        default=None,
+        help="Strict one-shot test pair-index JSON for fixed-final mode.",
+    )
+    parser.add_argument(
+        "--dataset_binding_sha256",
+        type=str,
+        default=None,
+        help=(
+            "Independently verified full-corpus binding required by strict "
+            "indexed modes; must match every supplied pair index."
+        ),
+    )
     parser.add_argument("--img_size", type=int, default=256)
     
     # Model
@@ -371,6 +910,15 @@ def main():
     
     # Training
     parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument(
+        "--frozen_epochs",
+        type=int,
+        default=None,
+        help=(
+            "Frozen epoch count for fixed-final mode. It must exactly equal "
+            "--epochs; the final checkpoint is authoritative."
+        ),
+    )
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-5)
@@ -392,8 +940,19 @@ def main():
     
     args = parser.parse_args()
 
-    if args.lambda_act > 0 and args.num_action_classes < 2:
-        raise ValueError("--num_action_classes must be >= 2 when --lambda_act > 0")
+    # All indexed-mode argument/schema/path/hash/endpoint checks happen before
+    # device selection and before any output directory can be created.
+    _validate_training_arguments(args)
+    include_backward = args.lambda_act > 0.0
+    data_plan = _prepare_training_data(
+        args,
+        include_backward=include_backward,
+    )
+    train_dataset = data_plan.train_dataset
+    val_dataset = data_plan.val_dataset
+    args.epochs = data_plan.effective_epochs
+    source_commit = _source_commit()
+
     learn_inverse_operator = (
         args.learn_inverse_operator
         or args.lambda_inv > 0.0
@@ -418,88 +977,23 @@ def main():
     run_dir.mkdir(parents=True, exist_ok=True)
     
     # Save config
-    config = vars(args)
+    config = dict(vars(args))
     config['device'] = str(device)
     config['learn_inverse_operator_effective'] = learn_inverse_operator
+    config['training_mode'] = data_plan.mode
+    config['effective_epochs'] = data_plan.effective_epochs
+    config['checkpoint_policy'] = data_plan.checkpoint_policy
+    config['index_provenance'] = data_plan.index_provenance
+    config['source_commit'] = source_commit
     with open(run_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
     print(f"Output directory: {run_dir}")
     
-    # Create dataset
-    include_backward = args.lambda_act > 0.0
-
-    if args.pairs_index is not None:
-        # Index-driven pairs (honors cyclic wrap transitions). data_root is the
-        # dataset folder the pair relpaths are relative to; --object filters.
-        train_dataset = IndexPairDataset(
-            data_root=args.data_root,
-            index_path=args.pairs_index,
-            img_size=args.img_size,
-            center_crop=args.center_crop,
-            include_backward=include_backward,
-            object_name=args.object,
-        )
-        val_dataset = train_dataset
-    elif args.object:
-        # Single object mode - look for frames directly
-        # Try to find the frames directory
-        train_frames = Path(args.data_root) / "train" / args.object / "frames" / "a"
-        test_frames = Path(args.data_root) / "test" / args.object / "frames" / "a"
-        
-        if train_frames.exists():
-            train_dataset = SingleObjectDataset(
-                str(train_frames), 
-                img_size=args.img_size,
-                frame_skip=args.frame_skip,
-                center_crop=args.center_crop,
-                include_backward=include_backward,
-            )
-            # Use same data for validation (small dataset)
-            val_dataset = train_dataset
-        elif test_frames.exists():
-            train_dataset = SingleObjectDataset(
-                str(test_frames), 
-                img_size=args.img_size,
-                frame_skip=args.frame_skip,
-                center_crop=args.center_crop,
-                include_backward=include_backward,
-            )
-            val_dataset = train_dataset
-        else:
-            # Fall back to PoseSequenceDataset with object filter
-            train_dataset = PoseSequenceDataset(
-                args.data_root, 
-                split="train", 
-                object_name=args.object, 
-                img_size=args.img_size,
-                frame_skip=args.frame_skip,
-                center_crop=args.center_crop,
-                include_backward=include_backward,
-            )
-            val_dataset = train_dataset
-    else:
-        train_dataset = PoseSequenceDataset(
-            args.data_root, 
-            split="train", 
-            img_size=args.img_size,
-            frame_skip=args.frame_skip,
-            center_crop=args.center_crop,
-            include_backward=include_backward,
-        )
-        try:
-            val_dataset = PoseSequenceDataset(
-                args.data_root, 
-                split="test", 
-                img_size=args.img_size,
-                frame_skip=args.frame_skip,
-                center_crop=args.center_crop,
-                include_backward=include_backward,
-            )
-        except:
-            print("No test split found, using train for validation")
-            val_dataset = train_dataset
-    
     print(f"Train samples: {len(train_dataset)}")
+    if val_dataset is not None:
+        print(f"Validation samples: {len(val_dataset)}")
+    elif data_plan.mode == "fixed-final":
+        print("Validation samples: none (fixed-final checkpoint policy)")
     
     # pin_memory only helps on CUDA; num_workers=0 is safest on MPS/CPU
     use_cuda = device.type == "cuda"
@@ -513,13 +1007,15 @@ def main():
         pin_memory=use_cuda,
     )
     
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=n_workers,
-        pin_memory=use_cuda,
-    )
+    val_loader = None
+    if val_dataset is not None:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=n_workers,
+            pin_memory=use_cuda,
+        )
     
     # Create model
     model_num_action_classes = args.num_action_classes if args.lambda_act > 0 else 0
@@ -549,6 +1045,7 @@ def main():
     ckpt_config = {
         'num_keypoints': args.num_keypoints,
         'base_channels': args.base_channels,
+        'heatmap_res': args.heatmap_res,
         'temperature': args.temperature,
         'padding_mode': args.padding_mode,
         'operator_type': args.operator_type,
@@ -566,19 +1063,47 @@ def main():
         'sigma': args.sigma,
         'loc_bg_threshold': args.loc_bg_threshold,
         'img_size': args.img_size,
+        'center_crop': args.center_crop,
         'seed': args.seed,
         'data_root': args.data_root,
+        'resolved_data_root': str(Path(args.data_root).expanduser().resolve()),
         'object': args.object,
         'pairs_index': args.pairs_index,
+        'train_pairs_index': args.train_pairs_index,
+        'val_pairs_index': args.val_pairs_index,
+        'test_pairs_index': args.test_pairs_index,
+        'dataset_binding_sha256': args.dataset_binding_sha256,
+        'training_mode': data_plan.mode,
+        'effective_epochs': data_plan.effective_epochs,
+        'frozen_epochs': args.frozen_epochs,
+        'checkpoint_policy': data_plan.checkpoint_policy,
+        'index_provenance': data_plan.index_provenance,
+        'indexed_transform': (
+            train_dataset.transform_metadata
+            if isinstance(train_dataset, IndexPairDataset)
+            else None
+        ),
+        'source_commit': source_commit,
     }
     
-    eff_deg = args.frame_skip * args.yaw_step_deg
     print(f"\nStarting training for {args.epochs} epochs...")
+    print(f"Training mode: {data_plan.mode}")
+    print(f"Checkpoint policy: {data_plan.checkpoint_policy}")
     print(f"Operator: {args.operator_type} (learn_inverse_operator={learn_inverse_operator})")
     print(f"Loss weights: lambda_smooth={args.lambda_smooth}, lambda_disp={args.lambda_disp}, "
           f"lambda_ent={args.lambda_ent}, lambda_act={args.lambda_act}, lambda_loc={args.lambda_loc}, "
           f"lambda_inv={args.lambda_inv}, lambda_cycle={args.lambda_cycle}, sigma={args.sigma}")
-    print(f"Frame skip: {args.frame_skip} (effective step: {eff_deg:.0f} deg)")
+    if isinstance(train_dataset, IndexPairDataset):
+        print(
+            "Indexed transform (no inferred geometry): "
+            f"{train_dataset.transform_metadata}"
+        )
+    else:
+        eff_deg = args.frame_skip * args.yaw_step_deg
+        print(
+            f"Frame skip: {args.frame_skip} "
+            f"(legacy effective step: {eff_deg:.0f} deg)"
+        )
     print(f"Include backward pairs: {include_backward}")
     print("-" * 70)
     
@@ -624,27 +1149,20 @@ def main():
         
         # Log
         if epoch % args.log_every == 0 or epoch == 1:
-            val_metrics = evaluate(
-                model, val_loader, device,
-                args.lambda_smooth, args.lambda_disp, args.lambda_ent, args.lambda_act,
-                args.lambda_loc, args.lambda_inv, args.lambda_cycle,
-                args.loc_bg_threshold, args.sigma, args.num_keypoints
+            log_line = (
+                f"Epoch {epoch:4d} | "
+                f"Loss: {train_metrics['loss']:.5f} | "
+                f"L_pred: {train_metrics['l_pred']:.5f} | "
+                f"L_smooth: {train_metrics['l_smooth']:.5f} | "
+                f"L_disp: {train_metrics['l_disp']:.5f} | "
+                f"L_ent: {train_metrics['l_ent']:.5f} | "
+                f"L_act: {train_metrics['l_act']:.5f} | "
+                f"L_loc: {train_metrics['l_loc']:.5f} | "
+                f"L_inv: {train_metrics['l_inv']:.5f} | "
+                f"L_cycle: {train_metrics['l_cycle']:.5f} | "
+                f"ActAcc: {train_metrics['act_acc']:.3f}"
             )
-            
-            print(f"Epoch {epoch:4d} | "
-                  f"Loss: {train_metrics['loss']:.5f} | "
-                  f"L_pred: {train_metrics['l_pred']:.5f} | "
-                  f"L_smooth: {train_metrics['l_smooth']:.5f} | "
-                  f"L_disp: {train_metrics['l_disp']:.5f} | "
-                  f"L_ent: {train_metrics['l_ent']:.5f} | "
-                  f"L_act: {train_metrics['l_act']:.5f} | "
-                  f"L_loc: {train_metrics['l_loc']:.5f} | "
-                  f"L_inv: {train_metrics['l_inv']:.5f} | "
-                  f"L_cycle: {train_metrics['l_cycle']:.5f} | "
-                  f"ActAcc: {train_metrics['act_acc']:.3f} | "
-                  f"Val: {val_metrics['loss']:.5f}")
-            
-            history.append({
+            history_entry = {
                 'epoch': epoch,
                 'train_loss': train_metrics['loss'],
                 'train_pred': train_metrics['l_pred'],
@@ -656,26 +1174,41 @@ def main():
                 'train_inv': train_metrics['l_inv'],
                 'train_cycle': train_metrics['l_cycle'],
                 'train_act_acc': train_metrics['act_acc'],
-                'val_loss': val_metrics['loss'],
-                'val_pred': val_metrics['l_pred'],
-                'val_act': val_metrics['l_act'],
-                'val_loc': val_metrics['l_loc'],
-                'val_inv': val_metrics['l_inv'],
-                'val_cycle': val_metrics['l_cycle'],
-                'val_act_acc': val_metrics['act_acc'],
                 'lr': scheduler.get_last_lr()[0],
-            })
-            
-            # Save best model
-            if val_metrics['loss'] < best_loss:
-                best_loss = val_metrics['loss']
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': best_loss,
-                    'config': ckpt_config,
-                }, run_dir / "best_model.pt")
+            }
+
+            if val_loader is not None:
+                val_metrics = evaluate(
+                    model, val_loader, device,
+                    args.lambda_smooth, args.lambda_disp, args.lambda_ent,
+                    args.lambda_act, args.lambda_loc, args.lambda_inv,
+                    args.lambda_cycle, args.loc_bg_threshold, args.sigma,
+                    args.num_keypoints
+                )
+                log_line += f" | Val: {val_metrics['loss']:.5f}"
+                history_entry.update({
+                    'val_loss': val_metrics['loss'],
+                    'val_pred': val_metrics['l_pred'],
+                    'val_act': val_metrics['l_act'],
+                    'val_loc': val_metrics['l_loc'],
+                    'val_inv': val_metrics['l_inv'],
+                    'val_cycle': val_metrics['l_cycle'],
+                    'val_act_acc': val_metrics['act_acc'],
+                })
+
+                # Development/legacy only: validation selects best_model.pt.
+                if val_metrics['loss'] < best_loss:
+                    best_loss = val_metrics['loss']
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'loss': best_loss,
+                        'config': ckpt_config,
+                    }, run_dir / "best_model.pt")
+
+            print(log_line)
+            history.append(history_entry)
         
         # Save checkpoint
         if epoch % args.save_every == 0:
@@ -687,21 +1220,63 @@ def main():
                 'config': ckpt_config,
             }, run_dir / f"checkpoint_{epoch:05d}.pt")
     
-    # Save final model
+    # Save final model. In fixed-final mode this write is the authority boundary:
+    # the test Dataset is not constructed until this file exists.
+    final_model_path = run_dir / "final_model.pt"
     torch.save({
         'epoch': args.epochs,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'loss': train_metrics['loss'],
         'config': ckpt_config,
-    }, run_dir / "final_model.pt")
+    }, final_model_path)
+
+    fixed_final_test_report = None
+    if data_plan.mode == "fixed-final":
+        if not final_model_path.is_file():
+            raise RuntimeError(
+                "Authoritative final_model.pt is missing; refusing to open test data"
+            )
+        test_loader = _build_fixed_final_test_loader(
+            data_plan,
+            args,
+            final_model_path=final_model_path,
+            use_cuda=use_cuda,
+            n_workers=n_workers,
+        )
+        # This is the only test evaluate() call in the training entry point.
+        test_metrics = evaluate(
+            model, test_loader, device,
+            args.lambda_smooth, args.lambda_disp, args.lambda_ent,
+            args.lambda_act, args.lambda_loc, args.lambda_inv,
+            args.lambda_cycle, args.loc_bg_threshold, args.sigma,
+            args.num_keypoints,
+        )
+        fixed_final_test_report = {
+            "schema_version": 1,
+            "training_mode": "fixed-final",
+            "evaluation_count": 1,
+            "authoritative_checkpoint": str(final_model_path.resolve()),
+            "authoritative_checkpoint_sha256": _sha256_file(final_model_path),
+            "test_index": data_plan.index_provenance["test"],
+            "metrics": test_metrics,
+        }
+        with open(run_dir / "fixed_final_test_metrics.json", "w") as f:
+            json.dump(fixed_final_test_report, f, indent=2)
     
     # Save history
     with open(run_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
     
     print("-" * 60)
-    print(f"Training complete! Best validation loss: {best_loss:.6f}")
+    if val_loader is not None:
+        print(f"Training complete! Best validation loss: {best_loss:.6f}")
+    else:
+        print(
+            "Training complete! Fixed-final policy used final_model.pt; "
+            f"one post-training test loss: "
+            f"{fixed_final_test_report['metrics']['loss']:.6f}"
+        )
     print(f"Outputs saved to: {run_dir}")
 
     if args.auto_eval:

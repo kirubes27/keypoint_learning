@@ -1,0 +1,177 @@
+{
+  "schema_version": "representation-oracle-case-manifest-v1",
+  "status": "candidate_requires_fable_review",
+  "scope": "world_z_roll_and_representation_health_v2_7",
+  "case_schema_version": "representation-oracle-planted-case-v1",
+  "production_entrypoint": "keypoint_net.eval_representation.evaluate_bundle",
+  "existing_data_boundary": "synthetic_planted_diagnostics_only_no_dataset_mutation_or_training",
+  "blocked_dataset_backed_families": [
+    "scale",
+    "translation",
+    "yaw",
+    "pitch"
+  ],
+  "planted_threshold_semantics": {
+    "status": "planted_logic_fixture_only",
+    "motion_reference_magnitude_image01": 0.1,
+    "motion_fraction_min": 0.1,
+    "on_object_rate_min": 0.75,
+    "scientific_authority": "none",
+    "task_20_55_80_pass_fail_authority": false
+  },
+  "legacy_role_subset_semantics": {
+    "status": "not_heldout_without_proven_non_exposure",
+    "task_20_55_80_role_subset_is_scientific_holdout": false
+  },
+  "parent_specifications": [
+    {
+      "relative_path": "docs/decisions/2026-07-26/REPRESENTATION_ORACLE_EVALUATOR_SPLIT_SPEC_v1.md",
+      "file_sha256": "4c80a2bb47ab892d4bd507219e82a88b843eee21a13693a9a2244ed3430e3f35"
+    },
+    {
+      "relative_path": "docs/decisions/2026-07-26/REPRESENTATION_ORACLE_EVALUATOR_SPLIT_SPEC_v1_1_NUMERIC_AMENDMENT.md",
+      "file_sha256": "ff1abff2f3b7051580fc6bc27131d7b7881fab25d2afc18e10eb3509d56f4bc2"
+    },
+    {
+      "relative_path": "docs/decisions/2026-07-26/DECISION_SYNTHESIS_v2_2026-07-26.md",
+      "file_sha256": "6dd6b7601ae97b9a02a9b217e9acca6fc91e405b6732af6a9feed03b62a91159"
+    },
+    {
+      "relative_path": "docs/decisions/2026-07-26/REPRESENTATION_EVALUATION_EXECUTION_CONTRACT_v1_DRAFT.md",
+      "file_sha256": "12f757f6cac7e7a4f64fb12bbc088bad92fbe2cc8c86fa1e32dca82acbc6cfa6"
+    }
+  ],
+  "bindings": {
+    "numeric_registry": {
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_calibration/NUMERIC_CALIBRATION_v1_1.json",
+      "file_sha256": "40115c7325858137595ba6e90e36fbd52c9a72da2f16b64d9fd1ad4f7764f420",
+      "content_hash_sha256": "24a2d0eb28d1ec8f26c14064abdb4afcaa51e7cf63d9560e1c2f1c9b4a8118c8"
+    },
+    "calibration_fixture_manifest": {
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_calibration/CALIBRATION_FIXTURE_MANIFEST.json",
+      "file_sha256": "40435922cad4f877697f4aa026dc64f28b2863c86b025f0b332d3b6b53508b90"
+    }
+  },
+  "ordered_case_definitions": [
+    {
+      "case_id": "estimator_exact_r64_float32",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/estimator_exact_r64_float32.json",
+      "file_sha256": "53576afe723b6c89d64ffa206f828a48747b881e69e0b6ff17c2088c5ac07494",
+      "content_hash_sha256": "9b0c64e51d91fd65cd946e0bfe8a2790d26e823cf1382e7b1201c49edd851724",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "estimator_exact_r64_float64",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/estimator_exact_r64_float64.json",
+      "file_sha256": "5d5c4626ea6375d855dcabe41991ce839e445479ecd937abdb342c2a47a6f708",
+      "content_hash_sha256": "b67bb81275e0e8ba4ea262b211a86c09f429bdae29581da0bc16a481fd9460eb",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "estimator_exact_r128_float32",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/estimator_exact_r128_float32.json",
+      "file_sha256": "823d9f34edabcb11d171c3b1ff0c7f013e55bd67e327fd920eccd900255943ac",
+      "content_hash_sha256": "d3b994c774d0692e04e6fd3617195ae3c20ceb4bbbcfe361401e63259d505992",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "estimator_exact_r128_float64",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/estimator_exact_r128_float64.json",
+      "file_sha256": "22273b7dca466b867f30983580be76b07435a30b7c5f3acbf74303987cbffc6e",
+      "content_hash_sha256": "65f6f70f1503780485258c14ef3206995acaac750198c01d73ad0597e7fe7797",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "roll_centered_full_primary_exact_6deg",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/roll_centered_full_primary_exact_6deg.json",
+      "file_sha256": "86564c9b30ff18b7d540d3ab7f3a5a6e6baba344d803dfbaf490213d29f27542",
+      "content_hash_sha256": "c4b915c827cb0a7c773586d5ebb0806b12ad06737030a78f8f233bf1631b0833",
+      "expected_evaluation_config_sha256": "c54ab16c1bdf9f85d14940a1c7f781f1c4cef4ee9acb573f16fe3df35562ea66"
+    },
+    {
+      "case_id": "roll_offcentre_exact_6deg",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/roll_offcentre_exact_6deg.json",
+      "file_sha256": "d6ac984f3be7d8dfe36861ae31966590de360e5ca0d07e356bd47c510547fb78",
+      "content_hash_sha256": "71eabe01e9bc5181551946c769783989e564a9937c1146dc4651ab5c7c8f929b",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "falsifier_roll_wrong_sign",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/falsifier_roll_wrong_sign.json",
+      "file_sha256": "830d8b7d3f34244f22ed2826cb5c6b436fefb85643d7e58c7a8b3217371a4230",
+      "content_hash_sha256": "f8e146f9c7faeac0ef2f049a1757b536c528ae9893f6424cfcd926ac853ba3a5",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "reflection_roll",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/reflection_roll.json",
+      "file_sha256": "ebf0753488bfacc2fe390891242eb226fd6111b8b679a4c39d99036e56cb6e87",
+      "content_hash_sha256": "8ffaa048f0f66f659209b093a4971577ad36d5801d097052fcb1c1da3d33c021",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "representation_separated_transform_attached",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/representation_separated_transform_attached.json",
+      "file_sha256": "206acfea52d9b2beb2171527e448786bf3001cf0f5258a512f9fd3c3c67e82c1",
+      "content_hash_sha256": "def6b041278b25adc926c0bfc798f6d9a082872580790ea9dc5b34282acd5345",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "controlled_sliding",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/controlled_sliding.json",
+      "file_sha256": "79efcc218cbc4c5259306ba44d2c10940f0cf4bc0d8026224d2c20d35456ebc7",
+      "content_hash_sha256": "577a7cdd8f808d8ba886c476ddc95d3c98ac6ddf9086aa112a4faf5bc4835396",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "all_coincident",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/all_coincident.json",
+      "file_sha256": "0d81c023ac2bdcb8a41ed7ad000e791ff049a2cc084b0d7b702cc32692498a83",
+      "content_hash_sha256": "5b9eb14ed1e1e9eb911516ce664218a5802e0751e5e3901735b08b4e6598402a",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "activity_static_inactive",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/activity_static_inactive.json",
+      "file_sha256": "0a9b253722d2b79823745b91568913ab8376748a70969802c80a59d6adbf5d6a",
+      "content_hash_sha256": "314cb1d04db4b2940aad0f9d72c4ed9355ec5978711f9b27ef2987734f72e983",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "attachment_off_object",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/attachment_off_object.json",
+      "file_sha256": "298636ac3ba9aad1f70259a972466c6a251dbd173699341acc3b102756d08761",
+      "content_hash_sha256": "bd4d15514bb8b70de43f53f74ba03ee94f099d34ed15e5e21a3c97458ce162d7",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "peak_channel_switch",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/peak_channel_switch.json",
+      "file_sha256": "13d4b08660c36dd63e6b2c728184f346e26ed1ea76853f32084c6c9dbe276718",
+      "content_hash_sha256": "5df49cab198825cddce5b02b253508f9ab9fd502ad268fc9c5413c00a063c122",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "heatmap_flat_dead",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/heatmap_flat_dead.json",
+      "file_sha256": "8de14ae16a81de336d412f6f4839fd2153c36c145f7a0e6d65239d0561a425fb",
+      "content_hash_sha256": "db3f113338cd14bda1e6642d45730d23f393f56be1d3db4501359528b45c5d25",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "coordinate_only_evidence_void",
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_cases/cases/coordinate_only_evidence_void.json",
+      "file_sha256": "c620152878cffa960b86f32b88ff25f5db21574a27c9919a2878c66f77b376f2",
+      "content_hash_sha256": "3c846c55cb354db20b287495e15423124e9bd9d3f9a426ab9b9441b00ed6744a",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    }
+  ],
+  "determinism_rules": {
+    "construction_repetitions": 2,
+    "evaluation_repetitions": 2,
+    "bundle_byte_comparison": "canonical_json_exact",
+    "result_byte_comparison": "canonical_json_exact",
+    "output_encoding": "canonical_json_utf8_single_lf"
+  },
+  "content_hash_sha256": "f9a6428294a289f0d07e436595a827dc3b03c552a72a02efdf4c4471142cae4c"
+}

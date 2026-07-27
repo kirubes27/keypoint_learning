@@ -197,10 +197,6 @@ def _metric_scales_from_manifest(
             scales["proper_rotation_angle_deg"] = max(
                 scales["proper_rotation_angle_deg"], abs(float(fixture["angle_deg"]))
             )
-            # The error is zero, but it is derived from this degree-valued angle.
-            scales["signed_angle_error_deg"] = max(
-                scales["signed_angle_error_deg"], abs(float(fixture["angle_deg"]))
-            )
         elif case == "uniform_scale_svd":
             scales["mean_scale"] = max(scales["mean_scale"], abs(float(fixture["scale"])))
         elif case == "affine_composition":
@@ -209,9 +205,6 @@ def _metric_scales_from_manifest(
             magnitude = float(np.max(np.abs(horizon * bias)))
             scales["composition_bias_element"] = max(
                 scales["composition_bias_element"], magnitude
-            )
-            scales["composition_bias_error_l2"] = max(
-                scales["composition_bias_error_l2"], magnitude
             )
     return scales
 

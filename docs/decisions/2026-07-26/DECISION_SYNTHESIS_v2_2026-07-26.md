@@ -138,3 +138,101 @@ Overturn ledger: shape-constraint-first ordering overturned by Run A artifact; R
    stochastic-draw, and tie-breaking criteria. Gate 3a remains blocked until
    that artifact is frozen; a pass authorizes only Gate 3b, while a failure
    redirects the coincidence branch.
+
+## v2.6 AMENDMENTS (2026-07-27, representation-oracle programme reorder)
+
+1. USER-ORDER AUTHORITY: Kirubes explicitly replaces the unexecuted v2.5
+   "coincidence next" order. This amendment does not alter, rerun, relabel, or
+   weaken completed Gate 0 or Decision 2.3. It changes only the order and
+   conditionality of the remaining programme. Their recorded verdicts remain
+   immutable: Gate 0 remains 6/150 (4.0 percent) against the frozen 75/150
+   retention requirement, and Decision 2.3 arms A/B/C remain 3/3 each. The
+   supported Decision 2.3 conclusion is that Gate 0's failure is not
+   architecturally forced and belongs to the specific seed-41 realization
+   (random seed and/or training trajectory), which the panel does not
+   decompose. No learned readout was adopted and the fixed spatial-softmax
+   expectation remains the primary readout. The completed work still does not
+   establish unsupervised representation quality or identifiability, material
+   attachment, other-object generalization, operator benefit, or yaw/pitch
+   readiness.
+2. BRANCH AUTHORITY: the continuation branch is
+   `agent/representation-oracles-20260726`, created from completed result commit
+   `f641af5220ededb22a9ca0555a05250440aed0b8` in the isolated
+   `keypoint_preoperator_gates` worktree. The dirty
+   `keypoint_learning_fitted_operator` checkout and the unversioned original
+   `gate0_replay` directory remain out of scope.
+3. REORDERED PROGRAMME: the binding order for remaining work is:
+   (a) freeze transformation geometry, estimator-oracle, evaluator, and
+   dataset-split specifications; (b) generate verified role-appropriate
+   train/validation or train/test pair-index files from the existing rendered
+   frames; (c) run
+   deterministic geometry, estimator, metric, and negative-control oracles;
+   (d) run the matched 64-versus-128 heatmap-resolution control on Tasks 55 and
+   80; (e) run preregistered contrastive descriptor-consistency interventions
+   on Tasks 55 and 80; (f) freeze the selected recipe and train new models from
+   scratch on roll objects held out from recipe selection, using the primary
+   180-frame roll corpus; (g) run coincidence Gates 3a and 3b only if the
+   trigger in item 4 fires; and (h) extend the frozen recipe and protocol to
+   translation, scale, yaw, and pitch. No later reordering is permitted without
+   another explicit user-approved changelog amendment.
+4. CONDITIONAL COINCIDENCE TRIGGER: freeze the trigger category now, but not an
+   unsupported numeric threshold. Gate 3a is triggered if the Task 55/80
+   descriptor winner or held-out-roll confirmation still exhibits
+   persistent/recurrent duplication above a separately preregistered threshold,
+   if a fresh from-scratch run exhibits coincident-initialization collapse, or
+   if a later transformation exposes the same failure. Gate 3b runs only after
+   Gate 3a passes. If no category fires, Gates 3a/3b need not run. Nothing in
+   this trigger authorizes Gate 3c or silently integrates a hard/exclusive
+   allocation mechanism. The numeric threshold and tie handling must be frozen
+   before either a descriptor winner is designated or the first recipe-held-out
+   roll result is opened, whichever occurs first.
+5. EXECUTION BOUNDARY: no training or GPU job, including a GPU smoke, may begin
+   before the specification, verified split-manifest, and deterministic-oracle
+   steps have completed in that exact order. This amendment does not authorize
+   a full GPU matrix, other-object training, or future-transformation training
+   without all preceding critical gates passing. The unchanged fixed
+   spatial-softmax expectation remains the baseline coordinate readout, and
+   `lambda_act = 0` remains binding for primary clean experiments.
+6. HISTORICAL-FIXTURE BOUNDARY: the saved Task 20, Task 55, and Task 80
+   checkpoints, SHA-256
+   `96433168767659ae9144a35a4f7889c3226b65a7a0c5341197d48232a66fe622`,
+   `942a32082b6bfe83526253cc2dd39e49792b8260d12fc1361a11bae812992418`,
+   and
+   `ccb613c87788a229929b1f6ead002d626819e970237d0e0ad5ca75c9318004f3`,
+   are correctness/replay fixtures only, never selection evidence. Task 20
+   must be rejected as collapsed; Tasks 55/80 may test legacy reconstruction
+   and expected non-collapse behavior. No numerical tolerance or scientific
+   threshold may be tuned so that any fixture changes its expected pass,
+   failure, or classification.
+7. FORBIDDEN DECISION SHORTCUTS: no old dispersion rank, best-sign angle,
+   variance-normalized AUC, isolated `k10/k1`, valid-JSON/count-only check,
+   pooled direction/stride/transform result, correlated-frame SEM, or single
+   scalar winner score may substitute for the frozen representation axes and
+   semantic gates. Frames, horizons, channels, and overlapping starts within a
+   trajectory are correlated descriptive units; seeds and objects are the
+   replication units; three seeds do not support population inference.
+8. DOCUMENTATION ERRATA (2026-07-27): the versioned handoff's claim that the
+   corrected reanalysis emits percentile bands is false; the implementation
+   emits mean/std/SEM/min/max and no percentile-band implementation or artifact
+   was found. The yaw/pitch semantic locks record planned gates, not the gates
+   that actually generated the stored frames. These are additive corrections;
+   historical files must not be rewritten to pretend that plan and execution
+   agreed.
+9. SPLIT-FEASIBILITY BOUNDARY: pair-index files are small lists referring to
+   existing frames; they do not change the rendered dataset. If a requested
+   two-way, frame-disjoint, stride-guarded split is infeasible or yields too
+   few pairs for a meaningful evaluation, stop with a feasibility report. Do
+   not silently change a stride, guard, object role, or held-out set.
+10. HYBRID WITHIN-OBJECT SPLIT POLICY: no object receives train, validation,
+    and test partitions simultaneously. Development objects use train plus a
+    blocked validation partition to select the recipe, training duration, and
+    checkpoint policy. Once those choices are frozen, confirmation and final
+    objects use train plus one untouched blocked test partition, no validation
+    loader, no per-object early stopping, and no best-checkpoint selection.
+    Their authoritative checkpoint is the final checkpoint at the frozen
+    epoch. Every object receives a fresh object-specific model; this is recipe
+    transfer, not weight transfer or zero-shot object generalization. If a
+    confirmation result changes the recipe, that object is thereafter
+    development evidence and cannot remain confirmation evidence. Test
+    outcomes never authorize tuning or rerunning the same object under the
+    same confirmation/final label.

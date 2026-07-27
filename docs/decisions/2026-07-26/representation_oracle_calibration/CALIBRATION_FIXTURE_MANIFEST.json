@@ -1,0 +1,410 @@
+{
+  "schema_version": "representation-oracle-calibration-fixtures-v1",
+  "status": "preregistered_before_reference_execution",
+  "date": "2026-07-27",
+  "purpose": "Numerical implementation-correctness calibration only; never a scientific decision threshold.",
+  "formula": "T = max(32 * machine_epsilon * S, 4 * E_ref)",
+  "scale_rule": "S = max(1, maximum absolute exact expected magnitude for that metric across these fixtures)",
+  "provisional_ceilings": {
+    "float64_direct_geometry_operator": 1e-10,
+    "float64_estimator_coordinates": 1e-10,
+    "float32_estimator_metric_coordinates": 1e-5
+  },
+  "estimator_fixtures": [
+    {
+      "fixture_id": "estimator_grid_64_corner_top_left",
+      "resolution": 64,
+      "construction": "single_finite_grid_cell",
+      "v": 0,
+      "u": 0,
+      "temperature": 0.37
+    },
+    {
+      "fixture_id": "estimator_grid_64_corner_bottom_right",
+      "resolution": 64,
+      "construction": "single_finite_grid_cell",
+      "v": 63,
+      "u": 63,
+      "temperature": 0.37
+    },
+    {
+      "fixture_id": "estimator_grid_64_centre",
+      "resolution": 64,
+      "construction": "single_finite_grid_cell",
+      "v": 32,
+      "u": 31,
+      "temperature": 0.37
+    },
+    {
+      "fixture_id": "estimator_grid_64_edge_top_noncorner",
+      "resolution": 64,
+      "construction": "single_finite_grid_cell",
+      "v": 0,
+      "u": 31,
+      "temperature": 0.37
+    },
+    {
+      "fixture_id": "estimator_grid_64_asymmetric",
+      "resolution": 64,
+      "construction": "single_finite_grid_cell",
+      "v": 7,
+      "u": 51,
+      "temperature": 0.37
+    },
+    {
+      "fixture_id": "estimator_bilinear_64_edge_cell",
+      "resolution": 64,
+      "construction": "analytic_bilinear_probability_mass",
+      "v": 0,
+      "u": 17,
+      "fraction_y": 0.75,
+      "fraction_x": 0.25,
+      "temperature": 0.37,
+      "logit_constant": 4.25
+    },
+    {
+      "fixture_id": "estimator_bilinear_64_centre_asymmetric",
+      "resolution": 64,
+      "construction": "analytic_bilinear_probability_mass",
+      "v": 21,
+      "u": 16,
+      "fraction_y": 0.37,
+      "fraction_x": 0.61,
+      "temperature": 0.37,
+      "logit_constant": 4.25
+    },
+    {
+      "fixture_id": "estimator_bilinear_64_last_cell",
+      "resolution": 64,
+      "construction": "analytic_bilinear_probability_mass",
+      "v": 62,
+      "u": 62,
+      "fraction_y": 0.9,
+      "fraction_x": 0.1,
+      "temperature": 0.37,
+      "logit_constant": 4.25
+    },
+    {
+      "fixture_id": "estimator_grid_128_corner_top_left",
+      "resolution": 128,
+      "construction": "single_finite_grid_cell",
+      "v": 0,
+      "u": 0,
+      "temperature": 0.37
+    },
+    {
+      "fixture_id": "estimator_grid_128_corner_bottom_right",
+      "resolution": 128,
+      "construction": "single_finite_grid_cell",
+      "v": 127,
+      "u": 127,
+      "temperature": 0.37
+    },
+    {
+      "fixture_id": "estimator_grid_128_centre",
+      "resolution": 128,
+      "construction": "single_finite_grid_cell",
+      "v": 64,
+      "u": 63,
+      "temperature": 0.37
+    },
+    {
+      "fixture_id": "estimator_grid_128_edge_top_noncorner",
+      "resolution": 128,
+      "construction": "single_finite_grid_cell",
+      "v": 0,
+      "u": 63,
+      "temperature": 0.37
+    },
+    {
+      "fixture_id": "estimator_grid_128_asymmetric",
+      "resolution": 128,
+      "construction": "single_finite_grid_cell",
+      "v": 7,
+      "u": 115,
+      "temperature": 0.37
+    },
+    {
+      "fixture_id": "estimator_bilinear_128_edge_cell",
+      "resolution": 128,
+      "construction": "analytic_bilinear_probability_mass",
+      "v": 0,
+      "u": 35,
+      "fraction_y": 0.75,
+      "fraction_x": 0.25,
+      "temperature": 0.37,
+      "logit_constant": 4.25
+    },
+    {
+      "fixture_id": "estimator_bilinear_128_centre_asymmetric",
+      "resolution": 128,
+      "construction": "analytic_bilinear_probability_mass",
+      "v": 42,
+      "u": 32,
+      "fraction_y": 0.37,
+      "fraction_x": 0.61,
+      "temperature": 0.37,
+      "logit_constant": 4.25
+    },
+    {
+      "fixture_id": "estimator_bilinear_128_last_cell",
+      "resolution": 128,
+      "construction": "analytic_bilinear_probability_mass",
+      "v": 126,
+      "u": 126,
+      "fraction_y": 0.9,
+      "fraction_x": 0.1,
+      "temperature": 0.37,
+      "logit_constant": 4.25
+    }
+  ],
+  "geometry_fixtures": [
+    {
+      "fixture_id": "affine_off_centre_roll_fit_6deg",
+      "case": "affine_fit",
+      "family": "roll",
+      "angle_deg": 6.0,
+      "centre_xy": [
+        0.23,
+        -0.17
+      ],
+      "source_points_xy": [
+        [
+          -0.7,
+          -0.4
+        ],
+        [
+          0.5,
+          -0.6
+        ],
+        [
+          0.65,
+          0.45
+        ],
+        [
+          -0.35,
+          0.72
+        ],
+        [
+          0.1,
+          0.2
+        ]
+      ],
+      "metrics": [
+        "affine_matrix_element",
+        "affine_bias_element",
+        "matrix_error_fro",
+        "bias_error_l2"
+      ]
+    },
+    {
+      "fixture_id": "proper_rotation_polar_6deg_anisotropic",
+      "case": "proper_rotation_polar",
+      "angle_deg": 6.0,
+      "right_stretch_diagonal": [
+        1.03,
+        0.97
+      ],
+      "metrics": [
+        "proper_rotation_matrix_element",
+        "proper_rotation_angle_deg",
+        "signed_angle_error_deg",
+        "determinant_A"
+      ]
+    },
+    {
+      "fixture_id": "reflection_improper_exact",
+      "case": "reflection_classification",
+      "A": [
+        [
+          -1.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "expected": "improper_or_reflection",
+      "metrics": [
+        "reflection_category"
+      ]
+    },
+    {
+      "fixture_id": "uniform_scale_svd_1p07",
+      "case": "uniform_scale_svd",
+      "scale": 1.07,
+      "metrics": [
+        "mean_scale",
+        "anisotropy",
+        "off_diagonal_shear_residual"
+      ]
+    },
+    {
+      "fixture_id": "translation_bias_composition_k59",
+      "case": "affine_composition",
+      "A": [
+        [
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "b": [
+        -0.08,
+        0.03
+      ],
+      "horizon": 59,
+      "metrics": [
+        "composition_matrix_element",
+        "composition_bias_element",
+        "composition_bias_error_l2"
+      ]
+    },
+    {
+      "fixture_id": "roll_full_orbit_rollout_skip3_k1_59",
+      "case": "rollout",
+      "frame_count": 180,
+      "physical_step_deg": 2.0,
+      "operator_stride_frames": 3,
+      "operator_angle_deg": 6.0,
+      "horizons": [
+        1,
+        59
+      ],
+      "horizon_expansion": "all integers from 1 through 59 inclusive",
+      "canonical_points_xy": [
+        [
+          -0.45,
+          -0.2
+        ],
+        [
+          0.52,
+          -0.28
+        ],
+        [
+          0.4,
+          0.5
+        ],
+        [
+          -0.33,
+          0.57
+        ]
+      ],
+      "metrics": [
+        "rollout_model_mse",
+        "rollout_identity_normalized_ratio",
+        "full_rollout_auc",
+        "closure_model_mse"
+      ]
+    },
+    {
+      "fixture_id": "roll_exact_canonical_drift_180",
+      "case": "canonical_drift",
+      "frame_count": 180,
+      "physical_step_deg": 2.0,
+      "bbox_diagonal_image01": 1.0,
+      "canonical_points_xy": [
+        [
+          -0.45,
+          -0.2
+        ],
+        [
+          0.52,
+          -0.28
+        ],
+        [
+          0.4,
+          0.5
+        ],
+        [
+          -0.33,
+          0.57
+        ]
+      ],
+      "metrics": [
+        "canonical_drift_rms"
+      ]
+    },
+    {
+      "fixture_id": "float32_affine_coordinate_transform",
+      "case": "affine_coordinate",
+      "angle_deg": 6.0,
+      "centre_xy": [
+        0.23,
+        -0.17
+      ],
+      "source_points_xy": [
+        [
+          -0.7,
+          -0.4
+        ],
+        [
+          0.5,
+          -0.6
+        ],
+        [
+          0.65,
+          0.45
+        ],
+        [
+          -0.35,
+          0.72
+        ],
+        [
+          0.1,
+          0.2
+        ]
+      ],
+      "metrics": [
+        "float32_affine_coordinate"
+      ]
+    }
+  ],
+  "metric_registry": {
+    "float64": [
+      "affine_matrix_element",
+      "affine_bias_element",
+      "matrix_error_fro",
+      "bias_error_l2",
+      "proper_rotation_matrix_element",
+      "proper_rotation_angle_deg",
+      "signed_angle_error_deg",
+      "determinant_A",
+      "mean_scale",
+      "anisotropy",
+      "off_diagonal_shear_residual",
+      "composition_matrix_element",
+      "composition_bias_element",
+      "composition_bias_error_l2",
+      "rollout_model_mse",
+      "rollout_identity_normalized_ratio",
+      "full_rollout_auc",
+      "closure_model_mse",
+      "canonical_drift_rms"
+    ],
+    "float64_estimator": [
+      "spatial_expectation_coordinate"
+    ],
+    "float32": [
+      "spatial_expectation_coordinate",
+      "float32_affine_coordinate"
+    ],
+    "exact": [
+      "fractions",
+      "counts",
+      "categories",
+      "hashes",
+      "split_predicates",
+      "reflection_category"
+    ]
+  },
+  "execution_lock": {
+    "production_evaluator_must_not_run_before_calibration_amendment_commit": true,
+    "calibration_reference_must_not_import_production_evaluator": true,
+    "tolerance_widening_after_production_failure_requires_user_stop": true
+  }
+}

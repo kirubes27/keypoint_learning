@@ -64,6 +64,11 @@ model state or weakening the evaluator's provenance checks.
   `torch.load(..., map_location="cpu", weights_only=True)`.
 - State-dict loading is strict. There is no unsafe fallback, optimizer
   construction, training mode, gradient calculation, or weight update.
+- The legacy checkpoint writer omitted `heatmap_res` and `center_crop` from
+  its embedded config. Missing `heatmap_res` is accepted only as the legacy
+  64 by 64 architecture, and missing `center_crop` is accepted only when the
+  separately hash-bound run config records `null` and the replay performs no
+  crop. Explicit incompatible values remain fatal.
 - Inference covers exactly frames `0..179` once each, in order, using frozen
   RGB conversion, scaling, and ImageNet normalization with no augmentation.
 - The evaluator receives the raw 64 by 64 logits, recomputes the soft-argmax

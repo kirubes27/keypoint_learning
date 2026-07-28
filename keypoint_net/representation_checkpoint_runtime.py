@@ -734,7 +734,6 @@ def _validate_checkpoint_payload_and_reconstruct(
         "sigma": external_config["sigma"],
         "loc_bg_threshold": external_config["loc_bg_threshold"],
         "img_size": 512,
-        "center_crop": None,
         "seed": 42,
         "data_root": external_config["data_root"],
         "object": "engineers_hammer_vray",
@@ -747,6 +746,16 @@ def _validate_checkpoint_payload_and_reconstruct(
             and embedded[key] == expected,
             f"checkpoint embedded config field {key} differs",
         )
+    # The exact 2026-06-02 legacy checkpoint writer (Git commit
+    # 952064e28f7661907382a203920628310c8ccbbe) did not copy
+    # ``center_crop`` into ``ckpt_config``.  The separately hash-bound
+    # run-level config does record center_crop=null, and the runtime performs
+    # no crop.  Missing and explicit null are therefore the only equivalent
+    # legacy encodings accepted here; any actual crop value remains fatal.
+    _require(
+        "center_crop" not in embedded or embedded["center_crop"] is None,
+        "checkpoint embedded config field center_crop differs",
+    )
     if "heatmap_res" in embedded:
         _require(embedded["heatmap_res"] == 64, "checkpoint embeds non-legacy heatmap resolution")
 

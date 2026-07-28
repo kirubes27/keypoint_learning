@@ -228,7 +228,6 @@ def _synthetic_embedded_config(
     return {
         "num_keypoints": architecture["num_keypoints"],
         "base_channels": architecture["base_channels"],
-        "heatmap_res": architecture["heatmap_res"],
         "temperature": architecture["temperature"],
         "padding_mode": architecture["padding_mode"],
         "operator_type": architecture["operator_type"],
@@ -246,7 +245,6 @@ def _synthetic_embedded_config(
         "sigma": external_config["sigma"],
         "loc_bg_threshold": external_config["loc_bg_threshold"],
         "img_size": 512,
-        "center_crop": None,
         "seed": 42,
         "data_root": external_config["data_root"],
         "object": "engineers_hammer_vray",
@@ -411,19 +409,19 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
             )
         )
         checkpoint_path = synthetic_directory / "synthetic_task20.pt"
-        torch.save(
-            {
-                "epoch": 3,
-                "model_state_dict": source_model.state_dict(),
-                "optimizer_state_dict": {},
-                "loss": 0.25,
-                "config": _synthetic_embedded_config(
-                    external_config=external_config,
-                    architecture=architecture,
-                ),
-            },
-            checkpoint_path,
-        )
+        payload = {
+            "epoch": 3,
+            "model_state_dict": source_model.state_dict(),
+            "optimizer_state_dict": {},
+            "loss": 0.25,
+            "config": _synthetic_embedded_config(
+                external_config=external_config,
+                architecture=architecture,
+            ),
+        }
+        self.assertNotIn("center_crop", payload["config"])
+        self.assertNotIn("heatmap_res", payload["config"])
+        torch.save(payload, checkpoint_path)
         checkpoint_bytes = checkpoint_path.read_bytes()
         runtime_receipt = replace(
             runtime_receipt,
@@ -468,6 +466,18 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
         )
         self.assertTrue(load_record["weights_only"])
         self.assertFalse(load_record["unsafe_fallback_used"])
+
+        incompatible_payload = copy.deepcopy(payload)
+        incompatible_payload["config"]["center_crop"] = 256
+        with self.assertRaisesRegex(
+            runtime.CheckpointRuntimeError,
+            "embedded config field center_crop differs",
+        ):
+            runtime._validate_checkpoint_payload_and_reconstruct(
+                incompatible_payload,
+                architecture=architecture,
+                external_config=external_config,
+            )
 
     def test_forged_runtime_token_is_rejected(self) -> None:
         forged = copy.copy(_runtime_authorization())

@@ -20,6 +20,9 @@ from unittest import mock
 from keypoint_net import representation_evaluation_provenance as provenance
 
 
+_DEFAULT_CHECKPOINT_RECEIPT = object()
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -50,6 +53,21 @@ def _external_record_for_role(
         if record["role"] == role:
             return record
     raise AssertionError(f"missing external fixture role {role}")
+
+
+def _checkpoint_load_receipt(fixture: dict[str, Any]) -> dict[str, Any]:
+    checkpoint = _external_record_for_role(
+        fixture["bundle"],
+        "checkpoint",
+    )
+    return {
+        **checkpoint,
+        "task_id": 20,
+        "fixture_id": "unit_task20_checkpoint",
+        "source_commit": fixture["bundle"]["source_commit"],
+        "same_open_file_descriptor_hash_and_load": True,
+        "weights_only": True,
+    }
 
 
 class RepresentationEvaluationProvenanceTests(unittest.TestCase):
@@ -170,7 +188,18 @@ class RepresentationEvaluationProvenanceTests(unittest.TestCase):
             "provenance_loaded_source": provenance_loaded_source,
         }
 
-    def _validate(self, fixture: dict[str, Any]) -> dict[str, Any]:
+    def _validate(
+        self,
+        fixture: dict[str, Any],
+        *,
+        checkpoint_receipt: object = _DEFAULT_CHECKPOINT_RECEIPT,
+    ) -> dict[str, Any]:
+        if checkpoint_receipt is _DEFAULT_CHECKPOINT_RECEIPT:
+            checkpoint_receipt = (
+                _checkpoint_load_receipt(fixture)
+                if fixture["case_kind"] == "checkpoint"
+                else None
+            )
         return provenance._validate_evaluation_provenance_for_repo(
             fixture["bundle"],
             case_kind=fixture["case_kind"],
@@ -180,6 +209,7 @@ class RepresentationEvaluationProvenanceTests(unittest.TestCase):
             provenance_loaded_source_digest=fixture[
                 "provenance_loaded_source"
             ],
+            checkpoint_provenance_load_receipt=checkpoint_receipt,
         )
 
     def test_valid_full_existing_commit_and_planted_profile(self) -> None:
@@ -461,24 +491,58 @@ class RepresentationEvaluationProvenanceTests(unittest.TestCase):
         ):
             self._validate(without_fit)
 
-    def test_checkpoint_external_files_are_rehashed_with_size(self) -> None:
+    def test_checkpoint_receipt_prevents_reopen_but_config_and_history_open(
+        self,
+    ) -> None:
         fixture = self._fixture(case_kind="checkpoint")
-        result = self._validate(fixture)
+        checkpoint_path = fixture["external_paths"]["checkpoint"]
+        config_path = fixture["external_paths"]["checkpoint_config"]
+        history_path = fixture["external_paths"]["checkpoint_metadata"]
+        opened_external_paths: list[Path] = []
+        original_open = Path.open
+
+        def guarded_open(path: Path, *args: Any, **kwargs: Any):
+            if path == checkpoint_path:
+                raise AssertionError("provenance reopened the checkpoint")
+            if path in {config_path, history_path}:
+                opened_external_paths.append(path)
+            return original_open(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", guarded_open):
+            result = self._validate(fixture)
         normalized = {
             record["role"]: record for record in result["external_files"]
         }
         self.assertEqual(
             normalized["checkpoint"]["size_bytes"],
-            fixture["external_paths"]["checkpoint"].stat().st_size,
+            checkpoint_path.stat().st_size,
+        )
+        self.assertEqual(
+            opened_external_paths.count(config_path),
+            1,
+        )
+        self.assertEqual(
+            opened_external_paths.count(history_path),
+            1,
         )
 
-        checkpoint_path = fixture["external_paths"]["checkpoint"]
-        checkpoint_path.write_bytes(checkpoint_path.read_bytes() + b"x")
+    def test_checkpoint_case_requires_validated_load_receipt(self) -> None:
+        fixture = self._fixture(case_kind="checkpoint")
         with self.assertRaisesRegex(
             provenance.ProvenanceContractError,
-            "external role checkpoint size mismatch",
+            "requires a validated load receipt",
         ):
-            self._validate(fixture)
+            self._validate(fixture, checkpoint_receipt=None)
+
+    def test_checkpoint_load_receipt_is_cross_bound(self) -> None:
+        fixture = self._fixture(case_kind="checkpoint")
+        receipt = _checkpoint_load_receipt(fixture)
+        receipt["file_sha256"] = "f" * 64
+        with self.assertRaisesRegex(
+            provenance.ProvenanceContractError,
+            "load receipt SHA-256 mismatch",
+        ):
+            self._validate(fixture, checkpoint_receipt=receipt)
 
     def test_external_same_size_mutation_is_rejected_by_sha256(self) -> None:
         fixture = self._fixture(case_kind="checkpoint")

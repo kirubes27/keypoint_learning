@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import math
 from pathlib import Path
@@ -28,6 +29,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 from keypoint_net import representation_evaluation_provenance as provenance_contract
+from keypoint_net import representation_array_codec as array_codec
 
 
 BUNDLE_SCHEMA_VERSION = "representation-evaluation-bundle-v1"
@@ -66,6 +68,26 @@ ROLL_EVALUATION_CONFIG_FIELDS = {
     "holdout_rollout_horizons",
     "closure_horizon",
 }
+CHECKPOINT_AUTHORIZATION_MODULE = (
+    "keypoint_net.representation_checkpoint_authorization"
+)
+CHECKPOINT_AUTHORIZATION_VALIDATOR = (
+    "validate_checkpoint_evaluator_authorization"
+)
+CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER = (
+    "consume_checkpoint_provenance_load_receipt"
+)
+CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS = {
+    "checkpoint_evaluation_authorized",
+    "source_commit",
+    "task_id",
+    "fixture_id",
+    "checkpoint_sha256",
+    "runtime_source_manifest_file_sha256",
+    "checkpoint_hash_preflight_file_sha256",
+    "training_or_weight_update_authorized",
+    "selection_use_authorized",
+}
 
 
 class EvaluationContractError(ValueError):
@@ -97,6 +119,7 @@ _LOADED_EVALUATOR_SOURCE_DIGEST = (
         Path(__file__).absolute(),
     )
 )
+__representation_import_sha256__ = _LOADED_EVALUATOR_SOURCE_DIGEST["sha256"]
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -193,6 +216,7 @@ def _validate_production_provenance(
     *,
     case_kind: str,
     fit_from_pairs: bool,
+    checkpoint_provenance_load_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Production provenance boundary.
 
@@ -207,6 +231,9 @@ def _validate_production_provenance(
             case_kind=case_kind,
             fit_from_pairs=fit_from_pairs,
             loaded_source_digests=_production_loaded_source_digests(),
+            checkpoint_provenance_load_receipt=(
+                checkpoint_provenance_load_receipt
+            ),
         )
     except provenance_contract.ProvenanceContractError as exc:
         raise EvaluationContractError(
@@ -248,7 +275,16 @@ def _strict_bool_array(
     name: str,
     shape: tuple[int | None, ...] | None = None,
 ) -> np.ndarray:
-    array = np.asarray(value)
+    if array_codec.is_compact_array_record(value):
+        try:
+            array = array_codec.decode_bool_packbits_array(value)
+        except array_codec.ArrayCodecError as exc:
+            raise EvaluationContractError(
+                f"{name} compact boolean array is invalid: {exc}",
+                code="compact_array_invalid",
+            ) from exc
+    else:
+        array = np.asarray(value)
     _require(array.dtype == np.dtype(np.bool_), f"{name} must contain JSON booleans")
     if shape is not None:
         _require(array.ndim == len(shape), f"{name} must have {len(shape)} dimensions")
@@ -267,10 +303,20 @@ def _finite_array(
     name: str,
     shape: tuple[int | None, ...] | None = None,
 ) -> np.ndarray:
-    try:
-        array = np.asarray(value, dtype=np.float64)
-    except (TypeError, ValueError) as exc:
-        raise EvaluationContractError(f"{name} is not a numeric array") from exc
+    if array_codec.is_compact_array_record(value):
+        try:
+            compact = array_codec.decode_float32_array(value)
+        except array_codec.ArrayCodecError as exc:
+            raise EvaluationContractError(
+                f"{name} compact float32 array is invalid: {exc}",
+                code="compact_array_invalid",
+            ) from exc
+        array = compact.astype(np.float64)
+    else:
+        try:
+            array = np.asarray(value, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise EvaluationContractError(f"{name} is not a numeric array") from exc
     if shape is not None:
         _require(array.ndim == len(shape), f"{name} must have {len(shape)} dimensions")
         for axis, expected in enumerate(shape):
@@ -400,21 +446,38 @@ def _validated_logits_and_points(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Validate declared logits and derive their fixed spatial expectations."""
 
-    raw_logits = np.asarray(value, dtype=object)
-    for item in raw_logits.reshape(-1):
-        is_finite_number = (
-            isinstance(item, (int, float))
-            and not isinstance(item, bool)
-            and math.isfinite(float(item))
-        )
+    if array_codec.is_compact_array_record(value):
         _require(
-            is_finite_number or item == "-inf",
-            f"{name} must contain finite numbers or the exact '-inf' zero-mass sentinel",
+            estimator["logit_dtype"] == "float32",
+            "compact float32 logits require estimator logit_dtype=float32",
         )
+        try:
+            compact_logits = array_codec.decode_float32_array(value)
+        except array_codec.ArrayCodecError as exc:
+            raise EvaluationContractError(
+                f"{name} compact float32 array is invalid: {exc}",
+                code="compact_array_invalid",
+            ) from exc
+        raw_logits: np.ndarray = compact_logits
+    else:
+        raw_logits = np.asarray(value, dtype=object)
+        for item in raw_logits.reshape(-1):
+            is_finite_number = (
+                isinstance(item, (int, float))
+                and not isinstance(item, bool)
+                and math.isfinite(float(item))
+            )
+            _require(
+                is_finite_number or item == "-inf",
+                f"{name} must contain finite numbers or the exact '-inf' zero-mass sentinel",
+            )
     declared_logit_dtype = (
         np.float32 if estimator["logit_dtype"] == "float32" else np.float64
     )
-    logits = np.asarray(raw_logits.tolist(), dtype=declared_logit_dtype)
+    logits = np.asarray(
+        raw_logits if array_codec.is_compact_array_record(value) else raw_logits.tolist(),
+        dtype=declared_logit_dtype,
+    )
     _require(
         logits.shape == expected_shape,
         f"{name} shape disagrees with estimator metadata",
@@ -2864,6 +2927,151 @@ def _validate_frame_ids(value: object, *, name: str) -> list[Any]:
     return list(value)
 
 
+def _require_checkpoint_evaluator_authorization(
+    bundle: Mapping[str, Any],
+) -> tuple[dict[str, Any], Mapping[str, Any]]:
+    """Validate committed checkpoint execution authority before external access.
+
+    The trusted authorization module verifies the reviewed source/manifests and
+    returns an audit receipt.  No field in the caller's bundle can directly
+    enable this path: if the module or its validator is absent, malformed, or
+    raises for any reason, checkpoint evaluation remains blocked.
+    """
+
+    try:
+        authorization = importlib.import_module(CHECKPOINT_AUTHORIZATION_MODULE)
+    except ModuleNotFoundError as exc:
+        if exc.name != CHECKPOINT_AUTHORIZATION_MODULE:
+            raise EvaluationContractError(
+                f"checkpoint authorization module failed to import: {exc}",
+                code="checkpoint_replay_blocked",
+            ) from exc
+        raise EvaluationContractError(
+            "saved-checkpoint replay is blocked: checkpoint authorization module is absent",
+            code="checkpoint_replay_blocked",
+        ) from exc
+    except Exception as exc:
+        raise EvaluationContractError(
+            f"checkpoint authorization module failed closed: {exc}",
+            code="checkpoint_replay_blocked",
+        ) from exc
+
+    validator = getattr(authorization, CHECKPOINT_AUTHORIZATION_VALIDATOR, None)
+    _require(
+        callable(validator),
+        "checkpoint authorization validator is absent",
+    )
+    try:
+        receipt = validator(bundle)
+    except Exception as exc:
+        raise EvaluationContractError(
+            f"saved-checkpoint replay is blocked: authorization failed: {exc}",
+            code="checkpoint_replay_blocked",
+        ) from exc
+
+    raw_provenance = bundle.get("provenance")
+    _require(
+        isinstance(raw_provenance, Mapping),
+        "checkpoint bundle provenance must be a mapping",
+    )
+    external_files = raw_provenance.get("external_files")
+    _require(
+        isinstance(external_files, list),
+        "checkpoint provenance external_files must be a list",
+    )
+    checkpoint_records = [
+        record
+        for record in external_files
+        if isinstance(record, Mapping) and record.get("role") == "checkpoint"
+    ]
+    _require(
+        len(checkpoint_records) == 1,
+        "checkpoint authorization requires one external checkpoint role",
+    )
+    consumer = getattr(
+        authorization,
+        CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER,
+        None,
+    )
+    if not callable(consumer):
+        raise EvaluationContractError(
+            "saved-checkpoint replay is blocked: checkpoint provenance "
+            "receipt consumer is absent",
+            code="checkpoint_replay_blocked",
+        )
+    try:
+        checkpoint_provenance_load_receipt = consumer(
+            source_commit=raw_provenance.get("source_commit"),
+            checkpoint_record=checkpoint_records[0],
+        )
+    except Exception as exc:
+        raise EvaluationContractError(
+            "saved-checkpoint replay is blocked: checkpoint provenance "
+            f"receipt consumption failed: {exc}",
+            code="checkpoint_replay_blocked",
+        ) from exc
+    if not isinstance(checkpoint_provenance_load_receipt, Mapping):
+        raise EvaluationContractError(
+            "saved-checkpoint replay is blocked: checkpoint provenance "
+            "receipt consumer returned no validated receipt",
+            code="checkpoint_replay_blocked",
+        )
+
+    _require(
+        isinstance(receipt, Mapping),
+        "checkpoint authorization validator returned no audit receipt",
+    )
+    _require_exact_keys(
+        receipt,
+        required=CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS,
+        name="checkpoint authorization receipt",
+    )
+    _require(
+        receipt["checkpoint_evaluation_authorized"] is True,
+        "checkpoint authorization receipt does not authorize evaluation",
+    )
+    _require(
+        receipt["training_or_weight_update_authorized"] is False,
+        "checkpoint authorization receipt must forbid training and weight updates",
+    )
+    _require(
+        receipt["selection_use_authorized"] is False,
+        "checkpoint authorization receipt must forbid selection use",
+    )
+    _require(
+        isinstance(receipt["task_id"], int)
+        and not isinstance(receipt["task_id"], bool)
+        and receipt["task_id"] in {20, 55, 80},
+        "checkpoint authorization receipt has an invalid task_id",
+    )
+    _require(
+        isinstance(receipt["fixture_id"], str)
+        and bool(receipt["fixture_id"])
+        and receipt["fixture_id"] == bundle.get("case_id"),
+        "checkpoint authorization fixture_id differs from case_id",
+    )
+    for field in (
+        "checkpoint_sha256",
+        "runtime_source_manifest_file_sha256",
+        "checkpoint_hash_preflight_file_sha256",
+    ):
+        _require(
+            _is_sha256(receipt[field]),
+            f"checkpoint authorization receipt field {field} is invalid",
+        )
+
+    _require(
+        receipt["source_commit"] == raw_provenance.get("source_commit"),
+        "checkpoint authorization receipt binds a different source_commit",
+    )
+    _require(
+        checkpoint_records[0].get("file_sha256")
+        == receipt["checkpoint_sha256"],
+        "checkpoint authorization receipt binds different checkpoint bytes",
+    )
+    return dict(receipt), checkpoint_provenance_load_receipt
+
+
 def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and normalize an immutable evaluation bundle."""
 
@@ -2897,14 +3105,14 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
         canonical_sha256(bundle_payload) == claimed_bundle_hash,
         "bundle content hash mismatch",
     )
+    checkpoint_authorization = None
+    checkpoint_provenance_load_receipt = None
     if bundle["case_kind"] == "checkpoint":
-        raise EvaluationContractError(
-            (
-                "saved-checkpoint replay is blocked until the committed replay "
-                "registry is cross-validated and a reviewed roll geometry "
-                "binding explicitly authorizes checkpoint evaluation"
-            ),
-            code="checkpoint_replay_blocked",
+        (
+            checkpoint_authorization,
+            checkpoint_provenance_load_receipt,
+        ) = _require_checkpoint_evaluator_authorization(
+            bundle,
         )
 
     operator_hint = bundle["operator"]
@@ -2917,10 +3125,17 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     provenance = bundle["provenance"]
     _require(isinstance(provenance, Mapping), "provenance must be a mapping")
     try:
+        provenance_kwargs: dict[str, Any] = {
+            "case_kind": str(bundle["case_kind"]),
+            "fit_from_pairs": operator_mode_hint == "fit_from_pairs",
+        }
+        if checkpoint_provenance_load_receipt is not None:
+            provenance_kwargs["checkpoint_provenance_load_receipt"] = (
+                checkpoint_provenance_load_receipt
+            )
         validated_provenance = _validate_production_provenance(
             provenance,
-            case_kind=str(bundle["case_kind"]),
-            fit_from_pairs=operator_mode_hint == "fit_from_pairs",
+            **provenance_kwargs,
         )
     except EvaluationContractError:
         raise
@@ -3354,6 +3569,7 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
         "validated_provenance": dict(validated_provenance),
         "numeric_registry": numeric_registry,
         "checkpoint": checkpoint_binding,
+        "checkpoint_authorization": checkpoint_authorization,
         "estimator_consistency": {
             "definition": (
                 "supplied_points_are_checked_against_and_replaced_by_fixed_"
@@ -3581,6 +3797,10 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
             "sem_computed": False,
         },
     }
+    if normalized["checkpoint_authorization"] is not None:
+        result["checkpoint_authorization"] = normalized[
+            "checkpoint_authorization"
+        ]
     if (
         normalized["family"] == "roll"
         and config["protocol"] == "full_primary_roll"

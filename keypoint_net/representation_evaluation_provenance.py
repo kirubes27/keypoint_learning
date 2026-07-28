@@ -72,6 +72,38 @@ FIXED_ROLE_PATHS = MappingProxyType(
             "docs/decisions/2026-07-26/representation_oracle_replay/"
             "REPLAY_REGISTRY_v1.json"
         ),
+        "checkpoint_runtime_source_manifest": (
+            "docs/decisions/2026-07-26/representation_oracle_replay/"
+            "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v1.json"
+        ),
+        "checkpoint_hash_preflight": (
+            "docs/decisions/2026-07-26/representation_oracle_replay/"
+            "CHECKPOINT_HASH_PREFLIGHT_RESULT_2026-07-27.json"
+        ),
+        "replay_dataset_inventory": (
+            "docs/decisions/2026-07-26/representation_oracle_splits/"
+            "inventories/CORPUS_INVENTORY__roll.json"
+        ),
+        "replay_pair_index": (
+            "docs/decisions/2026-07-26/representation_oracle_replay/"
+            "HAMMER_ROLL_PAIR_INDEX_MANIFEST_v1.json"
+        ),
+        "replay_frame_mask_inventory": (
+            "docs/decisions/2026-07-26/representation_oracle_replay/"
+            "HAMMER_ROLL_FRAME_MASK_INVENTORY_v1.json"
+        ),
+        "replay_metadata_manifest": (
+            "docs/decisions/2026-07-26/representation_oracle_replay/"
+            "HAMMER_ROLL_METADATA_MANIFEST_v1.json"
+        ),
+        "checkpoint_execution_authorization": (
+            "docs/decisions/2026-07-26/representation_oracle_replay/"
+            "CHECKPOINT_EXECUTION_AUTHORIZATION_v1.json"
+        ),
+        "fable_execution_review": (
+            "docs/decisions/2026-07-26/"
+            "FABLE_5_HIGH_CHECKPOINT_REPLAY_RUNTIME_REVIEW_2026-07-28.md"
+        ),
     }
 )
 
@@ -125,10 +157,13 @@ _CHECKPOINT_COMMITTED_ROLES = frozenset(
         "geometry_registry",
         "geometry_manifest",
         "checkpoint_runtime_source_manifest",
+        "checkpoint_hash_preflight",
         "replay_dataset_inventory",
         "replay_pair_index",
         "replay_frame_mask_inventory",
         "replay_metadata_manifest",
+        "checkpoint_execution_authorization",
+        "fable_execution_review",
     }
 )
 _CHECKPOINT_EXTERNAL_ROLES = frozenset(
@@ -136,6 +171,19 @@ _CHECKPOINT_EXTERNAL_ROLES = frozenset(
         "checkpoint",
         "checkpoint_config",
         "checkpoint_metadata",
+    }
+)
+_CHECKPOINT_PROVENANCE_LOAD_RECEIPT_FIELDS = frozenset(
+    {
+        "role",
+        "absolute_path",
+        "file_sha256",
+        "size_bytes",
+        "task_id",
+        "fixture_id",
+        "source_commit",
+        "same_open_file_descriptor_hash_and_load",
+        "weights_only",
     }
 )
 _FIT_ROLE = "fit_pair_artifact"
@@ -519,6 +567,79 @@ def _validate_external_record_shape(
     return role, absolute_path, claimed_sha256, claimed_size
 
 
+def _validate_checkpoint_provenance_load_receipt(
+    receipt: object,
+    *,
+    source_commit: str,
+    checkpoint_shape: tuple[str, str, str, int],
+) -> dict[str, Any]:
+    """Cross-bind the one-shot runtime receipt without reopening its file.
+
+    The authorization module has already consumed and capability-checked the
+    private runtime state before this mapping reaches provenance validation.
+    This boundary accepts only the exact normalized statement it returned and
+    binds every checkpoint claim back to the bundle record.
+    """
+
+    _require(
+        isinstance(receipt, Mapping),
+        "checkpoint provenance requires a validated load receipt",
+    )
+    _exact_keys(
+        receipt,
+        expected=_CHECKPOINT_PROVENANCE_LOAD_RECEIPT_FIELDS,
+        name="checkpoint provenance load receipt",
+    )
+    role, absolute_path, claimed_sha256, claimed_size = checkpoint_shape
+    _require(
+        receipt["role"] == role == "checkpoint",
+        "checkpoint provenance load receipt role mismatch",
+    )
+    _require(
+        type(receipt["absolute_path"]) is str
+        and receipt["absolute_path"] == absolute_path,
+        "checkpoint provenance load receipt path mismatch",
+    )
+    _require(
+        type(receipt["file_sha256"]) is str
+        and receipt["file_sha256"] == claimed_sha256,
+        "checkpoint provenance load receipt SHA-256 mismatch",
+    )
+    _require(
+        type(receipt["size_bytes"]) is int
+        and receipt["size_bytes"] == claimed_size,
+        "checkpoint provenance load receipt size mismatch",
+    )
+    _require(
+        type(receipt["task_id"]) is int
+        and receipt["task_id"] in {20, 55, 80},
+        "checkpoint provenance load receipt task_id is invalid",
+    )
+    _require(
+        type(receipt["fixture_id"]) is str and bool(receipt["fixture_id"]),
+        "checkpoint provenance load receipt fixture_id is invalid",
+    )
+    _require(
+        type(receipt["source_commit"]) is str
+        and receipt["source_commit"] == source_commit,
+        "checkpoint provenance load receipt source_commit mismatch",
+    )
+    _require(
+        receipt["same_open_file_descriptor_hash_and_load"] is True,
+        "checkpoint provenance load receipt lacks same-FD hash/load proof",
+    )
+    _require(
+        receipt["weights_only"] is True,
+        "checkpoint provenance load receipt lacks weights-only proof",
+    )
+    return {
+        "role": "checkpoint",
+        "absolute_path": receipt["absolute_path"],
+        "file_sha256": receipt["file_sha256"],
+        "size_bytes": receipt["size_bytes"],
+    }
+
+
 def _validate_loaded_source_record(
     record: object,
     *,
@@ -581,6 +702,7 @@ def _validate_evaluation_provenance_for_repo(
     loaded_source_digests: Mapping[str, Mapping[str, str]],
     repo_root: Path,
     provenance_loaded_source_digest: Mapping[str, str],
+    checkpoint_provenance_load_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Internal test seam; production callers must use the public wrapper."""
 
@@ -648,6 +770,24 @@ def _validate_evaluation_provenance_for_repo(
         set(committed_roles).isdisjoint(external_roles),
         "a role appears in both committed_files and external_files",
     )
+    if case_kind == "checkpoint":
+        checkpoint_shape = next(
+            shape for shape in external_shapes if shape[0] == "checkpoint"
+        )
+        normalized_checkpoint_receipt = (
+            _validate_checkpoint_provenance_load_receipt(
+                checkpoint_provenance_load_receipt,
+                source_commit=source_commit,
+                checkpoint_shape=checkpoint_shape,
+            )
+        )
+    else:
+        _require(
+            checkpoint_provenance_load_receipt is None,
+            "checkpoint provenance load receipt is forbidden for "
+            f"{case_kind} cases",
+        )
+        normalized_checkpoint_receipt = None
 
     committed_paths: dict[str, Path] = {}
     for role, relative_path, _claimed_sha256 in committed_shapes:
@@ -739,6 +879,23 @@ def _validate_evaluation_provenance_for_repo(
     normalized_external: list[dict[str, Any]] = []
     resolved_external_paths: list[Path] = []
     for role, absolute_path, claimed_sha256, claimed_size in external_shapes:
+        if role == "checkpoint":
+            _require(
+                normalized_checkpoint_receipt is not None,
+                "checkpoint provenance load receipt is missing",
+            )
+            # The checkpoint was hashed and deserialized through one already
+            # validated file descriptor.  Reopening, resolving, or even
+            # lstat-ing it here would both violate that one-open contract and
+            # create a path-replacement race.
+            checkpoint_path = Path(
+                normalized_checkpoint_receipt["absolute_path"]
+            )
+            resolved_external_paths.append(checkpoint_path)
+            normalized_external.append(
+                dict(normalized_checkpoint_receipt)
+            )
+            continue
         path = Path(absolute_path)
         try:
             metadata = path.lstat()
@@ -809,6 +966,7 @@ def validate_evaluation_provenance(
     case_kind: str,
     fit_from_pairs: bool,
     loaded_source_digests: Mapping[str, Mapping[str, str]],
+    checkpoint_provenance_load_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate production provenance against this repository.
 
@@ -824,6 +982,9 @@ def validate_evaluation_provenance(
         loaded_source_digests=loaded_source_digests,
         repo_root=repo_root,
         provenance_loaded_source_digest=_LOADED_PROVENANCE_SOURCE_DIGEST,
+        checkpoint_provenance_load_receipt=(
+            checkpoint_provenance_load_receipt
+        ),
     )
 
 
@@ -831,6 +992,7 @@ _LOADED_PROVENANCE_SOURCE_DIGEST = capture_loaded_source_digest(
     "provenance_source",
     Path(__file__).absolute(),
 )
+__representation_import_sha256__ = _LOADED_PROVENANCE_SOURCE_DIGEST["sha256"]
 
 
 __all__ = [
@@ -838,6 +1000,7 @@ __all__ = [
     "LOADED_SOURCE_ROLES",
     "PROVENANCE_SCHEMA_VERSION",
     "ProvenanceContractError",
+    "__representation_import_sha256__",
     "capture_loaded_source_digest",
     "required_role_profile",
     "validate_evaluation_provenance",

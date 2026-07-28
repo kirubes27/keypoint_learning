@@ -25,6 +25,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
+__representation_import_sha256__ = hashlib.sha256(
+    Path(__file__).absolute().read_bytes()
+).hexdigest()
+
+
 REGISTRY_SCHEMA_VERSION = "representation-checkpoint-replay-registry-v1"
 REGISTRY_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/"

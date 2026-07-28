@@ -7,9 +7,17 @@ From the Modeling Plan (10.2, 10.3):
 - Losses: L_pred + λ_s·L_smooth + λ_d·L_disp + λ_e·L_ent
 """
 
+import hashlib as _hashlib
+from pathlib import Path as _Path
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+__representation_import_sha256__ = _hashlib.sha256(
+    _Path(__file__).absolute().read_bytes()
+).hexdigest()
 
 
 def spatial_softmax(heatmaps: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:

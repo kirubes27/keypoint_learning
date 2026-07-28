@@ -1,0 +1,53 @@
+{
+  "schema_version": "representation_checkpoint_execution_authorization.v1",
+  "artifact_type": "representation_checkpoint_execution_authorization",
+  "reviewed_candidate_commit": "bac87c4faeacbb71683c7323ecda29f841c2ce35",
+  "runtime_source_manifest": {
+    "repo_relative_path": "docs/decisions/2026-07-26/representation_oracle_replay/CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v1.json",
+    "file_sha256": "70f893df6d60a23348467b14ef21d7294586d54273ceafc41dc30e7c375e85dd",
+    "content_hash_sha256": "be68241efc52d1e1ab3de84c79f1887a32647fae38f13a6945b06bf00c8894e7"
+  },
+  "checkpoint_hash_preflight": {
+    "repo_relative_path": "docs/decisions/2026-07-26/representation_oracle_replay/CHECKPOINT_HASH_PREFLIGHT_RESULT_2026-07-27.json",
+    "file_sha256": "d333d6295c8ba6bab5af90e59a54291de37cb8f82379db4d7a8f231b5bffc99a"
+  },
+  "fable_review": {
+    "repo_relative_path": "docs/decisions/2026-07-26/FABLE_5_HIGH_CHECKPOINT_REPLAY_RUNTIME_REVIEW_2026-07-28.md",
+    "file_sha256": "9811d05c460b2b545a5581ce11263bc5e472dd57adbe701e9d85661fd4932715",
+    "model": "fable",
+    "effort": "high",
+    "permission_mode": "read_only",
+    "session_persistence": false,
+    "verdict": "PASS_TO_RUN",
+    "unresolved_p0_count": 0,
+    "unresolved_p1_count": 0
+  },
+  "authorized_task_order": [
+    20,
+    55,
+    80
+  ],
+  "task20_stop_gate": {
+    "required_before_tasks": [
+      55,
+      80
+    ],
+    "required_classification": "structural_negative_control_collapse",
+    "required_value": true,
+    "historical_comparison_resolved_value_count": 245,
+    "failure_action": "stop_without_loading_task55_or_task80"
+  },
+  "execution_boundary": {
+    "checkpoint_replay_authorized": true,
+    "cpu_only": true,
+    "weights_only": true,
+    "same_open_file_descriptor_hash_and_load": true,
+    "strict_state_dict": true,
+    "model_eval": true,
+    "inference_mode": true,
+    "task55_and_80_require_task20_pass": true,
+    "training_or_weight_update_authorized": false,
+    "selection_use_authorized": false
+  },
+  "content_hash_sha256": "e591cc24a76006da4ea68f7e3db3f061c2416396990e81c1898a3d73c5d37422"
+}

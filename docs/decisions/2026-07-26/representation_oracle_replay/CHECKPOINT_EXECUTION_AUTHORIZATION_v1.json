@@ -1,11 +1,11 @@
 {
   "schema_version": "representation_checkpoint_execution_authorization.v1",
   "artifact_type": "representation_checkpoint_execution_authorization",
-  "reviewed_candidate_commit": "bac87c4faeacbb71683c7323ecda29f841c2ce35",
+  "reviewed_candidate_commit": "6411547918691ec1abde09abfd4731db13bf48bf",
   "runtime_source_manifest": {
     "repo_relative_path": "docs/decisions/2026-07-26/representation_oracle_replay/CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v1.json",
-    "file_sha256": "70f893df6d60a23348467b14ef21d7294586d54273ceafc41dc30e7c375e85dd",
-    "content_hash_sha256": "be68241efc52d1e1ab3de84c79f1887a32647fae38f13a6945b06bf00c8894e7"
+    "file_sha256": "326d14fb0c92b3425862e6de6b8e92c05b8dd3bb3cddec0be348860f251e1391",
+    "content_hash_sha256": "abe7ce9421d3e2f5c6a292398b06a805fd78dc93c6be560e2e57f5132bd08c2b"
   },
   "checkpoint_hash_preflight": {
     "repo_relative_path": "docs/decisions/2026-07-26/representation_oracle_replay/CHECKPOINT_HASH_PREFLIGHT_RESULT_2026-07-27.json",
@@ -13,7 +13,7 @@
   },
   "fable_review": {
     "repo_relative_path": "docs/decisions/2026-07-26/FABLE_5_HIGH_CHECKPOINT_REPLAY_RUNTIME_REVIEW_2026-07-28.md",
-    "file_sha256": "9811d05c460b2b545a5581ce11263bc5e472dd57adbe701e9d85661fd4932715",
+    "file_sha256": "c75fb670b110bd230e272ca8b171cb5c93cb4c395117645b6ffa261f64f94613",
     "model": "fable",
     "effort": "high",
     "permission_mode": "read_only",
@@ -49,5 +49,5 @@
     "training_or_weight_update_authorized": false,
     "selection_use_authorized": false
   },
-  "content_hash_sha256": "e591cc24a76006da4ea68f7e3db3f061c2416396990e81c1898a3d73c5d37422"
+  "content_hash_sha256": "70ba3970c58e462d757401cdde73d80579f8ff63c09afb6d61681e5eb29834eb"
 }

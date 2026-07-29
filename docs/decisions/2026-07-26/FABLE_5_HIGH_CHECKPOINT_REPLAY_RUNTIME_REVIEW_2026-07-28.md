@@ -148,3 +148,109 @@ they are absent.
 #### Verdict
 
 **PASS_TO_RUN** — unresolved P0 count: **0**; unresolved P1 count: **0**.
+
+---
+
+## Independent delta review — 2026-07-29
+
+Reviewed candidate commit:
+`6411547918691ec1abde09abfd4731db13bf48bf`
+
+Reviewed predecessor:
+`bac87c4faeacbb71683c7323ecda29f841c2ce35`
+
+Invocation boundary:
+
+- model: `fable`
+- effort: `high`
+- permission mode: read-only plan mode
+- safe mode: enabled
+- session persistence: disabled
+- registered checkpoint access: forbidden
+- project-file mutation: forbidden
+
+### Scope
+
+The review covered the complete four-file delta:
+
+- `docs/decisions/2026-07-26/representation_oracle_replay/CHECKPOINT_REPLAY_EXECUTION_SPEC_v1.md`
+- `docs/decisions/2026-07-26/representation_oracle_replay/CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v1.json`
+- `keypoint_net/representation_checkpoint_runtime.py`
+- `tests/test_representation_checkpoint_runtime.py`
+
+It also inspected the historical checkpoint writer at Git commit
+`952064e28f7661907382a203920628310c8ccbbe`, the registered external
+configuration bindings, and the surrounding runtime and authorization path.
+No registered checkpoint was opened or deserialized.
+
+### Historical justification
+
+- The legacy checkpoint writer's embedded `ckpt_config` contained neither
+  `center_crop` nor `heatmap_res`.
+- The same writer stored the full run-level `config.json` from `vars(args)`,
+  which necessarily contains `center_crop`, with `null` meaning no crop.
+- Each registered run-level config is separately path-, size-, and
+  SHA-256-bound and is validated before the checkpoint is opened.
+- The legacy model had no `heatmap_res` argument. At 512-pixel input its
+  fixed `/8` head is intrinsically 64 by 64.
+- An embedded non-null `center_crop` remains fatal.
+- An embedded `heatmap_res` other than 64 remains fatal.
+- The strict state-dict key/shape checks and the explicit absence of a
+  128-resolution upsampling head provide independent architecture checks.
+- Because checkpoint bytes are already size- and SHA-256-bound, the relaxed
+  metadata equivalence admits only the registered historical checkpoints and
+  cannot authorize different bytes.
+
+### Manifest and provenance
+
+The runtime-source manifest delta changes only:
+
+1. the manifest content hash; and
+2. the `runtime_source` hash for
+   `keypoint_net/representation_checkpoint_runtime.py`.
+
+The other ten runtime-source records and all frozen preprocessing,
+environment, and execution-boundary fields are unchanged. The runtime still
+performs no crop. The prior execution authorization remains correctly
+fail-closed because it binds the predecessor commit and predecessor manifest.
+
+### P0 findings
+
+None.
+
+### P1 findings
+
+None.
+
+### P2 observations
+
+1. `_validate_external_config` uses `config.get("center_crop")`, so a missing
+   external key would be treated like explicit null. This is historically
+   impossible for these hash-bound `vars(args)` configs, but an explicit
+   key-presence check would match the specification wording more literally.
+2. Embedded `heatmap_res` equality is not separately type-strict; `64.0`
+   compares equal to `64`. This has no architectural effect because the
+   reconstructed model and strict state dictionary are bound to integer 64.
+3. The focused tests reject embedded `center_crop=256`, but do not separately
+   test embedded `heatmap_res != 64` or explicit embedded
+   `center_crop: null`.
+4. Exact-set validation of embedded configuration keys is not performed.
+   This predates the candidate and is harmless for the hash-bound checkpoint
+   bytes.
+5. The reviewer could not independently recompute the new manifest hashes
+   within its sandbox. A mismatch can only block at runtime because working
+   bytes are compared with both the rebuilt manifest and Git blobs.
+6. A refreshed execution authorization is required before replay.
+7. The unrelated untracked
+   `representation_oracle_calibration/NUMERIC_CALIBRATION.json` remains
+   outside the replay input closure.
+
+None of these P2 observations blocks the Task 20 replay decision.
+
+### Delta verdict
+
+**PASS_TO_RUN** — unresolved P0 count: **0**; unresolved P1 count: **0**.
+
+Scope: this authorizes at most the Task 20 CPU replay stop gate. It authorizes
+no training, GPU work, model selection, Tasks 55/80 before a committed passing
+Task 20 result, dataset mutation, or overwrite of an existing result.

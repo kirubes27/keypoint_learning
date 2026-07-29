@@ -20,6 +20,11 @@ from keypoint_net.diagnostics import build_checkpoint_replay_manifests as builde
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TASK20_V1_RESULT_PATH = (
+    REPO_ROOT
+    / "docs/decisions/2026-07-26/representation_oracle_replay/results/"
+    "TASK20_CHECKPOINT_REPLAY_RESULT_v1.json"
+)
 
 
 def _rehash(document: dict) -> None:
@@ -38,9 +43,9 @@ def test_manifest_validation_sources_capture_their_import_bytes(module) -> None:
 
 def test_checkpoint_provenance_roles_have_exact_fixed_paths() -> None:
     expected = {
-        "checkpoint_runtime_source_manifest": (
-            "docs/decisions/2026-07-26/representation_oracle_replay/"
-            "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v1.json"
+            "checkpoint_runtime_source_manifest": (
+                "docs/decisions/2026-07-26/representation_oracle_replay/"
+                "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v2.json"
         ),
         "checkpoint_hash_preflight": (
             "docs/decisions/2026-07-26/representation_oracle_replay/"
@@ -62,13 +67,13 @@ def test_checkpoint_provenance_roles_have_exact_fixed_paths() -> None:
             "docs/decisions/2026-07-26/representation_oracle_replay/"
             "HAMMER_ROLL_METADATA_MANIFEST_v1.json"
         ),
-        "checkpoint_execution_authorization": (
-            "docs/decisions/2026-07-26/representation_oracle_replay/"
-            "CHECKPOINT_EXECUTION_AUTHORIZATION_v1.json"
-        ),
-        "fable_execution_review": (
-            "docs/decisions/2026-07-26/"
-            "FABLE_5_HIGH_CHECKPOINT_REPLAY_RUNTIME_REVIEW_2026-07-28.md"
+            "checkpoint_execution_authorization": (
+                "docs/decisions/2026-07-26/representation_oracle_replay/"
+                "CHECKPOINT_EXECUTION_AUTHORIZATION_v2.json"
+            ),
+            "fable_execution_review": (
+                "docs/decisions/2026-07-29/"
+                "FABLE_5_HIGH_TASK20_COLLAPSE_V2_EXECUTION_REVIEW_2026-07-29.md"
         ),
     }
     assert {
@@ -83,6 +88,24 @@ def test_checkpoint_provenance_roles_have_exact_fixed_paths() -> None:
     assert external == frozenset(
         {"checkpoint", "checkpoint_config", "checkpoint_metadata"}
     )
+
+
+def test_task20_v1_audit_record_is_byte_for_byte_immutable() -> None:
+    data = TASK20_V1_RESULT_PATH.read_bytes()
+    assert hashlib.sha256(data).hexdigest() == (
+        "e44ec8b839d6b39377a8acf8b5b2997334ad3c518530675cadcc322e696d2675"
+    )
+    document = builder.decode_strict_json(
+        data,
+        context="immutable Task 20 v1 replay result",
+    )
+    assert document["content_hash_sha256"] == (
+        "5087f5538f728647774fc9e88b4b55ac384c162ebcd3f44136e555bb258258fb"
+    )
+    assert document["source_commit"] == (
+        "426d1dbe94a655e6a90b4441b8e368be7338a4ae"
+    )
+    assert document["gate"]["passed"] is False
 
 
 def test_strict_json_rejects_duplicate_and_nonfinite_values() -> None:
@@ -239,9 +262,10 @@ def test_runtime_manifest_binds_every_executable_source(
         "same_open_file_descriptor_hash_and_load": True,
         "strict_state_dict": True,
         "model_eval": True,
-        "inference_mode": True,
-        "task_ids": [20, 55, 80],
-        "training_or_weight_update_authorized": False,
+            "inference_mode": True,
+            "task_ids": [20, 55, 80],
+            "task55_and_80_require_immutable_task20_v1_audit": True,
+            "training_or_weight_update_authorized": False,
         "selection_use_authorized": False,
     }
 
@@ -304,3 +328,48 @@ def test_encoding_is_canonical_deterministic_and_checked_in(
     )
     checked = builder.check_checked_in_manifests(built_documents)
     assert set(checked) == set(builder.MANIFEST_FILENAMES.values())
+
+
+def test_manifest_writer_never_rewrites_existing_artifacts(
+    tmp_path: Path,
+) -> None:
+    encoded = {
+        "existing.json": b'{"frozen":true}\n',
+        "new.json": b'{"version":2}\n',
+    }
+    existing = tmp_path / "existing.json"
+    existing.write_bytes(encoded["existing.json"])
+    existing_stat = existing.stat()
+    verified = builder._create_absent_or_verify_existing_manifests(
+        output_directory=tmp_path,
+        encoded=encoded,
+    )
+    assert existing.read_bytes() == encoded["existing.json"]
+    assert existing.stat().st_ino == existing_stat.st_ino
+    assert existing.stat().st_mtime_ns == existing_stat.st_mtime_ns
+    assert (tmp_path / "new.json").read_bytes() == encoded["new.json"]
+    assert set(verified) == set(encoded)
+
+    second_stats = {
+        name: (tmp_path / name).stat()
+        for name in encoded
+    }
+    builder._create_absent_or_verify_existing_manifests(
+        output_directory=tmp_path,
+        encoded=encoded,
+    )
+    for name, before in second_stats.items():
+        after = (tmp_path / name).stat()
+        assert after.st_ino == before.st_ino
+        assert after.st_mtime_ns == before.st_mtime_ns
+
+    existing.write_bytes(b'{"frozen":false}\n')
+    with pytest.raises(
+        builder.CheckpointReplayManifestError,
+        match="refusing to overwrite differing replay manifest",
+    ):
+        builder._create_absent_or_verify_existing_manifests(
+            output_directory=tmp_path,
+            encoded=encoded,
+        )
+    assert existing.read_bytes() == b'{"frozen":false}\n'

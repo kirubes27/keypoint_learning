@@ -31,15 +31,16 @@ from keypoint_net import representation_evaluation_provenance as provenance
 from keypoint_net.diagnostics import build_checkpoint_replay_manifests as manifests
 
 
-RUNTIME_RESULT_SCHEMA_VERSION = "representation_checkpoint_replay_result.v1"
+RUNTIME_RESULT_SCHEMA_VERSION = "representation_checkpoint_replay_result.v2"
 RESULT_DIRECTORY_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/results"
 )
 RESULT_FILENAMES = {
-    20: "TASK20_CHECKPOINT_REPLAY_RESULT_v1.json",
-    55: "TASK55_CHECKPOINT_REPLAY_RESULT_v1.json",
-    80: "TASK80_CHECKPOINT_REPLAY_RESULT_v1.json",
+    20: "TASK20_CHECKPOINT_REPLAY_RESULT_v2.json",
+    55: "TASK55_CHECKPOINT_REPLAY_RESULT_v2.json",
+    80: "TASK80_CHECKPOINT_REPLAY_RESULT_v2.json",
 }
+V2_COLLAPSE_FIELD = authorization.V2_COLLAPSE_FIELD
 
 _EXPECTED_ENVIRONMENT = {
     "python_implementation": "CPython",
@@ -106,6 +107,24 @@ class CheckpointRuntimeError(RuntimeError):
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise CheckpointRuntimeError(message)
+
+
+def _classification_matches_expected(
+    observed: bool | None,
+    *,
+    expected: bool,
+) -> bool:
+    """Match an exact tri-state observation without coercing null to false."""
+
+    _require(
+        observed is True or observed is False or observed is None,
+        "structural-collapse classification must be true, false, or null",
+    )
+    _require(
+        expected is True or expected is False,
+        "expected structural-collapse classification must be Boolean",
+    )
+    return observed is expected
 
 
 def _is_sha256(value: object) -> bool:
@@ -1227,10 +1246,15 @@ def run_authorized_checkpoint_replay(
         task_id=task_id,
     )
     expected = _EXPECTED_TASK_CONFIG[task_id]
-    collapse = evaluator_result["collapse_evidence"][
+    collapse_evidence = evaluator_result["collapse_evidence"]
+    collapse = collapse_evidence[V2_COLLAPSE_FIELD]
+    legacy_v1_collapse = collapse_evidence[
         "structural_negative_control_collapse"
     ]
-    classification_passed = collapse is expected["expected_collapse"]
+    classification_passed = _classification_matches_expected(
+        collapse,
+        expected=expected["expected_collapse"],
+    )
     historical_passed = bool(
         comparison["all_definition_identical_fields_passed"]
     )
@@ -1271,10 +1295,14 @@ def run_authorized_checkpoint_replay(
         "evaluator_result": evaluator_result,
         "historical_comparison": comparison,
         "gate": {
-            "expected_structural_negative_control_collapse": expected[
+            "classification_field": V2_COLLAPSE_FIELD,
+            "expected_structural_negative_control_collapse_v2": expected[
                 "expected_collapse"
             ],
-            "observed_structural_negative_control_collapse": collapse,
+            "observed_structural_negative_control_collapse_v2": collapse,
+            "observed_legacy_v1_all_channel_structural_negative_control_collapse": (
+                legacy_v1_collapse
+            ),
             "classification_passed": classification_passed,
             "historical_245_record_comparison_passed": historical_passed,
             "passed": gate_passed,

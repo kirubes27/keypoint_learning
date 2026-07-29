@@ -1,0 +1,85 @@
+{
+  "schema_version": "representation-oracle-planted-case-v2",
+  "case_id": "below_minimum_nonflat_void",
+  "case_kind": "planted",
+  "group": "structural_collapse_v2",
+  "semantic_role": "evidence_void",
+  "execution": {
+    "entrypoint": "keypoint_net.eval_representation.evaluate_bundle",
+    "expected_disposition": "result",
+    "expected_error_code": null
+  },
+  "construction": {
+    "builder_id": "task20_collapse_v2_pattern",
+    "parameters": {
+      "pattern": "below_minimum_nonflat_void",
+      "resolution": 8
+    }
+  },
+  "expectations": {
+    "expected_critical_failures": [],
+    "assertions": [
+      {
+        "json_pointer": "/schema_version",
+        "comparator": "exact",
+        "expected": "representation-evaluation-result-v2"
+      },
+      {
+        "json_pointer": "/channel_health/heatmap_flat_dead_count",
+        "comparator": "exact",
+        "expected": 3
+      },
+      {
+        "json_pointer": "/collapse_evidence/confirmed_flat_dead_channel_indices",
+        "comparator": "exact",
+        "expected": [1, 2, 3]
+      },
+      {
+        "json_pointer": "/collapse_evidence/channels_not_confirmed_flat_dead_indices",
+        "comparator": "exact",
+        "expected": [0]
+      },
+      {
+        "json_pointer": "/collapse_evidence/channels_not_confirmed_flat_dead_count",
+        "comparator": "exact",
+        "expected": 1
+      },
+      {
+        "json_pointer": "/collapse_evidence/minimum_channels_not_confirmed_flat_dead",
+        "comparator": "exact",
+        "expected": 2
+      },
+      {
+        "json_pointer": "/collapse_evidence/structural_negative_control_collapse",
+        "comparator": "exact",
+        "expected": false
+      },
+      {
+        "json_pointer": "/collapse_evidence/structural_negative_control_collapse_v2_excluding_confirmed_flat_dead",
+        "comparator": "exact",
+        "expected": null
+      },
+      {
+        "json_pointer": "/collapse_evidence/structural_negative_control_status_v2_excluding_confirmed_flat_dead",
+        "comparator": "exact",
+        "expected": "void_below_minimum_channels_not_confirmed_flat_dead"
+      },
+      {
+        "json_pointer": "/trajectory_separation/channels_not_confirmed_flat_dead_metric_void",
+        "comparator": "exact",
+        "expected": true
+      },
+      {
+        "json_pointer": "/trajectory_separation/channels_not_confirmed_flat_dead",
+        "comparator": "exact",
+        "expected": null
+      }
+    ],
+    "forbidden_pointers": [
+      "/rollout/full_corpus_identity_normalized_auc",
+      "/rollout/role_scoped_holdout_identity_normalized_auc",
+      "/rollout/closure"
+    ]
+  },
+  "content_hash_sha256": "25db2c3fc2dc8f1f21599960be73aac52f00d240dcffff4c8ace5166fdb54c56"
+}

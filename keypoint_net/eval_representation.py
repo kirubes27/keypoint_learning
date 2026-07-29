@@ -23,6 +23,7 @@ import hashlib
 import importlib
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -33,7 +34,7 @@ from keypoint_net import representation_array_codec as array_codec
 
 
 BUNDLE_SCHEMA_VERSION = "representation-evaluation-bundle-v1"
-RESULT_SCHEMA_VERSION = "representation-evaluation-result-v1"
+RESULT_SCHEMA_VERSION = "representation-evaluation-result-v2"
 SUPPORTED_FAMILIES = {"roll", "translation", "scale", "yaw", "pitch"}
 HEX_DIGITS = frozenset("0123456789abcdef")
 AUTHORITATIVE_NUMERIC_REGISTRY_RELATIVE_PATH = Path(
@@ -119,6 +120,10 @@ _LOADED_EVALUATOR_SOURCE_DIGEST = (
         Path(__file__).absolute(),
     )
 )
+_LOADED_ARRAY_CODEC_SOURCE_DIGEST = {
+    "absolute_path": str(Path(array_codec.__file__).resolve(strict=True)),
+    "sha256": str(array_codec.__representation_import_sha256__),
+}
 __representation_import_sha256__ = _LOADED_EVALUATOR_SOURCE_DIGEST["sha256"]
 
 
@@ -200,7 +205,60 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _production_loaded_source_digests() -> dict[str, dict[str, str]]:
+def _active_planted_harness_digest(
+    record: Mapping[str, Any],
+) -> dict[str, str]:
+    committed = record.get("committed_files")
+    _require(
+        isinstance(committed, list),
+        "planted provenance committed_files must be a list",
+    )
+    harness_records = [
+        item
+        for item in committed
+        if isinstance(item, Mapping)
+        and item.get("role") == "oracle_harness_source"
+    ]
+    _require(
+        len(harness_records) == 1,
+        "planted provenance must bind exactly one oracle harness",
+    )
+    relative_path = harness_records[0].get("repo_relative_path")
+    _require(
+        isinstance(relative_path, str) and bool(relative_path),
+        "planted oracle harness path is invalid",
+    )
+    expected_path = (
+        Path(__file__).resolve().parents[1] / relative_path
+    ).resolve(strict=True)
+    matches: set[tuple[str, str]] = set()
+    for module in tuple(sys.modules.values()):
+        captured = getattr(module, "_LOADED_HARNESS_SOURCE_DIGEST", None)
+        if not isinstance(captured, Mapping):
+            continue
+        path_value = captured.get("absolute_path")
+        digest = captured.get("sha256")
+        if not isinstance(path_value, str) or not isinstance(digest, str):
+            continue
+        try:
+            loaded_path = Path(path_value).resolve(strict=True)
+        except OSError:
+            continue
+        if loaded_path == expected_path:
+            matches.add((str(loaded_path), digest))
+    _require(
+        len(matches) == 1,
+        "the exact planted oracle harness lacks one import-time digest",
+    )
+    path_value, digest = next(iter(matches))
+    return {"absolute_path": path_value, "sha256": digest}
+
+
+def _production_loaded_source_digests(
+    record: Mapping[str, Any],
+    *,
+    case_kind: str,
+) -> dict[str, dict[str, str]]:
     """Return only sources whose import-time bytes are actually captured.
 
     The strict provenance helper separately checks the adapter, harness, and
@@ -208,7 +266,15 @@ def _production_loaded_source_digests() -> dict[str, dict[str, str]]:
     ``loaded_sources`` merely because their files exist on disk.
     """
 
-    return {"evaluator_source": dict(_LOADED_EVALUATOR_SOURCE_DIGEST)}
+    loaded = {
+        "evaluator_source": dict(_LOADED_EVALUATOR_SOURCE_DIGEST),
+        "array_codec_source": dict(_LOADED_ARRAY_CODEC_SOURCE_DIGEST),
+    }
+    if case_kind == "planted":
+        loaded["oracle_harness_source"] = _active_planted_harness_digest(
+            record
+        )
+    return loaded
 
 
 def _validate_production_provenance(
@@ -230,7 +296,10 @@ def _validate_production_provenance(
             record,
             case_kind=case_kind,
             fit_from_pairs=fit_from_pairs,
-            loaded_source_digests=_production_loaded_source_digests(),
+            loaded_source_digests=_production_loaded_source_digests(
+                record,
+                case_kind=case_kind,
+            ),
             checkpoint_provenance_load_receipt=(
                 checkpoint_provenance_load_receipt
             ),
@@ -3670,6 +3739,29 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
         if len(eligible_indices) >= minimum_eligible
         else None
     )
+    flat_dead_indices = [
+        int(row["channel"])
+        for row in health["channels"]
+        if row["heatmap_flat_dead"] is True
+    ]
+    channels_not_confirmed_flat_dead_indices = [
+        int(row["channel"])
+        for row in health["channels"]
+        if row["heatmap_flat_dead"] is not True
+    ]
+    channels_not_confirmed_flat_dead_metric = (
+        _pairwise_representation(
+            evaluation_points,
+            evaluation_bbox,
+            evaluation_visibility,
+            evaluation_frame_ids,
+            channels_not_confirmed_flat_dead_indices,
+            cyclic=bool(bundle["transform"]["cyclic"]),
+            thresholds=thresholds,
+        )
+        if len(channels_not_confirmed_flat_dead_indices) >= minimum_eligible
+        else None
+    )
 
     operator = _operator_metrics(
         normalized["family"],
@@ -3759,6 +3851,19 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
             "eligible_metric_void": eligible_metric is None,
             "all_channels": all_channel,
             "eligible_active_on_object": eligible_metric,
+            "channels_not_confirmed_flat_dead_count": len(
+                channels_not_confirmed_flat_dead_indices
+            ),
+            "channels_not_confirmed_flat_dead_indices": (
+                channels_not_confirmed_flat_dead_indices
+            ),
+            "confirmed_flat_dead_channel_indices": flat_dead_indices,
+            "channels_not_confirmed_flat_dead_metric_void": (
+                channels_not_confirmed_flat_dead_metric is None
+            ),
+            "channels_not_confirmed_flat_dead": (
+                channels_not_confirmed_flat_dead_metric
+            ),
         },
         "switching": _switching(
             evaluation_points,
@@ -3835,6 +3940,34 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
             "persistent_duplicate_category"
         ),
         "structural_negative_control_is_coincidence_trigger": False,
+        "structural_negative_control_collapse_v2_excluding_confirmed_flat_dead": (
+            bool(
+                channels_not_confirmed_flat_dead_metric[
+                    "all_pairs_persistent_duplicate"
+                ]
+            )
+            if channels_not_confirmed_flat_dead_metric is not None
+            else None
+        ),
+        "structural_negative_control_definition_v2_excluding_confirmed_flat_dead": (
+            "after_excluding_only_channels_with_heatmap_flat_dead_true_"
+            "at_least_minimum_eligible_channels_remain_and_every_possible_"
+            "retained_pair_is_evaluable_and_has_the_frozen_persistent_"
+            "duplicate_category"
+        ),
+        "structural_negative_control_status_v2_excluding_confirmed_flat_dead": (
+            "available"
+            if channels_not_confirmed_flat_dead_metric is not None
+            else "void_below_minimum_channels_not_confirmed_flat_dead"
+        ),
+        "channels_not_confirmed_flat_dead_indices": (
+            channels_not_confirmed_flat_dead_indices
+        ),
+        "confirmed_flat_dead_channel_indices": flat_dead_indices,
+        "channels_not_confirmed_flat_dead_count": len(
+            channels_not_confirmed_flat_dead_indices
+        ),
+        "minimum_channels_not_confirmed_flat_dead": minimum_eligible,
         "all_pairs_persistent_duplicate": all_channel["all_pairs_persistent_duplicate"],
         "persistent_duplicate_pair_rate": all_channel["persistent_duplicate_pair_rate"],
         "trajectory_median_nearest_neighbour_objdiag": all_channel[

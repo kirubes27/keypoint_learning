@@ -57,7 +57,7 @@ PRIMARY_GROUPS = _split_validator.PRIMARY_GROUPS
 validate_source_pair_document = _split_validator.validate_source_pair_document
 
 
-RUNTIME_SCHEMA_VERSION = "representation_checkpoint_runtime_sources.v1"
+RUNTIME_SCHEMA_VERSION = "representation_checkpoint_runtime_sources.v2"
 PAIR_SCHEMA_VERSION = "representation_checkpoint_replay_pair_index.v1"
 FRAME_MASK_SCHEMA_VERSION = (
     "representation_checkpoint_replay_frame_mask_inventory.v1"
@@ -79,7 +79,7 @@ OBJECT_ID = "engineers_hammer_vray"
 FRAME_COUNT = 180
 
 MANIFEST_FILENAMES = {
-    "runtime_source": "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v1.json",
+    "runtime_source": "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v2.json",
     "pair_index": "HAMMER_ROLL_PAIR_INDEX_MANIFEST_v1.json",
     "frame_mask": "HAMMER_ROLL_FRAME_MASK_INVENTORY_v1.json",
     "metadata": "HAMMER_ROLL_METADATA_MANIFEST_v1.json",
@@ -187,6 +187,7 @@ RUNTIME_EXECUTION_BOUNDARY = {
     "model_eval": True,
     "inference_mode": True,
     "task_ids": [20, 55, 80],
+    "task55_and_80_require_immutable_task20_v1_audit": True,
     "training_or_weight_update_authorized": False,
     "selection_use_authorized": False,
 }
@@ -1472,7 +1473,7 @@ def write_checkpoint_replay_manifests(
     *,
     repo_root: str | os.PathLike[str] | None = None,
 ) -> dict[str, str]:
-    """Write only the four named replay manifests; never touch other files."""
+    """Create absent manifests exclusively and byte-check existing artifacts."""
 
     root = (
         Path(repo_root)
@@ -1487,12 +1488,59 @@ def write_checkpoint_replay_manifests(
         root / Path(*REPLAY_DIRECTORY_RELPATH.parts)
     ).resolve(strict=True)
     encoded = encoded_manifest_documents(documents)
-    written: dict[str, str] = {}
+    return _create_absent_or_verify_existing_manifests(
+        output_directory=output_directory,
+        encoded=encoded,
+    )
+
+
+def _create_absent_or_verify_existing_manifests(
+    *,
+    output_directory: Path,
+    encoded: Mapping[str, bytes],
+) -> dict[str, str]:
+    """Never rewrite an existing manifest, even when its bytes are identical."""
+
+    verified: dict[str, str] = {}
     for filename in sorted(encoded):
         path = output_directory / filename
-        path.write_bytes(encoded[filename])
-        written[filename] = hashlib.sha256(encoded[filename]).hexdigest()
-    return written
+        expected = encoded[filename]
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                descriptor = os.open(path, flags, 0o644)
+            except OSError as exc:
+                raise CheckpointReplayManifestError(
+                    f"cannot exclusively create replay manifest: {filename}"
+                ) from exc
+            try:
+                written = 0
+                while written < len(expected):
+                    written += os.write(descriptor, expected[written:])
+            finally:
+                os.close(descriptor)
+        except OSError as exc:
+            raise CheckpointReplayManifestError(
+                f"cannot inspect existing replay manifest: {filename}"
+            ) from exc
+        else:
+            _require(
+                stat.S_ISREG(metadata.st_mode)
+                and not stat.S_ISLNK(metadata.st_mode),
+                "existing replay manifest is not a regular non-symlink file: "
+                f"{filename}",
+            )
+            actual = path.read_bytes()
+            _require(
+                actual == expected,
+                f"refusing to overwrite differing replay manifest: {filename}",
+            )
+        verified[filename] = hashlib.sha256(expected).hexdigest()
+    return verified
 
 
 def check_checked_in_manifests(
@@ -1553,7 +1601,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         json.dumps(
             {
                 "status": (
-                    "checkpoint_blind_replay_manifests_written"
+                    "checkpoint_blind_replay_manifests_created_or_verified_"
+                    "without_overwrite"
                     if arguments.write
                     else "checkpoint_blind_replay_manifests_verified"
                 ),

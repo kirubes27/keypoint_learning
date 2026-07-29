@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -87,6 +88,8 @@ class RepresentationEvaluationProvenanceTests(unittest.TestCase):
         case_kind: str = "planted",
         fit_from_pairs: bool = False,
         symlink_role: str | None = None,
+        planted_profile: str = "v1",
+        planted_profile_overrides: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         repo = Path(
             tempfile.mkdtemp(
@@ -104,16 +107,31 @@ class RepresentationEvaluationProvenanceTests(unittest.TestCase):
         )
         paths_by_role: dict[str, Path] = {}
         relative_by_role: dict[str, str] = {}
+        profile_overrides = planted_profile_overrides or {}
         for role in sorted(committed_roles):
-            relative = (
-                provenance.CORE_ROLE_PATHS.get(role)
-                or provenance.FIXED_ROLE_PATHS.get(role)
-                or (
-                    provenance.ROLE_PATH_PREFIXES[role] + f"{role}.json"
-                    if role in provenance.ROLE_PATH_PREFIXES
-                    else f"evidence/{role}.json"
+            role_profile = profile_overrides.get(role, planted_profile)
+            profile_paths = provenance.PLANTED_PROFILE_PATHS[role_profile]
+            if role in {"oracle_harness_source", "oracle_case_manifest"}:
+                relative = profile_paths[role]
+            elif role == "planted_case_definition":
+                relative = (
+                    provenance._TASK20_COLLAPSE_V2_CASE_PATHS[0]
+                    if role_profile == "task20_collapse_v2"
+                    else (
+                        profile_paths["planted_case_definition_prefix"]
+                        + f"{role}.json"
+                    )
                 )
-            )
+            else:
+                relative = (
+                    provenance.CORE_ROLE_PATHS.get(role)
+                    or provenance.FIXED_ROLE_PATHS.get(role)
+                    or (
+                        provenance.ROLE_PATH_PREFIXES[role] + f"{role}.json"
+                        if role in provenance.ROLE_PATH_PREFIXES
+                        else f"evidence/{role}.json"
+                    )
+                )
             path = repo.joinpath(*Path(relative).parts)
             path.parent.mkdir(parents=True, exist_ok=True)
             if role == symlink_role:
@@ -124,6 +142,60 @@ class RepresentationEvaluationProvenanceTests(unittest.TestCase):
                 path.write_bytes(f"fixture bytes for {role}\n".encode("utf-8"))
             paths_by_role[role] = path
             relative_by_role[role] = relative
+
+        if case_kind == "planted" and planted_profile == "task20_collapse_v2":
+            profile_paths = provenance.PLANTED_PROFILE_PATHS[
+                "task20_collapse_v2"
+            ]
+            entries: list[dict[str, str]] = []
+            for index, relative in enumerate(
+                provenance._TASK20_COLLAPSE_V2_CASE_PATHS
+            ):
+                path = repo.joinpath(*Path(relative).parts)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                payload = (
+                    json.dumps(
+                        {"case_id": f"unit_case_{index}"},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                path.write_bytes(payload)
+                entries.append(
+                    {
+                        "case_id": f"unit_case_{index}",
+                        "relative_path": relative,
+                        "file_sha256": hashlib.sha256(payload).hexdigest(),
+                        "content_hash_sha256": "0" * 64,
+                        "expected_evaluation_config_sha256": "1" * 64,
+                    }
+                )
+            manifest_payload = {
+                "schema_version": (
+                    "representation-oracle-case-manifest-v2"
+                ),
+                "ordered_case_definitions": entries,
+            }
+            manifest_payload["content_hash_sha256"] = hashlib.sha256(
+                json.dumps(
+                    manifest_payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            manifest_path = paths_by_role["oracle_case_manifest"]
+            manifest_path.write_text(
+                json.dumps(
+                    manifest_payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
         _git(repo, "add", "--all")
         _git(repo, "commit", "-q", "-m", "fixture provenance sources")
@@ -171,7 +243,7 @@ class RepresentationEvaluationProvenanceTests(unittest.TestCase):
                 role,
                 paths_by_role[role].absolute(),
             )
-            for role in provenance.LOADED_SOURCE_ROLES
+            for role in provenance.required_loaded_source_roles(case_kind)
         }
         provenance_loaded_source = provenance.capture_loaded_source_digest(
             "provenance_source",
@@ -219,6 +291,130 @@ class RepresentationEvaluationProvenanceTests(unittest.TestCase):
         self.assertEqual(result["source_commit"], fixture["bundle"]["source_commit"])
         self.assertEqual(result["case_kind"], "planted")
         self.assertEqual(result["external_files"], [])
+
+    def test_valid_exact_task20_collapse_v2_planted_profile(self) -> None:
+        fixture = self._fixture(planted_profile="task20_collapse_v2")
+        result = self._validate(fixture)
+        self.assertTrue(result["source_commit_verified"])
+        self.assertEqual(result["case_kind"], "planted")
+        self.assertEqual(result["external_files"], [])
+
+    def test_v2_profile_rejects_committed_case_not_listed_by_manifest(
+        self,
+    ) -> None:
+        fixture = self._fixture(planted_profile="task20_collapse_v2")
+        prefix = provenance.PLANTED_PROFILE_PATHS[
+            "task20_collapse_v2"
+        ]["planted_case_definition_prefix"]
+        relative = prefix + "unlisted_case.json"
+        path = fixture["repo"].joinpath(*Path(relative).parts)
+        path.write_bytes(b'{"case_id":"unlisted_case"}\n')
+        _git(fixture["repo"], "add", relative)
+        _git(fixture["repo"], "commit", "-q", "-m", "add unlisted case")
+        fixture["bundle"]["source_commit"] = _git(
+            fixture["repo"],
+            "rev-parse",
+            "HEAD",
+        )
+        record = _record_for_role(
+            fixture["bundle"],
+            "planted_case_definition",
+        )
+        record["repo_relative_path"] = relative
+        record["file_sha256"] = _sha256(path)
+        with self.assertRaisesRegex(
+            provenance.ProvenanceContractError,
+            "not exactly one manifest member",
+        ):
+            self._validate(fixture)
+
+    def test_v2_profile_rejects_manifest_member_hash_mismatch(self) -> None:
+        fixture = self._fixture(planted_profile="task20_collapse_v2")
+        manifest_path = fixture["paths_by_role"]["oracle_case_manifest"]
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["ordered_case_definitions"][0]["file_sha256"] = "f" * 64
+        manifest.pop("content_hash_sha256")
+        manifest["content_hash_sha256"] = hashlib.sha256(
+            json.dumps(
+                manifest,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        manifest_path.write_text(
+            json.dumps(
+                manifest,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        _git(fixture["repo"], "add", str(manifest_path))
+        _git(fixture["repo"], "commit", "-q", "-m", "mutate member hash")
+        fixture["bundle"]["source_commit"] = _git(
+            fixture["repo"],
+            "rev-parse",
+            "HEAD",
+        )
+        manifest_record = _record_for_role(
+            fixture["bundle"],
+            "oracle_case_manifest",
+        )
+        manifest_record["file_sha256"] = _sha256(manifest_path)
+        with self.assertRaisesRegex(
+            provenance.ProvenanceContractError,
+            "bytes/hash mismatch",
+        ):
+            self._validate(fixture)
+
+    def test_mixed_planted_harness_and_manifest_profiles_are_rejected(
+        self,
+    ) -> None:
+        for overrides in (
+            {"oracle_harness_source": "task20_collapse_v2"},
+            {"oracle_case_manifest": "task20_collapse_v2"},
+        ):
+            with self.subTest(overrides=overrides):
+                fixture = self._fixture(
+                    planted_profile="v1",
+                    planted_profile_overrides=overrides,
+                )
+                with self.assertRaisesRegex(
+                    provenance.ProvenanceContractError,
+                    "do not form one allowed planted profile",
+                ):
+                    self._validate(fixture)
+
+    def test_v2_profile_rejects_v1_case_definition_prefix(self) -> None:
+        fixture = self._fixture(
+            planted_profile="task20_collapse_v2",
+            planted_profile_overrides={
+                "planted_case_definition": "v1",
+            },
+        )
+        with self.assertRaisesRegex(
+            provenance.ProvenanceContractError,
+            "role planted_case_definition must use one JSON file below",
+        ):
+            self._validate(fixture)
+
+    def test_v2_planted_profile_is_forbidden_for_dataset_and_checkpoint(
+        self,
+    ) -> None:
+        for case_kind in ("dataset", "checkpoint"):
+            with self.subTest(case_kind=case_kind):
+                fixture = self._fixture(
+                    case_kind=case_kind,
+                    planted_profile="task20_collapse_v2",
+                )
+                with self.assertRaisesRegex(
+                    provenance.ProvenanceContractError,
+                    "planted profile is forbidden",
+                ):
+                    self._validate(fixture)
 
     def test_deadbee_is_rejected(self) -> None:
         fixture = self._fixture()

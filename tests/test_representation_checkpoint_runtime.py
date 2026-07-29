@@ -68,6 +68,16 @@ def _runtime_authorization(
         task20_gate_source_commit=(
             REVIEWED_COMMIT if task20_bound else None
         ),
+        task20_v1_audit_file_sha256=(
+            authorization.TASK20_V1_RESULT_FILE_SHA256
+            if task20_bound
+            else None
+        ),
+        task20_v1_audit_content_hash_sha256=(
+            authorization.TASK20_V1_RESULT_CONTENT_HASH_SHA256
+            if task20_bound
+            else None
+        ),
         _capability=authorization._VERIFIED_RUNTIME_CAPABILITY,
     )
 
@@ -285,7 +295,7 @@ def _review_authorization() -> dict:
 
 def _task20_result_document(
     *,
-    collapse: bool = True,
+    collapse: bool | None = True,
     historical_passed: bool = True,
 ) -> tuple[dict, dict, bytes]:
     source_bytes = b"reviewed source bytes\n"
@@ -299,27 +309,102 @@ def _task20_result_document(
     }
     loaded_sources = {
         role: {
-            "module": f"fixture.{role}",
+            "module": ".".join(
+                Path(dict(authorization._EXPECTED_RUNTIME_SOURCES)[role])
+                .with_suffix("")
+                .parts
+            ),
             "absolute_path": record["absolute_path"],
             "import_time_sha256": source_sha256,
         }
         for role, record in manifest_sources.items()
     }
-    runtime = _runtime_authorization(task_id=20)
+    runtime_receipt = _runtime_authorization(task_id=20)
+    retained_indices = [0, 1, 2, 3, 4, 5, 6, 7, 9]
     evaluator_result = {
+        "schema_version": "representation-evaluation-result-v2",
+        "case_id": runtime_receipt.fixture_id,
+        "case_kind": "checkpoint",
+        "bundle_content_sha256": "c" * 64,
+        "checkpoint_authorization": {
+            "checkpoint_evaluation_authorized": True,
+            "source_commit": SOURCE_COMMIT,
+            "task_id": 20,
+            "fixture_id": runtime_receipt.fixture_id,
+            "checkpoint_sha256": runtime_receipt.checkpoint_sha256,
+            "runtime_source_manifest_file_sha256": RUNTIME_MANIFEST_SHA256,
+            "checkpoint_hash_preflight_file_sha256": PREFLIGHT_SHA256,
+            "training_or_weight_update_authorized": False,
+            "selection_use_authorized": False,
+        },
+        "validated_checkpoint": {
+            "absolute_path": runtime_receipt.checkpoint_absolute_path,
+            "sha256": runtime_receipt.checkpoint_sha256,
+            "size_bytes": runtime_receipt.checkpoint_size_bytes,
+        },
+        "provenance": {
+            "source_commit": SOURCE_COMMIT,
+            "case_kind": "checkpoint",
+        },
+        "stratum": {
+            "object_id": "engineers_hammer_vray",
+            "seed": 42,
+            "partition": "full_corpus",
+            "transform_family": "roll",
+            "direction": "forward",
+            "stride": 3,
+        },
+        "channel_health": {
+            "channels": [
+                {
+                    "channel": channel,
+                    "heatmap_flat_dead": channel == 8,
+                }
+                for channel in range(10)
+            ],
+        },
+        "trajectory_separation": {
+            "channels_not_confirmed_flat_dead_count": 9,
+            "channels_not_confirmed_flat_dead_indices": retained_indices,
+            "confirmed_flat_dead_channel_indices": [8],
+            "channels_not_confirmed_flat_dead_metric_void": False,
+            "channels_not_confirmed_flat_dead": {
+                "channel_indices": retained_indices,
+                "pair_count": 36,
+                "evaluable_pair_count": 36,
+                "void_pair_count": 0,
+                "all_pairs_persistent_duplicate": collapse is True,
+                "category_counts": {
+                    "persistent_duplicate": 36 if collapse is True else 35,
+                    "recurrent_close_pair": 0,
+                    "transient_crossing": 0,
+                    "clustered_pair": 0,
+                    "separate_pair": 0 if collapse is True else 1,
+                    "void_no_joint_visibility": 0,
+                },
+            },
+        },
         "collapse_evidence": {
-            "structural_negative_control_collapse": collapse,
-        }
+            "structural_negative_control_collapse": False,
+            authorization.V2_COLLAPSE_FIELD: collapse,
+            (
+                "structural_negative_control_status_v2_"
+                "excluding_confirmed_flat_dead"
+            ): "available" if collapse is not None else (
+                "void_below_minimum_channels_not_confirmed_flat_dead"
+            ),
+            "confirmed_flat_dead_channel_indices": [8],
+            "channels_not_confirmed_flat_dead_indices": retained_indices,
+            "channels_not_confirmed_flat_dead_count": 9,
+            "minimum_channels_not_confirmed_flat_dead": 2,
+        },
     }
-    evaluator_result["result_content_sha256"] = hashlib.sha256(
-        authorization._canonical_json_bytes(evaluator_result)
-    ).hexdigest()
     result = {
-        "schema_version": "representation_checkpoint_replay_result.v1",
+        "schema_version": "representation_checkpoint_replay_result.v2",
         "artifact_type": "representation_checkpoint_replay_result",
         "task_id": 20,
-        "fixture_id": runtime.fixture_id,
-        "fixture_role": runtime.role,
+        "fixture_id": runtime_receipt.fixture_id,
+        "fixture_role": runtime_receipt.role,
         "source_commit": SOURCE_COMMIT,
         "candidate_eligibility": "forbidden",
         "execution_boundary": {
@@ -333,7 +418,7 @@ def _task20_result_document(
         },
         "environment": {},
         "architecture": {},
-        "checkpoint": _checkpoint_load_record(runtime),
+        "checkpoint": _checkpoint_load_record(runtime_receipt),
         "live_inputs": {},
         "inference": _inference_record(),
         "loaded_source_digests": loaded_sources,
@@ -341,28 +426,147 @@ def _task20_result_document(
         "evaluator_result": evaluator_result,
         "historical_comparison": {
             "frozen_record_count": 245,
+            "passed_record_count": 245 if historical_passed else 244,
             "failed_record_count": 0 if historical_passed else 1,
             "all_definition_identical_fields_passed": historical_passed,
         },
         "gate": {
-            "expected_structural_negative_control_collapse": True,
-            "observed_structural_negative_control_collapse": collapse,
-            "classification_passed": collapse,
+            "classification_field": authorization.V2_COLLAPSE_FIELD,
+            "expected_structural_negative_control_collapse_v2": True,
+            "observed_structural_negative_control_collapse_v2": collapse,
+            "observed_legacy_v1_all_channel_structural_negative_control_collapse": (
+                False
+            ),
+            "classification_passed": collapse is True,
             "historical_245_record_comparison_passed": historical_passed,
-            "passed": collapse and historical_passed,
-            "next_task_authorized": collapse and historical_passed,
+            "passed": collapse is True and historical_passed,
+            "next_task_authorized": collapse is True and historical_passed,
         },
     }
-    result["content_hash_sha256"] = hashlib.sha256(
-        authorization._canonical_json_bytes(result)
-    ).hexdigest()
-    data = authorization._canonical_json_bytes(result) + b"\n"
+    data = _encode_task20_result(result)
     manifest = {
         "file_sha256": RUNTIME_MANIFEST_SHA256,
         "content_hash_sha256": RUNTIME_MANIFEST_CONTENT_SHA256,
         "sources": manifest_sources,
     }
     return result, manifest, data
+
+
+def _encode_task20_result(result: dict) -> bytes:
+    evaluator_result = result["evaluator_result"]
+    evaluator_result.pop("result_content_sha256", None)
+    evaluator_result["result_content_sha256"] = hashlib.sha256(
+        authorization._canonical_json_bytes(evaluator_result)
+    ).hexdigest()
+    result.pop("content_hash_sha256", None)
+    result["content_hash_sha256"] = hashlib.sha256(
+        authorization._canonical_json_bytes(result)
+    ).hexdigest()
+    return authorization._canonical_json_bytes(result) + b"\n"
+
+
+def _planted_suite_document(
+    *,
+    review_data: bytes,
+    reviewed_fileset_sha256: str,
+    manifest_data: bytes,
+) -> tuple[dict, dict, bytes]:
+    manifest = authorization._strict_json(
+        manifest_data,
+        name="test oracle manifest",
+    )
+    cases = []
+    for case_id in authorization.TASK20_V2_ORACLE_CASE_IDS:
+        config_hash = "7" * 64
+        matrix_row = {"case_id": case_id}
+        cases.append(
+            {
+                "case_id": case_id,
+                "semantic_role": "test",
+                "disposition": "result",
+                "bundle_content_sha256": "8" * 64,
+                "result_content_sha256": "9" * 64,
+                "evaluation_config_sha256": config_hash,
+                "evaluation_config_hash_recheck": {
+                    "expected_sha256": config_hash,
+                    "declared_sha256": config_hash,
+                    "recomputed_sha256": config_hash,
+                    "passed": True,
+                },
+                "bundle_byte_deterministic": True,
+                "result_byte_deterministic": True,
+                "independent_literal_outcome_matrix_check": {
+                    "matrix_source": "test",
+                    "expected": matrix_row,
+                    "observed": matrix_row,
+                    "passed": True,
+                },
+                "assertions": [
+                    {
+                        "json_pointer": "/test",
+                        "comparator": "exact",
+                        "expected": True,
+                        "observed": True,
+                        "passed": True,
+                    }
+                ],
+            }
+        )
+    suite = {
+        "schema_version": "representation-oracle-planted-suite-result-v2",
+        "scope": "task20_structural_negative_control_collapse_v2_only",
+        "source_commit": REVIEWED_COMMIT,
+        "execution_commit": REVIEWED_COMMIT,
+        "fable_review_authority": {
+            "reviewed_candidate_commit": REVIEWED_COMMIT,
+            "execution_commit": REVIEWED_COMMIT,
+            "review_repo_relative_path": (
+                authorization.FABLE_EXECUTION_REVIEW_REPO_RELATIVE_PATH
+            ),
+            "review_file_sha256": hashlib.sha256(review_data).hexdigest(),
+            "reviewed_fileset_sha256": reviewed_fileset_sha256,
+            "verdict": "PASS_TO_RUN",
+        },
+        "output_attempt": "attempt_0001",
+        "manifest_file_sha256": hashlib.sha256(manifest_data).hexdigest(),
+        "manifest_content_hash_sha256": manifest["content_hash_sha256"],
+        "execution_environment": {
+            "python_implementation": "CPython",
+            "python_version": "3.10.19",
+            "numpy_version": "2.2.6",
+        },
+        "independent_outcome_matrix_sha256": (
+            authorization.TASK20_V2_INDEPENDENT_OUTCOME_MATRIX_SHA256
+        ),
+        "case_count": 7,
+        "cases": cases,
+        "dataset_or_checkpoint_opened": False,
+        "model_constructed": False,
+        "optimizer_constructed": False,
+        "training_run": False,
+        "v1_artifact_mutation_authorized": False,
+        "completion_status": "complete_suite_result_written_last",
+        "passed": True,
+        "statistical_scope": (
+            "deterministic_implementation_correctness_not_inference"
+        ),
+    }
+    suite["content_hash_sha256"] = hashlib.sha256(
+        authorization._canonical_json_bytes(suite)
+    ).hexdigest()
+    data = authorization._canonical_json_bytes(suite) + b"\n"
+    record = {
+        "repo_relative_path": (
+            authorization.TASK20_V2_ORACLE_RESULT_PREFIX
+            + REVIEWED_COMMIT
+            + "/attempt_0001/SUITE_RESULT.json"
+        ),
+        "file_sha256": hashlib.sha256(data).hexdigest(),
+        "content_hash_sha256": suite["content_hash_sha256"],
+        "case_count": 7,
+        "passed": True,
+    }
+    return suite, record, data
 
 
 class CheckpointAuthorizationRuntimeTests(TestCase):
@@ -383,6 +587,246 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
                 Path(authorization.__file__).absolute().read_bytes()
             ).hexdigest(),
         )
+
+    def test_v2_runtime_paths_cannot_reuse_or_overwrite_v1(self) -> None:
+        self.assertEqual(
+            runtime.RUNTIME_RESULT_SCHEMA_VERSION,
+            "representation_checkpoint_replay_result.v2",
+        )
+        self.assertEqual(
+            runtime.RESULT_FILENAMES,
+            {
+                20: "TASK20_CHECKPOINT_REPLAY_RESULT_v2.json",
+                55: "TASK55_CHECKPOINT_REPLAY_RESULT_v2.json",
+                80: "TASK80_CHECKPOINT_REPLAY_RESULT_v2.json",
+            },
+        )
+        repo_root = Path(runtime.__file__).resolve().parents[1]
+        old_v1_path = (
+            repo_root
+            / runtime.RESULT_DIRECTORY_REPO_RELATIVE_PATH
+            / "TASK20_CHECKPOINT_REPLAY_RESULT_v1.json"
+        )
+        with mock.patch.object(
+            runtime,
+            "_validate_environment_before_checkpoint",
+            side_effect=AssertionError(
+                "environment validation must not run for a forbidden output path"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                runtime.CheckpointRuntimeError,
+                "must use the frozen path",
+            ):
+                runtime.run_authorized_checkpoint_replay(
+                    task_id=20,
+                    output_path=old_v1_path,
+                    source_commit=SOURCE_COMMIT,
+                )
+
+    def test_null_cannot_match_either_expected_classification(self) -> None:
+        self.assertFalse(
+            runtime._classification_matches_expected(None, expected=True)
+        )
+        self.assertFalse(
+            runtime._classification_matches_expected(None, expected=False)
+        )
+        self.assertTrue(
+            runtime._classification_matches_expected(True, expected=True)
+        )
+        self.assertTrue(
+            runtime._classification_matches_expected(False, expected=False)
+        )
+        with self.assertRaisesRegex(
+            runtime.CheckpointRuntimeError,
+            "true, false, or null",
+        ):
+            runtime._classification_matches_expected(1, expected=True)
+
+    def test_reviewed_file_bytes_cannot_change_after_fable_review(self) -> None:
+        with mock.patch.object(
+            authorization,
+            "_git",
+            return_value=b"reviewed bytes\n",
+        ):
+            authorization._require_file_unchanged_since_review(
+                repo_root=Path("/repository"),
+                reviewed_candidate_commit=REVIEWED_COMMIT,
+                repo_relative_path="docs/semantic-lock.md",
+                current_data=b"reviewed bytes\n",
+                name="semantic amendment",
+            )
+            with self.assertRaisesRegex(
+                authorization.CheckpointAuthorizationError,
+                "changed after Fable review",
+            ):
+                authorization._require_file_unchanged_since_review(
+                    repo_root=Path("/repository"),
+                    reviewed_candidate_commit=REVIEWED_COMMIT,
+                    repo_relative_path="docs/semantic-lock.md",
+                    current_data=b"changed bytes\n",
+                    name="semantic amendment",
+                )
+
+    def test_fable_review_requires_one_exact_binding_for_every_gate(self) -> None:
+        values = {
+            "reviewed_candidate_commit": REVIEWED_COMMIT,
+            "runtime_source_manifest_file_sha256": RUNTIME_MANIFEST_SHA256,
+            "runtime_source_manifest_content_hash_sha256": (
+                RUNTIME_MANIFEST_CONTENT_SHA256
+            ),
+            "checkpoint_hash_preflight_file_sha256": PREFLIGHT_SHA256,
+            "semantic_lock_file_sha256": "1" * 64,
+            "decision_amendment_file_sha256": "2" * 64,
+            "task20_v2_oracle_harness_file_sha256": "3" * 64,
+            "task20_v2_oracle_manifest_file_sha256": "4" * 64,
+            "planted_v2_reviewed_fileset_sha256": "5" * 64,
+        }
+        review = "\n".join(
+            [
+                "Independent read-only report.",
+                (
+                    "FABLE_REVIEW_BINDING_SCHEMA: "
+                    + authorization.FABLE_REVIEW_BINDING_SCHEMA
+                ),
+                f"REVIEWED_CANDIDATE_COMMIT: {REVIEWED_COMMIT}",
+                (
+                    "RUNTIME_SOURCE_MANIFEST_FILE_SHA256: "
+                    f"{RUNTIME_MANIFEST_SHA256}"
+                ),
+                (
+                    "RUNTIME_SOURCE_MANIFEST_CONTENT_SHA256: "
+                    f"{RUNTIME_MANIFEST_CONTENT_SHA256}"
+                ),
+                f"CHECKPOINT_HASH_PREFLIGHT_FILE_SHA256: {PREFLIGHT_SHA256}",
+                f"TASK20_V2_SEMANTIC_LOCK_FILE_SHA256: {'1' * 64}",
+                (
+                    "DECISION_SYNTHESIS_V2_8_AMENDMENT_FILE_SHA256: "
+                    f"{'2' * 64}"
+                ),
+                f"TASK20_V2_ORACLE_HARNESS_FILE_SHA256: {'3' * 64}",
+                f"TASK20_V2_ORACLE_MANIFEST_FILE_SHA256: {'4' * 64}",
+                f"PLANTED_V2_REVIEWED_FILESET_SHA256: {'5' * 64}",
+                (
+                    "IMMUTABLE_TASK20_V1_FILE_SHA256: "
+                    f"{authorization.TASK20_V1_RESULT_FILE_SHA256}"
+                ),
+                "MODEL: fable",
+                "EFFORT: high",
+                "PERMISSION_MODE: read_only",
+                "SESSION_PERSISTENCE: false",
+                "VERDICT: PASS_TO_RUN",
+                "UNRESOLVED_P0_COUNT: 0",
+                "UNRESOLVED_P1_COUNT: 0",
+                "",
+            ]
+        ).encode("utf-8")
+        authorization._validate_fable_review_binding(
+            review_data=review,
+            **values,
+        )
+
+        for name, broken in (
+            (
+                "substring-only verdict",
+                review.replace(
+                    b"VERDICT: PASS_TO_RUN",
+                    b"VERDICT: STOP; narrative mentions PASS_TO_RUN",
+                ),
+            ),
+            (
+                "duplicate marker",
+                review + b"MODEL: fable\n",
+            ),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaises(
+                    authorization.CheckpointAuthorizationError
+                ):
+                    authorization._validate_fable_review_binding(
+                        review_data=broken,
+                        **values,
+                    )
+
+    def test_planted_suite_must_be_complete_and_independently_passed(
+        self,
+    ) -> None:
+        review_data = b"committed Fable review\n"
+        fileset_sha256 = "a" * 64
+        manifest_data = authorization._canonical_json_bytes(
+            {"content_hash_sha256": "b" * 64}
+        ) + b"\n"
+        suite, record, data = _planted_suite_document(
+            review_data=review_data,
+            reviewed_fileset_sha256=fileset_sha256,
+            manifest_data=manifest_data,
+        )
+        reviewed_files = {
+            authorization.TASK20_V2_ORACLE_MANIFEST_REPO_RELATIVE_PATH: (
+                manifest_data
+            )
+        }
+        with mock.patch.object(
+            authorization,
+            "_committed_working_file",
+            return_value=(Path("/repository/SUITE_RESULT.json"), data),
+        ), mock.patch.object(
+            authorization,
+            "_git",
+            return_value=b"",
+        ):
+            receipt = authorization._validate_committed_task20_v2_planted_suite(
+                repo_root=Path("/repository"),
+                source_commit=SOURCE_COMMIT,
+                record=record,
+                reviewed_candidate_commit=REVIEWED_COMMIT,
+                review_data=review_data,
+                reviewed_fileset_sha256=fileset_sha256,
+                reviewed_files=reviewed_files,
+            )
+        self.assertEqual(receipt["file_sha256"], hashlib.sha256(data).hexdigest())
+
+        broken = copy.deepcopy(suite)
+        broken["cases"][2][
+            "independent_literal_outcome_matrix_check"
+        ]["passed"] = False
+        broken.pop("content_hash_sha256")
+        broken["content_hash_sha256"] = hashlib.sha256(
+            authorization._canonical_json_bytes(broken)
+        ).hexdigest()
+        broken_data = authorization._canonical_json_bytes(broken) + b"\n"
+        broken_record = dict(record)
+        broken_record["file_sha256"] = hashlib.sha256(
+            broken_data
+        ).hexdigest()
+        broken_record["content_hash_sha256"] = broken[
+            "content_hash_sha256"
+        ]
+        with mock.patch.object(
+            authorization,
+            "_committed_working_file",
+            return_value=(
+                Path("/repository/SUITE_RESULT.json"),
+                broken_data,
+            ),
+        ), mock.patch.object(
+            authorization,
+            "_git",
+            return_value=b"",
+        ):
+            with self.assertRaisesRegex(
+                authorization.CheckpointAuthorizationError,
+                "independent matrix check failed",
+            ):
+                authorization._validate_committed_task20_v2_planted_suite(
+                    repo_root=Path("/repository"),
+                    source_commit=SOURCE_COMMIT,
+                    record=broken_record,
+                    reviewed_candidate_commit=REVIEWED_COMMIT,
+                    review_data=review_data,
+                    reviewed_fileset_sha256=fileset_sha256,
+                    reviewed_files=reviewed_files,
+                )
 
     def test_synthetic_checkpoint_safe_load_and_legacy_architecture_smoke(
         self,
@@ -631,37 +1075,184 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
             "_git",
             side_effect=fake_git,
         ):
-            receipt = authorization._validate_committed_task20_result(
+            receipt = authorization._validate_committed_task20_v2_result(
                 repo_root=Path("/repository"),
                 source_commit=SOURCE_COMMIT,
                 runtime_source_manifest=manifest,
+                checkpoint_hash_preflight_file_sha256=PREFLIGHT_SHA256,
             )
         self.assertEqual(
             receipt["file_sha256"],
             hashlib.sha256(data).hexdigest(),
         )
 
-        _failed, failed_manifest, failed_data = _task20_result_document(
-            collapse=False
+        for failed_collapse in (False, None):
+            with self.subTest(collapse=failed_collapse):
+                (
+                    _failed,
+                    failed_manifest,
+                    failed_data,
+                ) = _task20_result_document(collapse=failed_collapse)
+                with mock.patch.object(
+                    authorization,
+                    "_committed_working_file",
+                    return_value=(
+                        Path("/repository/task20.json"),
+                        failed_data,
+                    ),
+                ), mock.patch.object(
+                    authorization,
+                    "_git",
+                    side_effect=fake_git,
+                ):
+                    with self.assertRaisesRegex(
+                        authorization.CheckpointAuthorizationError,
+                        "structural collapse flag",
+                    ):
+                        authorization._validate_committed_task20_v2_result(
+                            repo_root=Path("/repository"),
+                            source_commit=SOURCE_COMMIT,
+                            runtime_source_manifest=failed_manifest,
+                            checkpoint_hash_preflight_file_sha256=(
+                                PREFLIGHT_SHA256
+                            ),
+                        )
+
+    def test_task20_v2_gate_rejects_rehashed_internal_contradictions(
+        self,
+    ) -> None:
+        source_bytes = b"reviewed source bytes\n"
+
+        def fake_git(
+            _repo_root: Path,
+            arguments: list[str],
+            *,
+            name: str,
+        ) -> bytes:
+            del name
+            if arguments[0] == "merge-base":
+                return b""
+            return source_bytes
+
+        def set_channel_8_status(document: dict, value: object) -> None:
+            document["evaluator_result"]["channel_health"]["channels"][8][
+                "heatmap_flat_dead"
+            ] = value
+
+        def set_legacy_flag(document: dict, value: object) -> None:
+            document["evaluator_result"]["collapse_evidence"][
+                "structural_negative_control_collapse"
+            ] = value
+
+        def set_schema(document: dict, value: object) -> None:
+            document["evaluator_result"]["schema_version"] = value
+
+        def set_passed_count(document: dict, value: object) -> None:
+            document["historical_comparison"]["passed_record_count"] = value
+
+        def set_nested_bundle_hash(document: dict, value: object) -> None:
+            document["evaluator_result"]["bundle_content_sha256"] = value
+
+        def set_nested_preflight_hash(document: dict, value: object) -> None:
+            document["evaluator_result"]["checkpoint_authorization"][
+                "checkpoint_hash_preflight_file_sha256"
+            ] = value
+
+        def set_loaded_source_module(document: dict, value: object) -> None:
+            document["loaded_source_digests"]["evaluator_source"][
+                "module"
+            ] = value
+
+        def set_loaded_source_path(document: dict, value: object) -> None:
+            document["loaded_source_digests"]["evaluator_source"][
+                "absolute_path"
+            ] = value
+
+        mutations = (
+            (
+                "numeric flat/dead substitute",
+                set_channel_8_status,
+                1,
+                "flat/dead status is invalid",
+            ),
+            (
+                "dead-index summary contradicts raw health",
+                set_channel_8_status,
+                False,
+                "raw confirmed flat-dead channels",
+            ),
+            (
+                "legacy flag contradicts v1 evidence",
+                set_legacy_flag,
+                True,
+                "legacy v1 all-channel",
+            ),
+            (
+                "evaluator schema downgrade",
+                set_schema,
+                "representation-evaluation-result-v1",
+                "evaluator result schema",
+            ),
+            (
+                "historical passed-count contradiction",
+                set_passed_count,
+                244,
+                "historical comparison passed count",
+            ),
+            (
+                "nested bundle-hash contradiction",
+                set_nested_bundle_hash,
+                "d" * 64,
+                "evaluator/outer bundle content hash",
+            ),
+            (
+                "nested preflight-hash contradiction",
+                set_nested_preflight_hash,
+                "d" * 64,
+                "evaluator checkpoint preflight hash",
+            ),
+            (
+                "loaded source module contradiction",
+                set_loaded_source_module,
+                "fixture.evaluator_source",
+                "loaded source module evaluator_source",
+            ),
+            (
+                "loaded source path contradiction",
+                set_loaded_source_path,
+                "/repository/wrong.py",
+                "loaded source absolute path evaluator_source",
+            ),
         )
-        with mock.patch.object(
-            authorization,
-            "_committed_working_file",
-            return_value=(Path("/repository/task20.json"), failed_data),
-        ), mock.patch.object(
-            authorization,
-            "_git",
-            side_effect=fake_git,
-        ):
-            with self.assertRaisesRegex(
-                authorization.CheckpointAuthorizationError,
-                "structural collapse flag",
-            ):
-                authorization._validate_committed_task20_result(
-                    repo_root=Path("/repository"),
-                    source_commit=SOURCE_COMMIT,
-                    runtime_source_manifest=failed_manifest,
-                )
+        for name, mutation, value, message in mutations:
+            with self.subTest(name=name):
+                result, manifest, _data = _task20_result_document()
+                mutation(result, value)
+                mutated_data = _encode_task20_result(result)
+                with mock.patch.object(
+                    authorization,
+                    "_committed_working_file",
+                    return_value=(
+                        Path("/repository/task20.json"),
+                        mutated_data,
+                    ),
+                ), mock.patch.object(
+                    authorization,
+                    "_git",
+                    side_effect=fake_git,
+                ):
+                    with self.assertRaisesRegex(
+                        authorization.CheckpointAuthorizationError,
+                        message,
+                    ):
+                        authorization._validate_committed_task20_v2_result(
+                            repo_root=Path("/repository"),
+                            source_commit=SOURCE_COMMIT,
+                            runtime_source_manifest=manifest,
+                            checkpoint_hash_preflight_file_sha256=(
+                                PREFLIGHT_SHA256
+                            ),
+                        )
 
     def test_public_task55_authorization_cannot_bypass_task20_file(self) -> None:
         registry = _registry(55)
@@ -684,13 +1275,28 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
                 authorization,
                 "_validate_actual_runtime_environment",
             ),
+            mock.patch.object(
+                authorization,
+                "_validate_immutable_task20_v1_result",
+                return_value={
+                    "file_sha256": (
+                        authorization.TASK20_V1_RESULT_FILE_SHA256
+                    ),
+                    "content_hash_sha256": (
+                        authorization.TASK20_V1_RESULT_CONTENT_HASH_SHA256
+                    ),
+                    "source_commit": (
+                        authorization.TASK20_V1_RESULT_SOURCE_COMMIT
+                    ),
+                },
+            ),
         )
         for patcher in common_patches:
             patcher.start()
             self.addCleanup(patcher.stop)
         with mock.patch.object(
             authorization,
-            "_validate_committed_task20_result",
+            "_validate_committed_task20_v2_result",
             side_effect=authorization.CheckpointAuthorizationError(
                 "Task 20 checkpoint replay result cannot be read"
             ),
@@ -715,7 +1321,7 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
         }
         with mock.patch.object(
             authorization,
-            "_validate_committed_task20_result",
+            "_validate_committed_task20_v2_result",
             return_value=task20_gate,
         ):
             runtime = authorization.authorize_checkpoint_runtime(

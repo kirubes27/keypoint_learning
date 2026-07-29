@@ -16,6 +16,7 @@ an isolated temporary Git repository.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import stat
@@ -33,6 +34,9 @@ CORE_ROLE_PATHS = MappingProxyType(
             "keypoint_net/representation_evaluation_provenance.py"
         ),
         "evaluator_source": "keypoint_net/eval_representation.py",
+        "array_codec_source": (
+            "keypoint_net/representation_array_codec.py"
+        ),
         "split_adapter_source": (
             "keypoint_net/representation_split_adapter.py"
         ),
@@ -48,6 +52,59 @@ CORE_ROLE_PATHS = MappingProxyType(
             "NUMERIC_CALIBRATION_v1_1.json"
         ),
     }
+)
+
+PLANTED_PROFILE_PATHS = MappingProxyType(
+    {
+        "v1": MappingProxyType(
+            {
+                "oracle_harness_source": (
+                    "keypoint_net/diagnostics/run_representation_oracles.py"
+                ),
+                "oracle_case_manifest": (
+                    "docs/decisions/2026-07-26/"
+                    "representation_oracle_cases/ORACLE_CASE_MANIFEST.json"
+                ),
+                "planted_case_definition_prefix": (
+                    "docs/decisions/2026-07-26/"
+                    "representation_oracle_cases/cases/"
+                ),
+            }
+        ),
+        "task20_collapse_v2": MappingProxyType(
+            {
+                "oracle_harness_source": (
+                    "keypoint_net/diagnostics/"
+                    "run_task20_collapse_v2_oracles.py"
+                ),
+                "oracle_case_manifest": (
+                    "docs/decisions/2026-07-29/"
+                    "representation_oracle_cases_v2/"
+                    "TASK20_COLLAPSE_ORACLE_MANIFEST_v2.json"
+                ),
+                "planted_case_definition_prefix": (
+                    "docs/decisions/2026-07-29/"
+                    "representation_oracle_cases_v2/cases/"
+                ),
+            }
+        ),
+    }
+)
+_TASK20_COLLAPSE_V2_CASE_PATHS = (
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "separated_nonflat_no_confirmed_flat_dead.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "healthy_separated_plus_confirmed_flat_dead.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "task20_shape_nine_duplicate_plus_confirmed_flat_dead.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "duplicate_cluster_plus_distinct_nonflat_plus_confirmed_flat_dead.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "all_nonflat_duplicate.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "below_minimum_nonflat_void.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "coordinate_only_missing_logits_retains_all_channels.json",
 )
 
 FIXED_ROLE_PATHS = MappingProxyType(
@@ -74,7 +131,7 @@ FIXED_ROLE_PATHS = MappingProxyType(
         ),
         "checkpoint_runtime_source_manifest": (
             "docs/decisions/2026-07-26/representation_oracle_replay/"
-            "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v1.json"
+            "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v2.json"
         ),
         "checkpoint_hash_preflight": (
             "docs/decisions/2026-07-26/representation_oracle_replay/"
@@ -98,11 +155,11 @@ FIXED_ROLE_PATHS = MappingProxyType(
         ),
         "checkpoint_execution_authorization": (
             "docs/decisions/2026-07-26/representation_oracle_replay/"
-            "CHECKPOINT_EXECUTION_AUTHORIZATION_v1.json"
+            "CHECKPOINT_EXECUTION_AUTHORIZATION_v2.json"
         ),
         "fable_execution_review": (
-            "docs/decisions/2026-07-26/"
-            "FABLE_5_HIGH_CHECKPOINT_REPLAY_RUNTIME_REVIEW_2026-07-28.md"
+            "docs/decisions/2026-07-29/"
+            "FABLE_5_HIGH_TASK20_COLLAPSE_V2_EXECUTION_REVIEW_2026-07-29.md"
         ),
     }
 )
@@ -131,6 +188,7 @@ ROLE_PATH_PREFIXES = MappingProxyType(
 LOADED_SOURCE_ROLES = frozenset(
     {
         "evaluator_source",
+        "array_codec_source",
     }
 )
 
@@ -297,6 +355,195 @@ def required_role_profile(
         if fit_from_pairs:
             committed.add(_FIT_ROLE)
     return frozenset(committed), frozenset(external)
+
+
+def required_loaded_source_roles(case_kind: str) -> frozenset[str]:
+    _require(
+        case_kind in {"planted", "dataset", "checkpoint"},
+        f"unsupported provenance case kind: {case_kind!r}",
+    )
+    roles = set(LOADED_SOURCE_ROLES)
+    if case_kind == "planted":
+        roles.add("oracle_harness_source")
+    return frozenset(roles)
+
+
+def _resolve_planted_profile(
+    *,
+    case_kind: str,
+    committed_paths_by_role: Mapping[str, str],
+) -> str:
+    """Resolve one exact harness/manifest pair; never accept mixed profiles."""
+
+    harness_path = committed_paths_by_role.get("oracle_harness_source")
+    manifest_path = committed_paths_by_role.get("oracle_case_manifest")
+    matches = [
+        profile
+        for profile, paths in PLANTED_PROFILE_PATHS.items()
+        if harness_path == paths["oracle_harness_source"]
+        and manifest_path == paths["oracle_case_manifest"]
+    ]
+    _require(
+        len(matches) == 1,
+        "oracle harness/manifest paths do not form one allowed planted profile",
+    )
+    profile = matches[0]
+    if case_kind != "planted":
+        _require(
+            profile == "v1",
+            "task20_collapse_v2 planted profile is forbidden for "
+            f"{case_kind} cases",
+        )
+    return profile
+
+
+def _strict_json_document(data: bytes, *, name: str) -> Mapping[str, Any]:
+    def reject_constant(token: str) -> None:
+        raise ValueError(f"non-finite JSON constant {token}")
+
+    def reject_duplicate_pairs(
+        pairs: list[tuple[str, Any]],
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(
+            data.decode("utf-8", errors="strict"),
+            parse_constant=reject_constant,
+            object_pairs_hook=reject_duplicate_pairs,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ProvenanceContractError(f"{name} is not strict JSON") from exc
+    _require(isinstance(document, Mapping), f"{name} must be a JSON object")
+    return document
+
+
+def _validate_task20_v2_case_manifest_membership(
+    *,
+    repo_root: Path,
+    source_commit: str,
+    manifest_path: Path,
+    selected_case_relative_path: str,
+    selected_case_sha256: str,
+) -> None:
+    """Bind a v2 planted case to all seven committed manifest members."""
+
+    manifest = _strict_json_document(
+        manifest_path.read_bytes(),
+        name="Task 20 collapse-v2 oracle manifest",
+    )
+    _require(
+        manifest.get("schema_version")
+        == "representation-oracle-case-manifest-v2",
+        "Task 20 collapse-v2 oracle manifest schema is invalid",
+    )
+    claimed_content_hash = manifest.get("content_hash_sha256")
+    _require(
+        isinstance(claimed_content_hash, str)
+        and _SHA256_RE.fullmatch(claimed_content_hash) is not None,
+        "Task 20 collapse-v2 oracle manifest content hash is invalid",
+    )
+    manifest_payload = dict(manifest)
+    manifest_payload.pop("content_hash_sha256")
+    encoded_payload = json.dumps(
+        manifest_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    _require(
+        _sha256_bytes(encoded_payload) == claimed_content_hash,
+        "Task 20 collapse-v2 oracle manifest content hash mismatch",
+    )
+    entries = manifest.get("ordered_case_definitions")
+    _require(
+        isinstance(entries, list) and len(entries) == 7,
+        "Task 20 collapse-v2 oracle manifest must contain exactly seven cases",
+    )
+    _require(
+        tuple(
+            entry.get("relative_path")
+            for entry in entries
+            if isinstance(entry, Mapping)
+        )
+        == _TASK20_COLLAPSE_V2_CASE_PATHS,
+        "Task 20 collapse-v2 oracle manifest paths/order differ",
+    )
+    seen_ids: set[str] = set()
+    seen_paths: set[str] = set()
+    matched_selected = 0
+    expected_prefix = PLANTED_PROFILE_PATHS["task20_collapse_v2"][
+        "planted_case_definition_prefix"
+    ]
+    for index, entry in enumerate(entries):
+        _require(
+            isinstance(entry, Mapping)
+            and set(entry)
+            == {
+                "case_id",
+                "relative_path",
+                "file_sha256",
+                "content_hash_sha256",
+                "expected_evaluation_config_sha256",
+            },
+            f"Task 20 collapse-v2 manifest case {index} keys differ",
+        )
+        case_id = entry["case_id"]
+        relative_path = entry["relative_path"]
+        file_sha256 = entry["file_sha256"]
+        _require(
+            isinstance(case_id, str)
+            and bool(case_id)
+            and case_id not in seen_ids,
+            f"Task 20 collapse-v2 manifest case {index} id is invalid",
+        )
+        _require(
+            isinstance(relative_path, str)
+            and relative_path.startswith(expected_prefix)
+            and relative_path.endswith(".json")
+            and relative_path not in seen_paths,
+            f"Task 20 collapse-v2 manifest case {index} path is invalid",
+        )
+        _require(
+            isinstance(file_sha256, str)
+            and _SHA256_RE.fullmatch(file_sha256) is not None,
+            f"Task 20 collapse-v2 manifest case {index} hash is invalid",
+        )
+        seen_ids.add(case_id)
+        seen_paths.add(relative_path)
+        case_path = _safe_committed_path(
+            repo_root,
+            relative_path,
+            role=f"Task 20 collapse-v2 manifest case {index}",
+        )
+        _blob_oid, blob_bytes = _committed_blob(
+            repo_root,
+            source_commit,
+            relative_path,
+            role=f"Task 20 collapse-v2 manifest case {index}",
+        )
+        current_bytes = case_path.read_bytes()
+        _require(
+            current_bytes == blob_bytes
+            and _sha256_bytes(current_bytes) == file_sha256,
+            f"Task 20 collapse-v2 manifest case {index} bytes/hash mismatch",
+        )
+        if relative_path == selected_case_relative_path:
+            matched_selected += 1
+            _require(
+                file_sha256 == selected_case_sha256,
+                "selected Task 20 collapse-v2 case hash differs from manifest",
+            )
+    _require(
+        matched_selected == 1,
+        "selected Task 20 collapse-v2 case is not exactly one manifest member",
+    )
 
 
 def _safe_git_environment() -> dict[str, str]:
@@ -749,6 +996,15 @@ def _validate_evaluation_provenance_for_repo(
         f"missing={sorted(required_committed - actual_committed)}, "
         f"unknown={sorted(actual_committed - required_committed)}",
     )
+    committed_path_by_role = {
+        role: relative_path
+        for role, relative_path, _claimed_sha256 in committed_shapes
+    }
+    planted_profile = _resolve_planted_profile(
+        case_kind=case_kind,
+        committed_paths_by_role=committed_path_by_role,
+    )
+    planted_profile_paths = PLANTED_PROFILE_PATHS[planted_profile]
 
     external_shapes = [
         _validate_external_record_shape(record, index=index)
@@ -796,14 +1052,24 @@ def _validate_evaluation_provenance_for_repo(
             relative_path,
             role=role,
         )
-        expected_path = CORE_ROLE_PATHS.get(role) or FIXED_ROLE_PATHS.get(role)
+        if role in {"oracle_harness_source", "oracle_case_manifest"}:
+            expected_path = planted_profile_paths[role]
+        else:
+            expected_path = CORE_ROLE_PATHS.get(role) or FIXED_ROLE_PATHS.get(
+                role
+            )
         if expected_path is not None:
             _require(
                 relative_path == expected_path,
                 f"fixed role {role} must use {expected_path}, "
                 f"not {relative_path}",
             )
-        expected_prefix = ROLE_PATH_PREFIXES.get(role)
+        if role == "planted_case_definition":
+            expected_prefix = planted_profile_paths[
+                "planted_case_definition_prefix"
+            ]
+        else:
+            expected_prefix = ROLE_PATH_PREFIXES.get(role)
         if expected_prefix is not None:
             _require(
                 relative_path.startswith(expected_prefix)
@@ -849,16 +1115,30 @@ def _validate_evaluation_provenance_for_repo(
             }
         )
 
+    if planted_profile == "task20_collapse_v2":
+        _validate_task20_v2_case_manifest_membership(
+            repo_root=root,
+            source_commit=source_commit,
+            manifest_path=committed_paths["oracle_case_manifest"],
+            selected_case_relative_path=committed_path_by_role[
+                "planted_case_definition"
+            ],
+            selected_case_sha256=committed_sha256_by_role[
+                "planted_case_definition"
+            ],
+        )
+
     _require(
         isinstance(loaded_source_digests, Mapping),
         "loaded_source_digests must be a mapping",
     )
     actual_loaded_roles = set(loaded_source_digests)
+    required_loaded_roles = required_loaded_source_roles(case_kind)
     _require(
-        actual_loaded_roles == set(LOADED_SOURCE_ROLES),
+        actual_loaded_roles == set(required_loaded_roles),
         "loaded source role profile mismatch: "
-        f"missing={sorted(LOADED_SOURCE_ROLES - actual_loaded_roles)}, "
-        f"unknown={sorted(actual_loaded_roles - LOADED_SOURCE_ROLES)}",
+        f"missing={sorted(required_loaded_roles - actual_loaded_roles)}, "
+        f"unknown={sorted(actual_loaded_roles - required_loaded_roles)}",
     )
     normalized_loaded = {
         role: _validate_loaded_source_record(
@@ -867,7 +1147,7 @@ def _validate_evaluation_provenance_for_repo(
             expected_path=committed_paths[role],
             expected_sha256=committed_sha256_by_role[role],
         )
-        for role in sorted(LOADED_SOURCE_ROLES)
+        for role in sorted(required_loaded_roles)
     }
     normalized_provenance_loaded = _validate_loaded_source_record(
         provenance_loaded_source_digest,
@@ -998,10 +1278,12 @@ __representation_import_sha256__ = _LOADED_PROVENANCE_SOURCE_DIGEST["sha256"]
 __all__ = [
     "CORE_ROLE_PATHS",
     "LOADED_SOURCE_ROLES",
+    "PLANTED_PROFILE_PATHS",
     "PROVENANCE_SCHEMA_VERSION",
     "ProvenanceContractError",
     "__representation_import_sha256__",
     "capture_loaded_source_digest",
+    "required_loaded_source_roles",
     "required_role_profile",
     "validate_evaluation_provenance",
 ]

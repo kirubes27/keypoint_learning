@@ -42,7 +42,7 @@ from keypoint_net import representation_checkpoint_replay as replay_registry
 
 CHECKPOINT_RUNTIME_SOURCE_MANIFEST_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/"
-    "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v1.json"
+    "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v2.json"
 )
 CHECKPOINT_HASH_PREFLIGHT_RESULT_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/"
@@ -50,19 +50,75 @@ CHECKPOINT_HASH_PREFLIGHT_RESULT_REPO_RELATIVE_PATH = (
 )
 CHECKPOINT_EXECUTION_AUTHORIZATION_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/"
-    "CHECKPOINT_EXECUTION_AUTHORIZATION_v1.json"
+    "CHECKPOINT_EXECUTION_AUTHORIZATION_v2.json"
 )
 FABLE_EXECUTION_REVIEW_REPO_RELATIVE_PATH = (
-    "docs/decisions/2026-07-26/"
-    "FABLE_5_HIGH_CHECKPOINT_REPLAY_RUNTIME_REVIEW_2026-07-28.md"
+    "docs/decisions/2026-07-29/"
+    "FABLE_5_HIGH_TASK20_COLLAPSE_V2_EXECUTION_REVIEW_2026-07-29.md"
 )
-TASK20_CHECKPOINT_REPLAY_RESULT_REPO_RELATIVE_PATH = (
+TASK20_CHECKPOINT_REPLAY_RESULT_V1_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/results/"
     "TASK20_CHECKPOINT_REPLAY_RESULT_v1.json"
 )
+TASK20_CHECKPOINT_REPLAY_RESULT_V2_REPO_RELATIVE_PATH = (
+    "docs/decisions/2026-07-26/representation_oracle_replay/results/"
+    "TASK20_CHECKPOINT_REPLAY_RESULT_v2.json"
+)
+TASK20_V2_SEMANTIC_LOCK_REPO_RELATIVE_PATH = (
+    "docs/decisions/2026-07-29/"
+    "TASK20_STRUCTURAL_COLLAPSE_V2_SEMANTIC_LOCK.md"
+)
+DECISION_SYNTHESIS_V2_8_AMENDMENT_REPO_RELATIVE_PATH = (
+    "docs/decisions/2026-07-29/"
+    "DECISION_SYNTHESIS_v2_8_AMENDMENT_2026-07-29.md"
+)
+TASK20_V2_ORACLE_HARNESS_REPO_RELATIVE_PATH = (
+    "keypoint_net/diagnostics/run_task20_collapse_v2_oracles.py"
+)
+TASK20_V2_ORACLE_MANIFEST_REPO_RELATIVE_PATH = (
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/"
+    "TASK20_COLLAPSE_ORACLE_MANIFEST_v2.json"
+)
+TASK20_V2_ORACLE_CASE_REPO_RELATIVE_PATHS = (
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "separated_nonflat_no_confirmed_flat_dead.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "healthy_separated_plus_confirmed_flat_dead.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "task20_shape_nine_duplicate_plus_confirmed_flat_dead.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "duplicate_cluster_plus_distinct_nonflat_plus_confirmed_flat_dead.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "all_nonflat_duplicate.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "below_minimum_nonflat_void.json",
+    "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/"
+    "coordinate_only_missing_logits_retains_all_channels.json",
+)
+TASK20_V2_REVIEWED_FILE_PATHS = (
+    TASK20_V2_SEMANTIC_LOCK_REPO_RELATIVE_PATH,
+    DECISION_SYNTHESIS_V2_8_AMENDMENT_REPO_RELATIVE_PATH,
+    TASK20_V2_ORACLE_HARNESS_REPO_RELATIVE_PATH,
+    TASK20_V2_ORACLE_MANIFEST_REPO_RELATIVE_PATH,
+    *TASK20_V2_ORACLE_CASE_REPO_RELATIVE_PATHS,
+    CHECKPOINT_RUNTIME_SOURCE_MANIFEST_REPO_RELATIVE_PATH,
+    CHECKPOINT_HASH_PREFLIGHT_RESULT_REPO_RELATIVE_PATH,
+    TASK20_CHECKPOINT_REPLAY_RESULT_V1_REPO_RELATIVE_PATH,
+    "keypoint_net/diagnostics/build_checkpoint_replay_manifests.py",
+    "keypoint_net/diagnostics/test_run_task20_collapse_v2_oracles_contract.py",
+    "keypoint_net/eval_representation.py",
+    "keypoint_net/representation_array_codec.py",
+    "keypoint_net/representation_checkpoint_authorization.py",
+    "keypoint_net/representation_checkpoint_runtime.py",
+    "keypoint_net/representation_evaluation_provenance.py",
+    "keypoint_net/test_eval_representation_contract.py",
+    "keypoint_net/test_representation_evaluation_provenance.py",
+    "tests/test_checkpoint_replay_manifests.py",
+    "tests/test_representation_checkpoint_runtime.py",
+)
 
 RUNTIME_SOURCE_MANIFEST_SCHEMA_VERSION = (
-    "representation_checkpoint_runtime_sources.v1"
+    "representation_checkpoint_runtime_sources.v2"
 )
 RUNTIME_SOURCE_MANIFEST_ARTIFACT_TYPE = (
     "representation_checkpoint_runtime_sources"
@@ -70,6 +126,30 @@ RUNTIME_SOURCE_MANIFEST_ARTIFACT_TYPE = (
 RUNTIME_ENTRYPOINT = (
     "keypoint_net.representation_checkpoint_runtime."
     "run_authorized_checkpoint_replay"
+)
+V2_COLLAPSE_FIELD = (
+    "structural_negative_control_collapse_v2_excluding_confirmed_flat_dead"
+)
+TASK20_V1_RESULT_FILE_SHA256 = (
+    "e44ec8b839d6b39377a8acf8b5b2997334ad3c518530675cadcc322e696d2675"
+)
+TASK20_V1_RESULT_CONTENT_HASH_SHA256 = (
+    "5087f5538f728647774fc9e88b4b55ac384c162ebcd3f44136e555bb258258fb"
+)
+TASK20_V1_RESULT_SOURCE_COMMIT = (
+    "426d1dbe94a655e6a90b4441b8e368be7338a4ae"
+)
+FABLE_REVIEW_BINDING_SCHEMA = (
+    "task20_collapse_v2_fable_execution_review_binding.v1"
+)
+TASK20_V2_ORACLE_RESULT_PREFIX = (
+    "docs/decisions/2026-07-29/representation_oracle_results_v2/"
+)
+TASK20_V2_ORACLE_CASE_IDS = tuple(
+    Path(path).stem for path in TASK20_V2_ORACLE_CASE_REPO_RELATIVE_PATHS
+)
+TASK20_V2_INDEPENDENT_OUTCOME_MATRIX_SHA256 = (
+    "15198aa36ec42fc032b2978a6401672df15468323fe52c0f094a1c3545be5477"
 )
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -238,6 +318,7 @@ _EXPECTED_EXECUTION_BOUNDARY = {
     "model_eval": True,
     "inference_mode": True,
     "task_ids": [20, 55, 80],
+    "task55_and_80_require_immutable_task20_v1_audit": True,
     "training_or_weight_update_authorized": False,
     "selection_use_authorized": False,
 }
@@ -251,6 +332,7 @@ _EXPECTED_AUTHORIZATION_BOUNDARY = {
     "model_eval": True,
     "inference_mode": True,
     "task55_and_80_require_task20_pass": True,
+    "task55_and_80_require_immutable_task20_v1_audit": True,
     "training_or_weight_update_authorized": False,
     "selection_use_authorized": False,
 }
@@ -289,6 +371,8 @@ class CheckpointRuntimeAuthorization:
     task20_gate_result_file_sha256: str | None = None
     task20_gate_result_content_hash_sha256: str | None = None
     task20_gate_source_commit: str | None = None
+    task20_v1_audit_file_sha256: str | None = None
+    task20_v1_audit_content_hash_sha256: str | None = None
     expected_num_action_classes: int = 0
     expected_heatmap_res: int = 64
     expected_in_channels: int = 3
@@ -513,6 +597,143 @@ def _committed_working_file(
     return working_path, data
 
 
+def _require_file_unchanged_since_review(
+    *,
+    repo_root: Path,
+    reviewed_candidate_commit: str,
+    repo_relative_path: str,
+    current_data: bytes,
+    name: str,
+) -> None:
+    _require(
+        _COMMIT_RE.fullmatch(reviewed_candidate_commit) is not None,
+        "reviewed_candidate_commit must be full lowercase 40-hex",
+    )
+    reviewed_data = _git(
+        repo_root,
+        ["show", f"{reviewed_candidate_commit}:{repo_relative_path}"],
+        name=f"cannot read reviewed {name}",
+    )
+    _require(
+        reviewed_data == current_data,
+        f"{name} changed after Fable review",
+    )
+
+
+def _validate_fable_review_binding(
+    *,
+    review_data: bytes,
+    reviewed_candidate_commit: str,
+    runtime_source_manifest_file_sha256: str,
+    runtime_source_manifest_content_hash_sha256: str,
+    checkpoint_hash_preflight_file_sha256: str,
+    semantic_lock_file_sha256: str,
+    decision_amendment_file_sha256: str,
+    task20_v2_oracle_harness_file_sha256: str,
+    task20_v2_oracle_manifest_file_sha256: str,
+    planted_v2_reviewed_fileset_sha256: str,
+) -> None:
+    """Require one exact, machine-checkable binding block in Fable's report."""
+
+    try:
+        review_text = review_data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise CheckpointAuthorizationError(
+            "Fable review is not valid UTF-8"
+        ) from exc
+    expected_markers = (
+        ("FABLE_REVIEW_BINDING_SCHEMA", FABLE_REVIEW_BINDING_SCHEMA),
+        ("REVIEWED_CANDIDATE_COMMIT", reviewed_candidate_commit),
+        (
+            "RUNTIME_SOURCE_MANIFEST_FILE_SHA256",
+            runtime_source_manifest_file_sha256,
+        ),
+        (
+            "RUNTIME_SOURCE_MANIFEST_CONTENT_SHA256",
+            runtime_source_manifest_content_hash_sha256,
+        ),
+        (
+            "CHECKPOINT_HASH_PREFLIGHT_FILE_SHA256",
+            checkpoint_hash_preflight_file_sha256,
+        ),
+        ("TASK20_V2_SEMANTIC_LOCK_FILE_SHA256", semantic_lock_file_sha256),
+        (
+            "DECISION_SYNTHESIS_V2_8_AMENDMENT_FILE_SHA256",
+            decision_amendment_file_sha256,
+        ),
+        (
+            "TASK20_V2_ORACLE_HARNESS_FILE_SHA256",
+            task20_v2_oracle_harness_file_sha256,
+        ),
+        (
+            "TASK20_V2_ORACLE_MANIFEST_FILE_SHA256",
+            task20_v2_oracle_manifest_file_sha256,
+        ),
+        (
+            "PLANTED_V2_REVIEWED_FILESET_SHA256",
+            planted_v2_reviewed_fileset_sha256,
+        ),
+        ("IMMUTABLE_TASK20_V1_FILE_SHA256", TASK20_V1_RESULT_FILE_SHA256),
+        ("MODEL", "fable"),
+        ("EFFORT", "high"),
+        ("PERMISSION_MODE", "read_only"),
+        ("SESSION_PERSISTENCE", "false"),
+        ("VERDICT", "PASS_TO_RUN"),
+        ("UNRESOLVED_P0_COUNT", "0"),
+        ("UNRESOLVED_P1_COUNT", "0"),
+    )
+    lines = review_text.splitlines()
+    for label, expected_value in expected_markers:
+        prefix = f"{label}:"
+        matching = [line for line in lines if line.startswith(prefix)]
+        _require(
+            len(matching) == 1,
+            f"Fable review must contain exactly one {label} marker",
+        )
+        _exact_value(
+            matching[0],
+            f"{label}: {expected_value}",
+            f"Fable review marker {label}",
+        )
+
+
+def _validated_reviewed_fileset(
+    *,
+    repo_root: Path,
+    source_commit: str,
+    reviewed_candidate_commit: str,
+) -> tuple[str, dict[str, bytes]]:
+    records: list[dict[str, str]] = []
+    data_by_path: dict[str, bytes] = {}
+    for repo_relative_path in TASK20_V2_REVIEWED_FILE_PATHS:
+        _, data = _committed_working_file(
+            repo_root=repo_root,
+            source_commit=source_commit,
+            repo_relative_path=repo_relative_path,
+            name=f"reviewed file {repo_relative_path}",
+        )
+        _require_file_unchanged_since_review(
+            repo_root=repo_root,
+            reviewed_candidate_commit=reviewed_candidate_commit,
+            repo_relative_path=repo_relative_path,
+            current_data=data,
+            name=f"reviewed file {repo_relative_path}",
+        )
+        records.append(
+            {
+                "repo_relative_path": repo_relative_path,
+                "file_sha256": hashlib.sha256(data).hexdigest(),
+            }
+        )
+        data_by_path[repo_relative_path] = data
+    fileset_sha256 = hashlib.sha256(
+        _canonical_json_bytes(
+            sorted(records, key=lambda record: record["repo_relative_path"])
+        )
+    ).hexdigest()
+    return fileset_sha256, data_by_path
+
+
 def _validate_runtime_source_manifest(
     *,
     repo_root: Path,
@@ -639,24 +860,12 @@ def _validate_runtime_source_manifest(
             f"runtime source {record['role']} hash mismatch",
         )
         if reviewed_candidate_commit is not None:
-            _require(
-                _COMMIT_RE.fullmatch(reviewed_candidate_commit) is not None,
-                "reviewed_candidate_commit must be full lowercase 40-hex",
-            )
-            reviewed_bytes = _git(
-                repo_root,
-                [
-                    "show",
-                    f"{reviewed_candidate_commit}:{record['repo_relative_path']}",
-                ],
-                name=(
-                    "cannot read reviewed runtime source "
-                    f"{record['role']}"
-                ),
-            )
-            _require(
-                reviewed_bytes == source_data,
-                f"runtime source {record['role']} changed after Fable review",
+            _require_file_unchanged_since_review(
+                repo_root=repo_root,
+                reviewed_candidate_commit=reviewed_candidate_commit,
+                repo_relative_path=str(record["repo_relative_path"]),
+                current_data=source_data,
+                name=f"runtime source {record['role']}",
             )
         normalized_sources[str(record["role"])] = {
             "absolute_path": str(source_path),
@@ -823,6 +1032,232 @@ def _role_record(
     return record
 
 
+def _validate_committed_task20_v2_planted_suite(
+    *,
+    repo_root: Path,
+    source_commit: str,
+    record: Mapping[str, Any],
+    reviewed_candidate_commit: str,
+    review_data: bytes,
+    reviewed_fileset_sha256: str,
+    reviewed_files: Mapping[str, bytes],
+) -> dict[str, str]:
+    _require(
+        set(record)
+        == {
+            "repo_relative_path",
+            "file_sha256",
+            "content_hash_sha256",
+            "case_count",
+            "passed",
+        },
+        "planted v2 oracle-suite authorization record keys differ",
+    )
+    relative_path = record["repo_relative_path"]
+    _require(
+        isinstance(relative_path, str),
+        "planted v2 oracle-suite path is invalid",
+    )
+    expected_prefix = (
+        TASK20_V2_ORACLE_RESULT_PREFIX
+        + reviewed_candidate_commit
+        + "/"
+    )
+    suffix_parts = (
+        relative_path[len(expected_prefix) :].split("/")
+        if relative_path.startswith(expected_prefix)
+        else []
+    )
+    _require(
+        len(suffix_parts) == 2
+        and re.fullmatch(r"attempt_[0-9]{4}", suffix_parts[0]) is not None
+        and suffix_parts[1] == "SUITE_RESULT.json",
+        "planted v2 oracle-suite path is outside one reviewed attempt",
+    )
+    _, data = _committed_working_file(
+        repo_root=repo_root,
+        source_commit=source_commit,
+        repo_relative_path=relative_path,
+        name="planted v2 oracle suite result",
+    )
+    _exact_value(
+        record["file_sha256"],
+        hashlib.sha256(data).hexdigest(),
+        "planted v2 oracle-suite file hash",
+    )
+    suite = _strict_json(data, name="planted v2 oracle suite result")
+    _require(
+        data == _canonical_json_bytes(suite) + b"\n",
+        "planted v2 oracle suite result is not canonical JSON",
+    )
+    claimed_content_hash = suite.get("content_hash_sha256")
+    _require(
+        isinstance(claimed_content_hash, str)
+        and _SHA256_RE.fullmatch(claimed_content_hash) is not None,
+        "planted v2 oracle-suite content hash is invalid",
+    )
+    payload = dict(suite)
+    payload.pop("content_hash_sha256")
+    _exact_value(
+        hashlib.sha256(_canonical_json_bytes(payload)).hexdigest(),
+        claimed_content_hash,
+        "planted v2 oracle-suite content hash",
+    )
+    _exact_value(
+        record["content_hash_sha256"],
+        claimed_content_hash,
+        "authorized planted v2 oracle-suite content hash",
+    )
+    _exact_value(record["case_count"], 7, "authorized planted suite case count")
+    _exact_value(record["passed"], True, "authorized planted suite pass")
+    _exact_value(
+        suite.get("schema_version"),
+        "representation-oracle-planted-suite-result-v2",
+        "planted v2 oracle-suite schema",
+    )
+    _exact_value(
+        suite.get("scope"),
+        "task20_structural_negative_control_collapse_v2_only",
+        "planted v2 oracle-suite scope",
+    )
+    _exact_value(
+        suite.get("source_commit"),
+        reviewed_candidate_commit,
+        "planted v2 oracle-suite reviewed source commit",
+    )
+    _exact_value(
+        suite.get("output_attempt"),
+        suffix_parts[0],
+        "planted v2 oracle-suite output attempt",
+    )
+    _exact_value(
+        suite.get("manifest_file_sha256"),
+        hashlib.sha256(
+            reviewed_files[TASK20_V2_ORACLE_MANIFEST_REPO_RELATIVE_PATH]
+        ).hexdigest(),
+        "planted v2 oracle-suite manifest file hash",
+    )
+    manifest = _strict_json(
+        reviewed_files[TASK20_V2_ORACLE_MANIFEST_REPO_RELATIVE_PATH],
+        name="reviewed Task 20 v2 oracle manifest",
+    )
+    _exact_value(
+        suite.get("manifest_content_hash_sha256"),
+        manifest.get("content_hash_sha256"),
+        "planted v2 oracle-suite manifest content hash",
+    )
+    _exact_value(
+        suite.get("execution_environment"),
+        {
+            "python_implementation": "CPython",
+            "python_version": "3.10.19",
+            "numpy_version": "2.2.6",
+        },
+        "planted v2 oracle-suite execution environment",
+    )
+    _exact_value(
+        suite.get("independent_outcome_matrix_sha256"),
+        TASK20_V2_INDEPENDENT_OUTCOME_MATRIX_SHA256,
+        "planted v2 independent outcome matrix hash",
+    )
+    _exact_value(suite.get("case_count"), 7, "planted v2 suite case count")
+    _exact_value(suite.get("passed"), True, "planted v2 suite pass")
+    _exact_value(
+        suite.get("completion_status"),
+        "complete_suite_result_written_last",
+        "planted v2 suite completion status",
+    )
+    for field in (
+        "dataset_or_checkpoint_opened",
+        "model_constructed",
+        "optimizer_constructed",
+        "training_run",
+        "v1_artifact_mutation_authorized",
+    ):
+        _exact_value(suite.get(field), False, f"planted v2 suite {field}")
+    review_authority = suite.get("fable_review_authority")
+    _exact_value(
+        review_authority,
+        {
+            "reviewed_candidate_commit": reviewed_candidate_commit,
+            "execution_commit": suite.get("execution_commit"),
+            "review_repo_relative_path": FABLE_EXECUTION_REVIEW_REPO_RELATIVE_PATH,
+            "review_file_sha256": hashlib.sha256(review_data).hexdigest(),
+            "reviewed_fileset_sha256": reviewed_fileset_sha256,
+            "verdict": "PASS_TO_RUN",
+        },
+        "planted v2 suite Fable authority",
+    )
+    execution_commit = suite.get("execution_commit")
+    _require(
+        isinstance(execution_commit, str)
+        and _COMMIT_RE.fullmatch(execution_commit) is not None,
+        "planted v2 suite execution commit is invalid",
+    )
+    _git(
+        repo_root,
+        ["merge-base", "--is-ancestor", execution_commit, source_commit],
+        name="planted v2 suite execution commit is not an ancestor",
+    )
+    cases = suite.get("cases")
+    _require(
+        isinstance(cases, list)
+        and [case.get("case_id") for case in cases if isinstance(case, Mapping)]
+        == list(TASK20_V2_ORACLE_CASE_IDS),
+        "planted v2 suite cases/order differ",
+    )
+    for index, case in enumerate(cases):
+        _require(
+            isinstance(case, Mapping),
+            f"planted v2 suite case {index} is invalid",
+        )
+        _exact_value(
+            case.get("bundle_byte_deterministic"),
+            True,
+            f"planted v2 suite case {index} bundle determinism",
+        )
+        _exact_value(
+            case.get("result_byte_deterministic"),
+            True,
+            f"planted v2 suite case {index} result determinism",
+        )
+        config_check = case.get("evaluation_config_hash_recheck")
+        _require(
+            isinstance(config_check, Mapping)
+            and config_check.get("passed") is True
+            and config_check.get("expected_sha256")
+            == config_check.get("declared_sha256")
+            == config_check.get("recomputed_sha256"),
+            f"planted v2 suite case {index} config check failed",
+        )
+        matrix_check = case.get(
+            "independent_literal_outcome_matrix_check"
+        )
+        _require(
+            isinstance(matrix_check, Mapping)
+            and matrix_check.get("passed") is True
+            and matrix_check.get("expected") == matrix_check.get("observed"),
+            f"planted v2 suite case {index} independent matrix check failed",
+        )
+        assertions = case.get("assertions")
+        _require(
+            isinstance(assertions, list)
+            and bool(assertions)
+            and all(
+                isinstance(row, Mapping)
+                and row.get("passed") is True
+                and row.get("expected") == row.get("observed")
+                for row in assertions
+            ),
+            f"planted v2 suite case {index} committed assertions failed",
+        )
+    return {
+        "repo_relative_path": relative_path,
+        "file_sha256": hashlib.sha256(data).hexdigest(),
+        "content_hash_sha256": claimed_content_hash,
+    }
+
+
 def _validate_execution_review_roles(
     *,
     provenance: Mapping[str, Any],
@@ -891,6 +1326,9 @@ def _validate_execution_review_roles(
         "runtime_source_manifest",
         "checkpoint_hash_preflight",
         "fable_review",
+        "planted_v2_oracle_suite",
+        "superseded_task20_v1_result",
+        "semantic_amendments",
         "authorized_task_order",
         "task20_stop_gate",
         "execution_boundary",
@@ -915,7 +1353,7 @@ def _validate_execution_review_roles(
     )
     _exact_value(
         execution["schema_version"],
-        "representation_checkpoint_execution_authorization.v1",
+        "representation_checkpoint_execution_authorization.v2",
         "checkpoint execution authorization schema",
     )
     _exact_value(
@@ -1025,6 +1463,81 @@ def _validate_execution_review_roles(
         },
         "Fable authorization",
     )
+    v1_record = execution["superseded_task20_v1_result"]
+    _require(
+        isinstance(v1_record, Mapping)
+        and set(v1_record)
+        == {
+            "repo_relative_path",
+            "file_sha256",
+            "content_hash_sha256",
+            "source_commit",
+            "gate_passed",
+        },
+        "superseded Task 20 v1 result authorization record keys differ",
+    )
+    _exact_value(
+        v1_record,
+        {
+            "repo_relative_path": (
+                TASK20_CHECKPOINT_REPLAY_RESULT_V1_REPO_RELATIVE_PATH
+            ),
+            "file_sha256": TASK20_V1_RESULT_FILE_SHA256,
+            "content_hash_sha256": TASK20_V1_RESULT_CONTENT_HASH_SHA256,
+            "source_commit": TASK20_V1_RESULT_SOURCE_COMMIT,
+            "gate_passed": False,
+        },
+        "superseded Task 20 v1 result authorization",
+    )
+    _validate_immutable_task20_v1_result(
+        repo_root=repo_root,
+        source_commit=source_commit,
+    )
+    amendment_records = execution["semantic_amendments"]
+    _require(
+        isinstance(amendment_records, list)
+        and len(amendment_records) == 2,
+        "semantic amendment authorization records differ",
+    )
+    expected_amendment_paths = [
+        TASK20_V2_SEMANTIC_LOCK_REPO_RELATIVE_PATH,
+        DECISION_SYNTHESIS_V2_8_AMENDMENT_REPO_RELATIVE_PATH,
+    ]
+    amendment_file_sha256_by_path: dict[str, str] = {}
+    for index, (record, expected_path) in enumerate(
+        zip(amendment_records, expected_amendment_paths)
+    ):
+        _require(
+            isinstance(record, Mapping)
+            and set(record) == {"repo_relative_path", "file_sha256"},
+            f"semantic amendment {index} record keys differ",
+        )
+        _exact_value(
+            record["repo_relative_path"],
+            expected_path,
+            f"semantic amendment {index} path",
+        )
+        _, amendment_data = _committed_working_file(
+            repo_root=repo_root,
+            source_commit=source_commit,
+            repo_relative_path=expected_path,
+            name=f"semantic amendment {index}",
+        )
+        _exact_value(
+            record["file_sha256"],
+            hashlib.sha256(amendment_data).hexdigest(),
+            f"semantic amendment {index} file hash",
+        )
+        amendment_file_sha256_by_path[expected_path] = hashlib.sha256(
+            amendment_data
+        ).hexdigest()
+        _require_file_unchanged_since_review(
+            repo_root=repo_root,
+            reviewed_candidate_commit=reviewed_commit,
+            repo_relative_path=expected_path,
+            current_data=amendment_data,
+            name=f"semantic amendment {index}",
+        )
     _exact_value(
         execution["authorized_task_order"],
         [20, 55, 80],
@@ -1034,8 +1547,12 @@ def _validate_execution_review_roles(
         execution["task20_stop_gate"],
         {
             "required_before_tasks": [55, 80],
-            "required_classification": "structural_negative_control_collapse",
+            "required_classification": V2_COLLAPSE_FIELD,
             "required_value": True,
+            "legacy_v1_classification": (
+                "structural_negative_control_collapse"
+            ),
+            "legacy_v1_required_recorded_value": False,
             "historical_comparison_resolved_value_count": 245,
             "failure_action": "stop_without_loading_task55_or_task80",
         },
@@ -1046,8 +1563,50 @@ def _validate_execution_review_roles(
         _EXPECTED_AUTHORIZATION_BOUNDARY,
         "checkpoint execution authorization boundary",
     )
-    review_text = review_data.decode("utf-8", errors="strict")
-    _require("PASS_TO_RUN" in review_text, "Fable review lacks PASS_TO_RUN")
+    reviewed_fileset_sha256, reviewed_v2_files = (
+        _validated_reviewed_fileset(
+            repo_root=repo_root,
+            source_commit=source_commit,
+            reviewed_candidate_commit=reviewed_commit,
+        )
+    )
+    _validate_fable_review_binding(
+        review_data=review_data,
+        reviewed_candidate_commit=reviewed_commit,
+        runtime_source_manifest_file_sha256=source_manifest["file_sha256"],
+        runtime_source_manifest_content_hash_sha256=source_manifest[
+            "content_hash_sha256"
+        ],
+        checkpoint_hash_preflight_file_sha256=hashlib.sha256(
+            preflight_data
+        ).hexdigest(),
+        semantic_lock_file_sha256=amendment_file_sha256_by_path[
+            TASK20_V2_SEMANTIC_LOCK_REPO_RELATIVE_PATH
+        ],
+        decision_amendment_file_sha256=amendment_file_sha256_by_path[
+            DECISION_SYNTHESIS_V2_8_AMENDMENT_REPO_RELATIVE_PATH
+        ],
+        task20_v2_oracle_harness_file_sha256=hashlib.sha256(
+            reviewed_v2_files[
+                TASK20_V2_ORACLE_HARNESS_REPO_RELATIVE_PATH
+            ]
+        ).hexdigest(),
+        task20_v2_oracle_manifest_file_sha256=hashlib.sha256(
+            reviewed_v2_files[
+                TASK20_V2_ORACLE_MANIFEST_REPO_RELATIVE_PATH
+            ]
+        ).hexdigest(),
+        planted_v2_reviewed_fileset_sha256=reviewed_fileset_sha256,
+    )
+    planted_suite_receipt = _validate_committed_task20_v2_planted_suite(
+        repo_root=repo_root,
+        source_commit=source_commit,
+        record=execution["planted_v2_oracle_suite"],
+        reviewed_candidate_commit=reviewed_commit,
+        review_data=review_data,
+        reviewed_fileset_sha256=reviewed_fileset_sha256,
+        reviewed_files=reviewed_v2_files,
+    )
     return {
         "reviewed_candidate_commit": reviewed_commit,
         "runtime_source_manifest": source_manifest,
@@ -1070,6 +1629,7 @@ def _validate_execution_review_roles(
         "fable_execution_review_file_sha256": hashlib.sha256(
             review_data
         ).hexdigest(),
+        "planted_v2_oracle_suite": planted_suite_receipt,
     }
 
 
@@ -1196,21 +1756,79 @@ def _validate_checkpoint_load_record(
     )
 
 
-def _validate_committed_task20_result(
+def _validate_immutable_task20_v1_result(
     *,
     repo_root: Path,
     source_commit: str,
-    runtime_source_manifest: Mapping[str, Any],
 ) -> dict[str, str]:
-    """Require the exact committed Task 20 stop-gate result before Tasks 55/80."""
+    """Verify the exact committed v1 false-negative audit artifact."""
 
     _, data = _committed_working_file(
         repo_root=repo_root,
         source_commit=source_commit,
-        repo_relative_path=TASK20_CHECKPOINT_REPLAY_RESULT_REPO_RELATIVE_PATH,
-        name="Task 20 checkpoint replay result",
+        repo_relative_path=TASK20_CHECKPOINT_REPLAY_RESULT_V1_REPO_RELATIVE_PATH,
+        name="immutable Task 20 v1 checkpoint replay result",
     )
-    result = _strict_json(data, name="Task 20 checkpoint replay result")
+    _exact_value(
+        hashlib.sha256(data).hexdigest(),
+        TASK20_V1_RESULT_FILE_SHA256,
+        "immutable Task 20 v1 result file hash",
+    )
+    result = _strict_json(data, name="immutable Task 20 v1 checkpoint replay result")
+    _require(
+        data == _canonical_json_bytes(result) + b"\n",
+        "immutable Task 20 v1 result is not canonical JSON",
+    )
+    _exact_value(
+        result.get("schema_version"),
+        "representation_checkpoint_replay_result.v1",
+        "immutable Task 20 v1 result schema",
+    )
+    _exact_value(
+        result.get("content_hash_sha256"),
+        TASK20_V1_RESULT_CONTENT_HASH_SHA256,
+        "immutable Task 20 v1 result content hash",
+    )
+    _exact_value(
+        result.get("source_commit"),
+        TASK20_V1_RESULT_SOURCE_COMMIT,
+        "immutable Task 20 v1 result source commit",
+    )
+    _exact_value(
+        result.get("gate"),
+        {
+            "expected_structural_negative_control_collapse": True,
+            "observed_structural_negative_control_collapse": False,
+            "classification_passed": False,
+            "historical_245_record_comparison_passed": True,
+            "passed": False,
+            "next_task_authorized": False,
+        },
+        "immutable Task 20 v1 gate",
+    )
+    return {
+        "file_sha256": TASK20_V1_RESULT_FILE_SHA256,
+        "content_hash_sha256": TASK20_V1_RESULT_CONTENT_HASH_SHA256,
+        "source_commit": TASK20_V1_RESULT_SOURCE_COMMIT,
+    }
+
+
+def _validate_committed_task20_v2_result(
+    *,
+    repo_root: Path,
+    source_commit: str,
+    runtime_source_manifest: Mapping[str, Any],
+    checkpoint_hash_preflight_file_sha256: str,
+) -> dict[str, str]:
+    """Require the exact committed v2 Task 20 stop-gate result."""
+
+    _, data = _committed_working_file(
+        repo_root=repo_root,
+        source_commit=source_commit,
+        repo_relative_path=TASK20_CHECKPOINT_REPLAY_RESULT_V2_REPO_RELATIVE_PATH,
+        name="Task 20 v2 checkpoint replay result",
+    )
+    result = _strict_json(data, name="Task 20 v2 checkpoint replay result")
     expected_keys = {
         "schema_version",
         "artifact_type",
@@ -1239,8 +1857,8 @@ def _validate_committed_task20_result(
     )
     _exact_value(
         result["schema_version"],
-        "representation_checkpoint_replay_result.v1",
-        "Task 20 result schema",
+        "representation_checkpoint_replay_result.v2",
+        "Task 20 v2 result schema",
     )
     _exact_value(
         result["artifact_type"],
@@ -1328,7 +1946,9 @@ def _validate_committed_task20_result(
         runtime_source_manifest_content_hash_sha256=str(
             runtime_source_manifest["content_hash_sha256"]
         ),
-        checkpoint_hash_preflight_file_sha256="0" * 64,
+        checkpoint_hash_preflight_file_sha256=(
+            checkpoint_hash_preflight_file_sha256
+        ),
         checkpoint_execution_authorization_file_sha256="0" * 64,
         fable_execution_review_file_sha256="0" * 64,
         expected_learn_inverse_operator=True,
@@ -1362,6 +1982,18 @@ def _validate_committed_task20_result(
             loaded["import_time_sha256"],
             source_record["sha256"],
             f"Task 20 loaded source hash {role}",
+        )
+        _exact_value(
+            loaded["absolute_path"],
+            source_record["absolute_path"],
+            f"Task 20 loaded source absolute path {role}",
+        )
+        _exact_value(
+            loaded["module"],
+            ".".join(
+                Path(expected_source_paths[role]).with_suffix("").parts
+            ),
+            f"Task 20 loaded source module {role}",
         )
         result_source_bytes = _git(
             repo_root,
@@ -1401,12 +2033,269 @@ def _validate_committed_task20_result(
         evaluator_hash,
         "Task 20 evaluator result content hash",
     )
+    _exact_value(
+        evaluator_result.get("schema_version"),
+        "representation-evaluation-result-v2",
+        "Task 20 evaluator result schema",
+    )
+    _exact_value(
+        evaluator_result.get("case_id"),
+        _TASK_BINDINGS[20]["fixture_id"],
+        "Task 20 evaluator case_id",
+    )
+    _exact_value(
+        evaluator_result.get("case_kind"),
+        "checkpoint",
+        "Task 20 evaluator case_kind",
+    )
+    _exact_value(
+        evaluator_result.get("bundle_content_sha256"),
+        result["bundle_content_sha256"],
+        "Task 20 evaluator/outer bundle content hash",
+    )
+    evaluator_checkpoint_authorization = evaluator_result.get(
+        "checkpoint_authorization"
+    )
+    _require(
+        isinstance(evaluator_checkpoint_authorization, Mapping),
+        "Task 20 evaluator checkpoint authorization is missing",
+    )
+    preflight_hash = evaluator_checkpoint_authorization.get(
+        "checkpoint_hash_preflight_file_sha256"
+    )
+    _require(
+        isinstance(preflight_hash, str)
+        and _SHA256_RE.fullmatch(preflight_hash) is not None,
+        "Task 20 evaluator checkpoint preflight hash is invalid",
+    )
+    _exact_value(
+        preflight_hash,
+        checkpoint_hash_preflight_file_sha256,
+        "Task 20 evaluator checkpoint preflight hash",
+    )
+    _exact_value(
+        evaluator_checkpoint_authorization,
+        {
+            "checkpoint_evaluation_authorized": True,
+            "source_commit": result_source_commit,
+            "task_id": 20,
+            "fixture_id": _TASK_BINDINGS[20]["fixture_id"],
+            "checkpoint_sha256": _TASK_BINDINGS[20]["checkpoint_sha256"],
+            "runtime_source_manifest_file_sha256": runtime_source_manifest[
+                "file_sha256"
+            ],
+            "checkpoint_hash_preflight_file_sha256": preflight_hash,
+            "training_or_weight_update_authorized": False,
+            "selection_use_authorized": False,
+        },
+        "Task 20 evaluator checkpoint authorization",
+    )
+    _exact_value(
+        evaluator_result.get("validated_checkpoint"),
+        {
+            "absolute_path": checkpoint["checkpoint_absolute_path"],
+            "sha256": checkpoint["checkpoint_sha256"],
+            "size_bytes": checkpoint["checkpoint_size_bytes"],
+        },
+        "Task 20 evaluator validated checkpoint",
+    )
+    evaluator_provenance = evaluator_result.get("provenance")
+    _require(
+        isinstance(evaluator_provenance, Mapping),
+        "Task 20 evaluator provenance is missing",
+    )
+    _exact_value(
+        {
+            "source_commit": evaluator_provenance.get("source_commit"),
+            "case_kind": evaluator_provenance.get("case_kind"),
+        },
+        {
+            "source_commit": result_source_commit,
+            "case_kind": "checkpoint",
+        },
+        "Task 20 evaluator provenance identity",
+    )
+    _exact_value(
+        evaluator_result.get("stratum"),
+        {
+            "object_id": "engineers_hammer_vray",
+            "seed": 42,
+            "partition": "full_corpus",
+            "transform_family": "roll",
+            "direction": "forward",
+            "stride": 3,
+        },
+        "Task 20 evaluator stratum",
+    )
+    health = evaluator_result.get("channel_health")
+    _require(
+        isinstance(health, Mapping),
+        "Task 20 v2 channel health is missing",
+    )
+    channel_rows = health.get("channels")
+    _require(
+        isinstance(channel_rows, list) and len(channel_rows) == 10,
+        "Task 20 v2 channel-health row count differs",
+    )
+    health_by_channel: dict[int, Mapping[str, Any]] = {}
+    for row in channel_rows:
+        _require(
+            isinstance(row, Mapping),
+            "Task 20 v2 channel-health row must be a mapping",
+        )
+        channel = row.get("channel")
+        _require(
+            isinstance(channel, int)
+            and not isinstance(channel, bool)
+            and 0 <= channel < 10
+            and channel not in health_by_channel,
+            "Task 20 v2 channel-health indices differ",
+        )
+        flat_dead_status = row.get("heatmap_flat_dead")
+        _require(
+            flat_dead_status is True
+            or flat_dead_status is False
+            or flat_dead_status is None,
+            "Task 20 v2 flat/dead status is invalid",
+        )
+        health_by_channel[channel] = row
+    _exact_value(
+        sorted(health_by_channel),
+        list(range(10)),
+        "Task 20 v2 channel-health index closure",
+    )
+    confirmed_flat_dead = [
+        channel
+        for channel, row in sorted(health_by_channel.items())
+        if row.get("heatmap_flat_dead") is True
+    ]
+    retained_channels = [
+        channel
+        for channel, row in sorted(health_by_channel.items())
+        if row.get("heatmap_flat_dead") is not True
+    ]
+    _exact_value(
+        confirmed_flat_dead,
+        [8],
+        "Task 20 v2 raw confirmed flat-dead channels",
+    )
+    _exact_value(
+        retained_channels,
+        [0, 1, 2, 3, 4, 5, 6, 7, 9],
+        "Task 20 v2 raw retained structural channels",
+    )
     collapse = evaluator_result.get("collapse_evidence")
     _require(isinstance(collapse, Mapping), "Task 20 collapse evidence is missing")
     _exact_value(
         collapse.get("structural_negative_control_collapse"),
+        False,
+        "Task 20 legacy v1 all-channel structural collapse flag",
+    )
+    _exact_value(
+        collapse.get(V2_COLLAPSE_FIELD),
         True,
-        "Task 20 structural collapse flag",
+        "Task 20 v2 structural collapse flag",
+    )
+    _exact_value(
+        collapse.get(
+            "structural_negative_control_status_v2_excluding_confirmed_flat_dead"
+        ),
+        "available",
+        "Task 20 v2 structural collapse status",
+    )
+    _exact_value(
+        collapse.get("confirmed_flat_dead_channel_indices"),
+        confirmed_flat_dead,
+        "Task 20 v2 confirmed flat-dead channels",
+    )
+    _exact_value(
+        collapse.get("channels_not_confirmed_flat_dead_indices"),
+        retained_channels,
+        "Task 20 v2 retained structural channels",
+    )
+    _exact_value(
+        collapse.get("channels_not_confirmed_flat_dead_count"),
+        len(retained_channels),
+        "Task 20 v2 retained structural channel count",
+    )
+    _exact_value(
+        collapse.get("minimum_channels_not_confirmed_flat_dead"),
+        2,
+        "Task 20 v2 minimum retained structural channel count",
+    )
+    separation = evaluator_result.get("trajectory_separation")
+    _require(
+        isinstance(separation, Mapping),
+        "Task 20 v2 trajectory separation is missing",
+    )
+    _exact_value(
+        {
+            "channels_not_confirmed_flat_dead_count": separation.get(
+                "channels_not_confirmed_flat_dead_count"
+            ),
+            "channels_not_confirmed_flat_dead_indices": separation.get(
+                "channels_not_confirmed_flat_dead_indices"
+            ),
+            "confirmed_flat_dead_channel_indices": separation.get(
+                "confirmed_flat_dead_channel_indices"
+            ),
+            "channels_not_confirmed_flat_dead_metric_void": separation.get(
+                "channels_not_confirmed_flat_dead_metric_void"
+            ),
+        },
+        {
+            "channels_not_confirmed_flat_dead_count": len(retained_channels),
+            "channels_not_confirmed_flat_dead_indices": retained_channels,
+            "confirmed_flat_dead_channel_indices": confirmed_flat_dead,
+            "channels_not_confirmed_flat_dead_metric_void": False,
+        },
+        "Task 20 v2 trajectory-separation summary",
+    )
+    retained_metric = separation.get("channels_not_confirmed_flat_dead")
+    _require(
+        isinstance(retained_metric, Mapping),
+        "Task 20 v2 retained-channel metric is missing",
+    )
+    _exact_value(
+        {
+            "channel_indices": retained_metric.get("channel_indices"),
+            "pair_count": retained_metric.get("pair_count"),
+            "evaluable_pair_count": retained_metric.get(
+                "evaluable_pair_count"
+            ),
+            "void_pair_count": retained_metric.get("void_pair_count"),
+            "all_pairs_persistent_duplicate": retained_metric.get(
+                "all_pairs_persistent_duplicate"
+            ),
+            "persistent_duplicate_count": (
+                retained_metric.get("category_counts", {}).get(
+                    "persistent_duplicate"
+                )
+                if isinstance(retained_metric.get("category_counts"), Mapping)
+                else None
+            ),
+        },
+        {
+            "channel_indices": [0, 1, 2, 3, 4, 5, 6, 7, 9],
+            "pair_count": 36,
+            "evaluable_pair_count": 36,
+            "void_pair_count": 0,
+            "all_pairs_persistent_duplicate": True,
+            "persistent_duplicate_count": 36,
+        },
+        "Task 20 v2 retained-channel collapse evidence",
+    )
+    _exact_value(
+        retained_metric.get("category_counts"),
+        {
+            "persistent_duplicate": 36,
+            "recurrent_close_pair": 0,
+            "transient_crossing": 0,
+            "clustered_pair": 0,
+            "separate_pair": 0,
+            "void_no_joint_visibility": 0,
+        },
+        "Task 20 v2 retained-channel category counts",
     )
     comparison = result["historical_comparison"]
     _require(
@@ -1424,6 +2313,11 @@ def _validate_committed_task20_result(
         "Task 20 historical comparison failure count",
     )
     _exact_value(
+        comparison.get("passed_record_count"),
+        245,
+        "Task 20 historical comparison passed count",
+    )
+    _exact_value(
         comparison.get("all_definition_identical_fields_passed"),
         True,
         "Task 20 historical comparison verdict",
@@ -1431,8 +2325,12 @@ def _validate_committed_task20_result(
     _exact_value(
         result["gate"],
         {
-            "expected_structural_negative_control_collapse": True,
-            "observed_structural_negative_control_collapse": True,
+            "classification_field": V2_COLLAPSE_FIELD,
+            "expected_structural_negative_control_collapse_v2": True,
+            "observed_structural_negative_control_collapse_v2": True,
+            "observed_legacy_v1_all_channel_structural_negative_control_collapse": (
+                False
+            ),
             "classification_passed": True,
             "historical_245_record_comparison_passed": True,
             "passed": True,
@@ -1495,13 +2393,23 @@ def authorize_checkpoint_runtime(
         candidate=candidate,
     )
     task20_gate: dict[str, str] | None = None
+    task20_v1_audit: dict[str, str] | None = None
     if task_id in {55, 80}:
-        task20_gate = _validate_committed_task20_result(
+        task20_v1_audit = _validate_immutable_task20_v1_result(
+            repo_root=repo_root,
+            source_commit=runtime_source_commit,
+        )
+        task20_gate = _validate_committed_task20_v2_result(
             repo_root=repo_root,
             source_commit=runtime_source_commit,
             runtime_source_manifest=review_authorization[
                 "runtime_source_manifest"
             ],
+            checkpoint_hash_preflight_file_sha256=str(
+                review_authorization[
+                    "checkpoint_hash_preflight_file_sha256"
+                ]
+            ),
         )
     _validate_actual_runtime_environment()
 
@@ -1558,6 +2466,16 @@ def authorize_checkpoint_runtime(
         task20_gate_source_commit=(
             task20_gate["source_commit"] if task20_gate is not None else None
         ),
+        task20_v1_audit_file_sha256=(
+            task20_v1_audit["file_sha256"]
+            if task20_v1_audit is not None
+            else None
+        ),
+        task20_v1_audit_content_hash_sha256=(
+            task20_v1_audit["content_hash_sha256"]
+            if task20_v1_audit is not None
+            else None
+        ),
         _capability=_VERIFIED_RUNTIME_CAPABILITY,
     )
 
@@ -1592,6 +2510,11 @@ def require_checkpoint_runtime_authorization(
             and authorization.task20_gate_source_commit is None,
             "Task 20 capability must not claim its own stop-gate result",
         )
+        _require(
+            authorization.task20_v1_audit_file_sha256 is None
+            and authorization.task20_v1_audit_content_hash_sha256 is None,
+            "Task 20 capability must not claim the downstream v1 audit binding",
+        )
     else:
         _require(
             authorization.task_id in {55, 80}
@@ -1615,6 +2538,16 @@ def require_checkpoint_runtime_authorization(
             and _COMMIT_RE.fullmatch(authorization.task20_gate_source_commit)
             is not None,
             "Tasks 55/80 capability lacks the committed Task 20 stop-gate binding",
+        )
+        _exact_value(
+            authorization.task20_v1_audit_file_sha256,
+            TASK20_V1_RESULT_FILE_SHA256,
+            "Tasks 55/80 capability Task 20 v1 audit file hash",
+        )
+        _exact_value(
+            authorization.task20_v1_audit_content_hash_sha256,
+            TASK20_V1_RESULT_CONTENT_HASH_SHA256,
+            "Tasks 55/80 capability Task 20 v1 audit content hash",
         )
     return authorization
 
@@ -2090,7 +3023,9 @@ __all__ = [
     "CheckpointRuntimeAuthorization",
     "FABLE_EXECUTION_REVIEW_REPO_RELATIVE_PATH",
     "RUNTIME_ENTRYPOINT",
-    "TASK20_CHECKPOINT_REPLAY_RESULT_REPO_RELATIVE_PATH",
+    "TASK20_CHECKPOINT_REPLAY_RESULT_V1_REPO_RELATIVE_PATH",
+    "TASK20_CHECKPOINT_REPLAY_RESULT_V2_REPO_RELATIVE_PATH",
+    "V2_COLLAPSE_FIELD",
     "authorize_checkpoint_runtime",
     "consume_checkpoint_provenance_load_receipt",
     "require_checkpoint_runtime_authorization",

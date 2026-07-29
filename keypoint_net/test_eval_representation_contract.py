@@ -196,7 +196,7 @@ def _assert_raises_regex(
 
 def _temporary_path(function):
     @functools.wraps(function)
-    def wrapped():
+    def wrapped(*_args, **_kwargs):
         global _UNIT_CURRENT_BUNDLE_CONFIG
         directory = Path(
             tempfile.mkdtemp(prefix="representation-evaluator-contract-")
@@ -239,6 +239,28 @@ def _seal(bundle: dict) -> dict:
     bundle["bundle_content_sha256"] = evaluator.canonical_sha256(bundle)
     _UNIT_CURRENT_BUNDLE_CONFIG = copy.deepcopy(bundle["evaluation_config"])
     return bundle
+
+
+def _with_evaluation_logits(
+    bundle: dict,
+    per_channel_logits: list[list[list[float]]],
+) -> dict:
+    bundle = copy.deepcopy(bundle)
+    channel_logits = np.asarray(per_channel_logits, dtype=np.float64)
+    frame_count = len(bundle["evaluation"]["frame_ids"])
+    logits = np.repeat(channel_logits[None, :, :, :], frame_count, axis=0)
+    points = evaluator.spatial_expectation(
+        logits,
+        temperature=float(bundle["estimator_metadata"]["temperature"]),
+        softmax_dtype=str(bundle["estimator_metadata"]["softmax_dtype"]),
+    )
+    bundle["evaluation"]["logits"] = logits.tolist()
+    bundle["evaluation"]["points"] = points.tolist()
+    bundle["evaluation"]["visibility"] = [
+        [True] * channel_logits.shape[0]
+        for _ in range(frame_count)
+    ]
+    return _seal(bundle)
 
 
 def _base_bundle(tmp_path: Path, *, case_kind: str = "planted") -> dict:
@@ -861,6 +883,188 @@ def test_structural_negative_control_flag_uses_all_channels(tmp_path: Path) -> N
     )
     assert evidence["eligible_only_structural_negative_control_collapse"] is None
     assert evidence["eligible_only_status"] == "void_below_minimum_eligible_channels"
+    assert (
+        evidence[
+            "structural_negative_control_collapse_v2_excluding_confirmed_flat_dead"
+        ]
+        is True
+    )
+    assert (
+        evidence[
+            "structural_negative_control_status_v2_excluding_confirmed_flat_dead"
+        ]
+        == "available"
+    )
+    assert evidence["channels_not_confirmed_flat_dead_indices"] == [0, 1, 2]
+    assert evidence["confirmed_flat_dead_channel_indices"] == []
+
+
+@_temporary_path
+def test_v2_duplicate_cluster_plus_flat_dead_is_collapse(
+    tmp_path: Path,
+) -> None:
+    sharp_duplicate = [[30.0, -30.0], [-30.0, -30.0]]
+    flat_dead = [[0.0, 0.0], [0.0, 0.0]]
+    bundle = _base_bundle(tmp_path)
+    bundle = _with_evaluation_logits(
+        bundle,
+        [sharp_duplicate, sharp_duplicate, sharp_duplicate, flat_dead],
+    )
+    result = evaluator.evaluate_bundle(bundle)
+    evidence = result["collapse_evidence"]
+    assert evidence["structural_negative_control_collapse"] is False
+    assert (
+        evidence[
+            "structural_negative_control_collapse_v2_excluding_confirmed_flat_dead"
+        ]
+        is True
+    )
+    assert evidence["channels_not_confirmed_flat_dead_indices"] == [0, 1, 2]
+    assert evidence["confirmed_flat_dead_channel_indices"] == [3]
+    retained = result["trajectory_separation"][
+        "channels_not_confirmed_flat_dead"
+    ]
+    assert retained["pair_count"] == 3
+    assert retained["evaluable_pair_count"] == 3
+    assert retained["category_counts"]["persistent_duplicate"] == 3
+
+
+@_temporary_path
+def test_v2_all_sharp_duplicate_channels_are_collapse(
+    tmp_path: Path,
+) -> None:
+    sharp_duplicate = [[30.0, -30.0], [-30.0, -30.0]]
+    bundle = _base_bundle(tmp_path)
+    bundle = _with_evaluation_logits(
+        bundle,
+        [sharp_duplicate, sharp_duplicate, sharp_duplicate],
+    )
+    evidence = evaluator.evaluate_bundle(bundle)["collapse_evidence"]
+    assert evidence["structural_negative_control_collapse"] is True
+    assert (
+        evidence[
+            "structural_negative_control_collapse_v2_excluding_confirmed_flat_dead"
+        ]
+        is True
+    )
+    assert evidence["confirmed_flat_dead_channel_indices"] == []
+
+
+@_temporary_path
+def test_v2_separated_sharp_channels_plus_flat_dead_are_not_collapse(
+    tmp_path: Path,
+) -> None:
+    sharp_top_left = [[30.0, -30.0], [-30.0, -30.0]]
+    sharp_bottom_right = [[-30.0, -30.0], [-30.0, 30.0]]
+    flat_dead = [[0.0, 0.0], [0.0, 0.0]]
+    bundle = _base_bundle(tmp_path)
+    bundle = _with_evaluation_logits(
+        bundle,
+        [sharp_top_left, sharp_bottom_right, flat_dead],
+    )
+    evidence = evaluator.evaluate_bundle(bundle)["collapse_evidence"]
+    assert (
+        evidence[
+            "structural_negative_control_collapse_v2_excluding_confirmed_flat_dead"
+        ]
+        is False
+    )
+    assert evidence["channels_not_confirmed_flat_dead_indices"] == [0, 1]
+    assert evidence["confirmed_flat_dead_channel_indices"] == [2]
+
+
+@_temporary_path
+def test_v2_live_separated_channel_prevents_duplicate_cluster_collapse(
+    tmp_path: Path,
+) -> None:
+    sharp_top_left = [[30.0, -30.0], [-30.0, -30.0]]
+    sharp_bottom_right = [[-30.0, -30.0], [-30.0, 30.0]]
+    flat_dead = [[0.0, 0.0], [0.0, 0.0]]
+    bundle = _base_bundle(tmp_path)
+    bundle = _with_evaluation_logits(
+        bundle,
+        [
+            sharp_top_left,
+            sharp_top_left,
+            sharp_top_left,
+            sharp_bottom_right,
+            flat_dead,
+        ],
+    )
+    result = evaluator.evaluate_bundle(bundle)
+    evidence = result["collapse_evidence"]
+    assert (
+        evidence[
+            "structural_negative_control_collapse_v2_excluding_confirmed_flat_dead"
+        ]
+        is False
+    )
+    assert evidence["channels_not_confirmed_flat_dead_indices"] == [0, 1, 2, 3]
+    assert evidence["confirmed_flat_dead_channel_indices"] == [4]
+    assert result["channel_health"]["motion_active_count"] == 0
+
+
+@_temporary_path
+def test_v2_below_minimum_non_flat_dead_channels_is_void(
+    tmp_path: Path,
+) -> None:
+    sharp = [[30.0, -30.0], [-30.0, -30.0]]
+    flat_dead = [[0.0, 0.0], [0.0, 0.0]]
+    bundle = _base_bundle(tmp_path)
+    bundle = _with_evaluation_logits(
+        bundle,
+        [sharp, flat_dead, flat_dead],
+    )
+    result = evaluator.evaluate_bundle(bundle)
+    evidence = result["collapse_evidence"]
+    assert (
+        evidence[
+            "structural_negative_control_collapse_v2_excluding_confirmed_flat_dead"
+        ]
+        is None
+    )
+    assert (
+        evidence[
+            "structural_negative_control_status_v2_excluding_confirmed_flat_dead"
+        ]
+        == "void_below_minimum_channels_not_confirmed_flat_dead"
+    )
+    assert evidence["channels_not_confirmed_flat_dead_indices"] == [0]
+    assert evidence["confirmed_flat_dead_channel_indices"] == [1, 2]
+    assert (
+        result["trajectory_separation"]["channels_not_confirmed_flat_dead"]
+        is None
+    )
+
+
+@_temporary_path
+def test_v2_void_retained_pair_is_not_collapse(
+    tmp_path: Path,
+) -> None:
+    sharp_duplicate = [[30.0, -30.0], [-30.0, -30.0]]
+    bundle = _base_bundle(tmp_path)
+    bundle = _with_evaluation_logits(
+        bundle,
+        [sharp_duplicate, sharp_duplicate, sharp_duplicate],
+    )
+    bundle["evaluation"]["visibility"] = [
+        [True, True, False],
+        [True, False, True],
+    ]
+    result = evaluator.evaluate_bundle(_seal(bundle))
+    evidence = result["collapse_evidence"]
+    retained = result["trajectory_separation"][
+        "channels_not_confirmed_flat_dead"
+    ]
+    assert retained["void_pair_count"] == 1
+    assert retained["persistent_duplicate_pair_rate"] == 1.0
+    assert retained["all_pairs_persistent_duplicate"] is False
+    assert (
+        evidence[
+            "structural_negative_control_collapse_v2_excluding_confirmed_flat_dead"
+        ]
+        is False
+    )
 
 
 @_temporary_path
@@ -1235,7 +1439,16 @@ def test_public_evaluator_has_no_provenance_validator_override() -> None:
             function
         ).parameters
     assert evaluator.provenance_contract.LOADED_SOURCE_ROLES == frozenset(
-        {"evaluator_source"}
+        {"evaluator_source", "array_codec_source"}
+    )
+    assert evaluator.provenance_contract.required_loaded_source_roles(
+        "planted"
+    ) == frozenset(
+        {
+            "evaluator_source",
+            "array_codec_source",
+            "oracle_harness_source",
+        }
     )
 
 

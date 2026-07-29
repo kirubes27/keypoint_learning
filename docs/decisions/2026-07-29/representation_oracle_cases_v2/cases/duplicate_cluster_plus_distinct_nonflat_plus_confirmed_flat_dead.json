@@ -1,0 +1,90 @@
+{
+  "schema_version": "representation-oracle-planted-case-v2",
+  "case_id": "duplicate_cluster_plus_distinct_nonflat_plus_confirmed_flat_dead",
+  "case_kind": "planted",
+  "group": "structural_collapse_v2",
+  "semantic_role": "near_miss",
+  "execution": {
+    "entrypoint": "keypoint_net.eval_representation.evaluate_bundle",
+    "expected_disposition": "result",
+    "expected_error_code": null
+  },
+  "construction": {
+    "builder_id": "task20_collapse_v2_pattern",
+    "parameters": {
+      "pattern": "duplicate_cluster_plus_distinct_nonflat_plus_confirmed_flat_dead",
+      "resolution": 8
+    }
+  },
+  "expectations": {
+    "expected_critical_failures": [],
+    "assertions": [
+      {
+        "json_pointer": "/schema_version",
+        "comparator": "exact",
+        "expected": "representation-evaluation-result-v2"
+      },
+      {
+        "json_pointer": "/channel_health/heatmap_flat_dead_count",
+        "comparator": "exact",
+        "expected": 1
+      },
+      {
+        "json_pointer": "/collapse_evidence/confirmed_flat_dead_channel_indices",
+        "comparator": "exact",
+        "expected": [4]
+      },
+      {
+        "json_pointer": "/collapse_evidence/channels_not_confirmed_flat_dead_indices",
+        "comparator": "exact",
+        "expected": [0, 1, 2, 3]
+      },
+      {
+        "json_pointer": "/collapse_evidence/structural_negative_control_collapse",
+        "comparator": "exact",
+        "expected": false
+      },
+      {
+        "json_pointer": "/collapse_evidence/structural_negative_control_collapse_v2_excluding_confirmed_flat_dead",
+        "comparator": "exact",
+        "expected": false
+      },
+      {
+        "json_pointer": "/trajectory_separation/channels_not_confirmed_flat_dead/pair_count",
+        "comparator": "exact",
+        "expected": 6
+      },
+      {
+        "json_pointer": "/trajectory_separation/channels_not_confirmed_flat_dead/category_counts/persistent_duplicate",
+        "comparator": "exact",
+        "expected": 3
+      },
+      {
+        "json_pointer": "/trajectory_separation/channels_not_confirmed_flat_dead/category_counts/separate_pair",
+        "comparator": "exact",
+        "expected": 3
+      },
+      {
+        "json_pointer": "/channel_health/channels/3/heatmap_flat_dead",
+        "comparator": "exact",
+        "expected": false
+      },
+      {
+        "json_pointer": "/channel_health/channels/3/motion_active",
+        "comparator": "exact",
+        "expected": false
+      },
+      {
+        "json_pointer": "/channel_health/channels/3/on_object",
+        "comparator": "exact",
+        "expected": false
+      }
+    ],
+    "forbidden_pointers": [
+      "/rollout/full_corpus_identity_normalized_auc",
+      "/rollout/role_scoped_holdout_identity_normalized_auc",
+      "/rollout/closure"
+    ]
+  },
+  "content_hash_sha256": "ca2a090cfc48e8255eeecd5e561ee189ea423ff0b2efc8ca64a5aaa40c1b5dd5"
+}

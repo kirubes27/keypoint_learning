@@ -1,0 +1,99 @@
+{
+  "schema_version": "representation-oracle-case-manifest-v2",
+  "status": "candidate_requires_fable_review",
+  "scope": "task20_structural_negative_control_collapse_v2_only",
+  "case_schema_version": "representation-oracle-planted-case-v2",
+  "production_entrypoint": "keypoint_net.eval_representation.evaluate_bundle",
+  "existing_data_boundary": "synthetic_planted_only_no_dataset_checkpoint_model_or_training",
+  "semantic_lock": {
+    "excluded_channel_predicate": "heatmap_flat_dead_is_exactly_true",
+    "retained_channel_predicate": "heatmap_flat_dead_is_not_exactly_true",
+    "forbidden_channel_filters": [
+      "motion_active",
+      "on_object",
+      "health_label",
+      "eligible_indices"
+    ],
+    "minimum_retained_channel_source": "evaluation_config.minimum_eligible_channels",
+    "below_minimum_disposition": "void_null_not_false",
+    "collapse_predicate": "every_possible_retained_pair_is_evaluable_and_persistent_duplicate",
+    "numeric_threshold_change": false,
+    "saved_checkpoint_execution_authority": false,
+    "task_20_55_80_scientific_authority": false
+  },
+  "bindings": {
+    "numeric_registry": {
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_calibration/NUMERIC_CALIBRATION_v1_1.json",
+      "file_sha256": "40115c7325858137595ba6e90e36fbd52c9a72da2f16b64d9fd1ad4f7764f420",
+      "content_hash_sha256": "24a2d0eb28d1ec8f26c14064abdb4afcaa51e7cf63d9560e1c2f1c9b4a8118c8"
+    },
+    "calibration_fixture_manifest": {
+      "relative_path": "docs/decisions/2026-07-26/representation_oracle_calibration/CALIBRATION_FIXTURE_MANIFEST.json",
+      "file_sha256": "40435922cad4f877697f4aa026dc64f28b2863c86b025f0b332d3b6b53508b90"
+    }
+  },
+  "ordered_case_definitions": [
+    {
+      "case_id": "separated_nonflat_no_confirmed_flat_dead",
+      "relative_path": "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/separated_nonflat_no_confirmed_flat_dead.json",
+      "file_sha256": "30d0ddbb3abb98b5a5ec48a3e156d9373a7901155eab317217876626c3b0c21f",
+      "content_hash_sha256": "79487bb5d6829a01a6b3e404237d948915ec927209d04071f1eae01a4b8029dd",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "healthy_separated_plus_confirmed_flat_dead",
+      "relative_path": "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/healthy_separated_plus_confirmed_flat_dead.json",
+      "file_sha256": "425da186a6e71924b86f09a51d8c5e592a8a980a9ca07ba50e617dc3f412bec0",
+      "content_hash_sha256": "3bb92e76a1b5293386f02ba3c3a4f09a2794fb9e811285dbfdd049afd5462717",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "task20_shape_nine_duplicate_plus_confirmed_flat_dead",
+      "relative_path": "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/task20_shape_nine_duplicate_plus_confirmed_flat_dead.json",
+      "file_sha256": "c161ad295be788193c4a0b0e665b2e963a132dff434ebd88f50580f2d8bb89c5",
+      "content_hash_sha256": "ff6d2546fbeb43766e8dde380f8c89517a7e95060f50387bba53e9060339236c",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "duplicate_cluster_plus_distinct_nonflat_plus_confirmed_flat_dead",
+      "relative_path": "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/duplicate_cluster_plus_distinct_nonflat_plus_confirmed_flat_dead.json",
+      "file_sha256": "6534def30a2ae7e7ca0fe777db34e7c1020868d4221669cc76de95b4cd722cda",
+      "content_hash_sha256": "ca2a090cfc48e8255eeecd5e561ee189ea423ff0b2efc8ca64a5aaa40c1b5dd5",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "all_nonflat_duplicate",
+      "relative_path": "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/all_nonflat_duplicate.json",
+      "file_sha256": "3815b5633242277c9150efdb592c2e6c04cb49ee5b7323ab626d8ddd13a498aa",
+      "content_hash_sha256": "2bd6fb77e06bd6b362aeafe7c32a061717724937c7b036379eaf9cdad531bfa2",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "below_minimum_nonflat_void",
+      "relative_path": "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/below_minimum_nonflat_void.json",
+      "file_sha256": "123e7f94e44d5b5196a43a17e1bf67c8a48ed30e50d1ceaff24cda3f010ea469",
+      "content_hash_sha256": "25db2c3fc2dc8f1f21599960be73aac52f00d240dcffff4c8ace5166fdb54c56",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    },
+    {
+      "case_id": "coordinate_only_missing_logits_retains_all_channels",
+      "relative_path": "docs/decisions/2026-07-29/representation_oracle_cases_v2/cases/coordinate_only_missing_logits_retains_all_channels.json",
+      "file_sha256": "4998889b681a2d527fd6fc78c476f6d22f0b60493715af32c8437b5ee0df58c4",
+      "content_hash_sha256": "91ce730bc6a9ab956c51e0e2f54e1aee89346cc538a12bbfcbdb894955420239",
+      "expected_evaluation_config_sha256": "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
+    }
+  ],
+  "determinism_rules": {
+    "construction_repetitions": 2,
+    "evaluation_repetitions": 2,
+    "bundle_byte_comparison": "canonical_json_exact",
+    "result_byte_comparison": "canonical_json_exact",
+    "output_encoding": "canonical_json_utf8_single_lf"
+  },
+  "immutable_v1_boundaries": {
+    "case_root": "docs/decisions/2026-07-26/representation_oracle_cases",
+    "result_root": "docs/decisions/2026-07-26/representation_oracle_results",
+    "mutation_authorized": false
+  },
+  "content_hash_sha256": "c1a1a4c1fd39d9c25179d0927a9615b1f09553ef74a49d9b1fbeae6f123529f7"
+}

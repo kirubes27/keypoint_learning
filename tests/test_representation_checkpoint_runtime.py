@@ -400,7 +400,7 @@ def _task20_result_document(
         },
     }
     result = {
-        "schema_version": "representation_checkpoint_replay_result.v2",
+        "schema_version": "representation_checkpoint_replay_result.v3",
         "artifact_type": "representation_checkpoint_replay_result",
         "task_id": 20,
         "fixture_id": runtime_receipt.fixture_id,
@@ -588,17 +588,17 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
             ).hexdigest(),
         )
 
-    def test_v2_runtime_paths_cannot_reuse_or_overwrite_v1(self) -> None:
+    def test_v3_runtime_paths_cannot_reuse_or_overwrite_v1(self) -> None:
         self.assertEqual(
             runtime.RUNTIME_RESULT_SCHEMA_VERSION,
-            "representation_checkpoint_replay_result.v2",
+            "representation_checkpoint_replay_result.v3",
         )
         self.assertEqual(
             runtime.RESULT_FILENAMES,
             {
-                20: "TASK20_CHECKPOINT_REPLAY_RESULT_v2.json",
-                55: "TASK55_CHECKPOINT_REPLAY_RESULT_v2.json",
-                80: "TASK80_CHECKPOINT_REPLAY_RESULT_v2.json",
+                20: "TASK20_CHECKPOINT_REPLAY_RESULT_v3.json",
+                55: "TASK55_CHECKPOINT_REPLAY_RESULT_v3.json",
+                80: "TASK80_CHECKPOINT_REPLAY_RESULT_v3.json",
             },
         )
         repo_root = Path(runtime.__file__).resolve().parents[1]
@@ -678,6 +678,7 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
             "checkpoint_hash_preflight_file_sha256": PREFLIGHT_SHA256,
             "semantic_lock_file_sha256": "1" * 64,
             "decision_amendment_file_sha256": "2" * 64,
+            "cross_backend_tolerance_semantic_lock_file_sha256": "6" * 64,
             "task20_v2_oracle_harness_file_sha256": "3" * 64,
             "task20_v2_oracle_manifest_file_sha256": "4" * 64,
             "planted_v2_reviewed_fileset_sha256": "5" * 64,
@@ -703,6 +704,10 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
                 (
                     "DECISION_SYNTHESIS_V2_8_AMENDMENT_FILE_SHA256: "
                     f"{'2' * 64}"
+                ),
+                (
+                    "CROSS_BACKEND_TOLERANCE_SEMANTIC_LOCK_FILE_SHA256: "
+                    f"{'6' * 64}"
                 ),
                 f"TASK20_V2_ORACLE_HARNESS_FILE_SHA256: {'3' * 64}",
                 f"TASK20_V2_ORACLE_MANIFEST_FILE_SHA256: {'4' * 64}",
@@ -1075,7 +1080,7 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
             "_git",
             side_effect=fake_git,
         ):
-            receipt = authorization._validate_committed_task20_v2_result(
+            receipt = authorization._validate_committed_task20_v3_result(
                 repo_root=Path("/repository"),
                 source_commit=SOURCE_COMMIT,
                 runtime_source_manifest=manifest,
@@ -1109,7 +1114,7 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
                         authorization.CheckpointAuthorizationError,
                         "structural collapse flag",
                     ):
-                        authorization._validate_committed_task20_v2_result(
+                        authorization._validate_committed_task20_v3_result(
                             repo_root=Path("/repository"),
                             source_commit=SOURCE_COMMIT,
                             runtime_source_manifest=failed_manifest,
@@ -1245,7 +1250,7 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
                         authorization.CheckpointAuthorizationError,
                         message,
                     ):
-                        authorization._validate_committed_task20_v2_result(
+                        authorization._validate_committed_task20_v3_result(
                             repo_root=Path("/repository"),
                             source_commit=SOURCE_COMMIT,
                             runtime_source_manifest=manifest,
@@ -1296,7 +1301,7 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
             self.addCleanup(patcher.stop)
         with mock.patch.object(
             authorization,
-            "_validate_committed_task20_v2_result",
+            "_validate_committed_task20_v3_result",
             side_effect=authorization.CheckpointAuthorizationError(
                 "Task 20 checkpoint replay result cannot be read"
             ),
@@ -1321,7 +1326,7 @@ class CheckpointAuthorizationRuntimeTests(TestCase):
         }
         with mock.patch.object(
             authorization,
-            "_validate_committed_task20_v2_result",
+            "_validate_committed_task20_v3_result",
             return_value=task20_gate,
         ):
             runtime = authorization.authorize_checkpoint_runtime(

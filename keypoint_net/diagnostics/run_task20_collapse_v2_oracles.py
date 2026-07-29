@@ -64,11 +64,11 @@ CALIBRATION_FIXTURE_RELATIVE_PATH = (
 )
 FABLE_REVIEW_RELATIVE_PATH = (
     "docs/decisions/2026-07-29/"
-    "FABLE_5_HIGH_TASK20_COLLAPSE_V2_EXECUTION_REVIEW_2026-07-29.md"
+    "FABLE_5_HIGH_CROSS_BACKEND_TOLERANCE_V3_EXECUTION_REVIEW_2026-07-29.md"
 )
 RUNTIME_SOURCE_MANIFEST_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/"
-    "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v2.json"
+    "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v3.json"
 )
 CHECKPOINT_PREFLIGHT_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/"
@@ -82,6 +82,10 @@ DECISION_AMENDMENT_RELATIVE_PATH = (
     "docs/decisions/2026-07-29/"
     "DECISION_SYNTHESIS_v2_8_AMENDMENT_2026-07-29.md"
 )
+CROSS_BACKEND_TOLERANCE_SEMANTIC_LOCK_RELATIVE_PATH = (
+    "docs/decisions/2026-07-29/"
+    "TASK55_COORDINATE_BACKEND_BRIDGE_SEMANTIC_LOCK.md"
+)
 IMMUTABLE_TASK20_V1_RESULT_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/results/"
     "TASK20_CHECKPOINT_REPLAY_RESULT_v1.json"
@@ -90,7 +94,7 @@ IMMUTABLE_TASK20_V1_FILE_SHA256 = (
     "e44ec8b839d6b39377a8acf8b5b2997334ad3c518530675cadcc322e696d2675"
 )
 FABLE_REVIEW_BINDING_SCHEMA = (
-    "task20_collapse_v2_fable_execution_review_binding.v1"
+    "cross_backend_tolerance_v3_fable_execution_review_binding.v1"
 )
 DEFAULT_MANIFEST = REPOSITORY_ROOT / MANIFEST_RELATIVE_PATH
 SAFE_CASE_ID = re.compile(r"^[a-z0-9][a-z0-9_]*$")
@@ -136,6 +140,7 @@ EXPECTED_CASES = (
 REVIEWED_PLANTED_INPUT_PATHS = (
     SEMANTIC_LOCK_RELATIVE_PATH,
     DECISION_AMENDMENT_RELATIVE_PATH,
+    CROSS_BACKEND_TOLERANCE_SEMANTIC_LOCK_RELATIVE_PATH,
     HARNESS_RELATIVE_PATH,
     MANIFEST_RELATIVE_PATH,
     *(
@@ -944,6 +949,9 @@ def _validate_fable_review_authority() -> dict[str, str]:
         ).hexdigest(),
         "DECISION_SYNTHESIS_V2_8_AMENDMENT_FILE_SHA256": hashlib.sha256(
             data_by_path[DECISION_AMENDMENT_RELATIVE_PATH]
+        ).hexdigest(),
+        "CROSS_BACKEND_TOLERANCE_SEMANTIC_LOCK_FILE_SHA256": hashlib.sha256(
+            data_by_path[CROSS_BACKEND_TOLERANCE_SEMANTIC_LOCK_RELATIVE_PATH]
         ).hexdigest(),
         "TASK20_V2_ORACLE_HARNESS_FILE_SHA256": hashlib.sha256(
             data_by_path[HARNESS_RELATIVE_PATH]

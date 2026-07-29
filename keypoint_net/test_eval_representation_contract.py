@@ -38,6 +38,40 @@ AUTHORITATIVE_NUMERIC_REGISTRY_CONTENT_SHA256 = (
 )
 
 
+def test_checkpoint_cross_backend_tolerance_is_narrow_and_role_scoped() -> None:
+    numeric_registry = {
+        "coordinate_tolerance": 3.814697265625e-06,
+        "coordinate_tolerance_key": (
+            "float32::spatial_expectation_coordinate"
+        ),
+    }
+    estimator = {
+        "logit_dtype": "float32",
+        "softmax_dtype": "float32",
+    }
+    checkpoint_tolerance, checkpoint_key = (
+        evaluator._coordinate_consistency_policy(
+            case_kind="checkpoint",
+            estimator=estimator,
+            numeric_registry=numeric_registry,
+        )
+    )
+    planted_tolerance, planted_key = evaluator._coordinate_consistency_policy(
+        case_kind="planted",
+        estimator=estimator,
+        numeric_registry=numeric_registry,
+    )
+
+    assert checkpoint_tolerance == 1e-4
+    assert checkpoint_key == (
+        "float32::checkpoint_pytorch_numpy_spatial_expectation_coordinate"
+    )
+    assert 1.3053417205810547e-05 <= checkpoint_tolerance
+    assert 1e-3 > checkpoint_tolerance
+    assert planted_tolerance == numeric_registry["coordinate_tolerance"]
+    assert planted_key == numeric_registry["coordinate_tolerance_key"]
+
+
 def _unit_provenance_validator(
     record: dict,
     *,

@@ -43,9 +43,9 @@ def test_manifest_validation_sources_capture_their_import_bytes(module) -> None:
 
 def test_checkpoint_provenance_roles_have_exact_fixed_paths() -> None:
     expected = {
-            "checkpoint_runtime_source_manifest": (
-                "docs/decisions/2026-07-26/representation_oracle_replay/"
-                "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v2.json"
+                "checkpoint_runtime_source_manifest": (
+                    "docs/decisions/2026-07-26/representation_oracle_replay/"
+                    "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v3.json"
         ),
         "checkpoint_hash_preflight": (
             "docs/decisions/2026-07-26/representation_oracle_replay/"
@@ -67,13 +67,13 @@ def test_checkpoint_provenance_roles_have_exact_fixed_paths() -> None:
             "docs/decisions/2026-07-26/representation_oracle_replay/"
             "HAMMER_ROLL_METADATA_MANIFEST_v1.json"
         ),
-            "checkpoint_execution_authorization": (
-                "docs/decisions/2026-07-26/representation_oracle_replay/"
-                "CHECKPOINT_EXECUTION_AUTHORIZATION_v2.json"
-            ),
-            "fable_execution_review": (
-                "docs/decisions/2026-07-29/"
-                "FABLE_5_HIGH_TASK20_COLLAPSE_V2_EXECUTION_REVIEW_2026-07-29.md"
+                "checkpoint_execution_authorization": (
+                    "docs/decisions/2026-07-26/representation_oracle_replay/"
+                    "CHECKPOINT_EXECUTION_AUTHORIZATION_v3.json"
+                ),
+                "fable_execution_review": (
+                    "docs/decisions/2026-07-29/"
+                    "FABLE_5_HIGH_CROSS_BACKEND_TOLERANCE_V3_EXECUTION_REVIEW_2026-07-29.md"
         ),
     }
     assert {
@@ -265,6 +265,8 @@ def test_runtime_manifest_binds_every_executable_source(
             "inference_mode": True,
             "task_ids": [20, 55, 80],
             "task55_and_80_require_immutable_task20_v1_audit": True,
+            "task55_and_80_require_committed_task20_v3_stop_gate": True,
+            "checkpoint_float32_cross_backend_coordinate_tolerance": 1e-4,
             "training_or_weight_update_authorized": False,
         "selection_use_authorized": False,
     }

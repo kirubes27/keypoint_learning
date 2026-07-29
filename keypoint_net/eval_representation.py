@@ -54,6 +54,10 @@ AUTHORITATIVE_NUMERIC_REGISTRY_CONTENT_SHA256 = (
 AUTHORITATIVE_NUMERIC_REGISTRY_SCHEMA_VERSION = (
     "representation-oracle-numeric-calibration-v1"
 )
+CHECKPOINT_FLOAT32_CROSS_BACKEND_COORDINATE_TOLERANCE = 1e-4
+CHECKPOINT_FLOAT32_CROSS_BACKEND_COORDINATE_TOLERANCE_KEY = (
+    "float32::checkpoint_pytorch_numpy_spatial_expectation_coordinate"
+)
 BASE_EVALUATION_CONFIG_FIELDS = {
     "protocol",
     "representation_thresholds",
@@ -484,6 +488,30 @@ def spatial_expectation(
     y = np.sum(probabilities * ys.reshape((1,) * (values.ndim - 2) + (height, 1)),
                axis=(-2, -1), dtype=dtype)
     return np.stack([x, y], axis=-1)
+
+
+def _coordinate_consistency_policy(
+    *,
+    case_kind: str,
+    estimator: Mapping[str, Any],
+    numeric_registry: Mapping[str, Any],
+) -> tuple[float, str]:
+    """Select the implementation-consistency tolerance, not a quality threshold."""
+
+    if case_kind == "checkpoint":
+        _require(
+            estimator.get("logit_dtype") == "float32"
+            and estimator.get("softmax_dtype") == "float32",
+            "checkpoint cross-backend tolerance requires float32 logits/softmax",
+        )
+        return (
+            CHECKPOINT_FLOAT32_CROSS_BACKEND_COORDINATE_TOLERANCE,
+            CHECKPOINT_FLOAT32_CROSS_BACKEND_COORDINATE_TOLERANCE_KEY,
+        )
+    return (
+        float(numeric_registry["coordinate_tolerance"]),
+        str(numeric_registry["coordinate_tolerance_key"]),
+    )
 
 
 def probabilities_from_logits(
@@ -3239,6 +3267,14 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
         estimator=estimator,
         validated_provenance=validated_provenance,
     )
+    (
+        estimator_coordinate_tolerance,
+        estimator_coordinate_tolerance_key,
+    ) = _coordinate_consistency_policy(
+        case_kind=str(bundle["case_kind"]),
+        estimator=estimator,
+        numeric_registry=numeric_registry,
+    )
     family, target_A, target_b = _validate_transform(
         transform,
         tolerance=numeric_registry["coordinate_tolerance"],
@@ -3413,12 +3449,11 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
             expected_shape=expected_shape,
             estimator=estimator,
         )
-        tolerance = numeric_registry["coordinate_tolerance"]
         maximum_error = float(
             np.max(np.abs(derived - evaluation_points))
         )
         _require(
-            maximum_error <= tolerance,
+            maximum_error <= estimator_coordinate_tolerance,
             f"evaluation points disagree with logits: maximum error {maximum_error}",
         )
         evaluation_points = derived
@@ -3515,7 +3550,7 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
                 np.max(np.abs(derived_fit_points - fit_points))
             )
             _require(
-                fit_maximum_error <= numeric_registry["coordinate_tolerance"],
+                fit_maximum_error <= estimator_coordinate_tolerance,
                 "fit points disagree with logits: "
                 f"maximum error {fit_maximum_error}",
             )
@@ -3644,12 +3679,8 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
                 "supplied_points_are_checked_against_and_replaced_by_fixed_"
                 "spatial_expectation_of_the_bound_logits"
             ),
-            "coordinate_tolerance_key": numeric_registry[
-                "coordinate_tolerance_key"
-            ],
-            "coordinate_tolerance": numeric_registry[
-                "coordinate_tolerance"
-            ],
+            "coordinate_tolerance_key": estimator_coordinate_tolerance_key,
+            "coordinate_tolerance": estimator_coordinate_tolerance,
             "evaluation": evaluation_estimator_consistency,
             "fit": fit_estimator_consistency,
         },

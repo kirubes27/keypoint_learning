@@ -131,7 +131,7 @@ FIXED_ROLE_PATHS = MappingProxyType(
         ),
         "checkpoint_runtime_source_manifest": (
             "docs/decisions/2026-07-26/representation_oracle_replay/"
-            "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v2.json"
+            "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v3.json"
         ),
         "checkpoint_hash_preflight": (
             "docs/decisions/2026-07-26/representation_oracle_replay/"
@@ -155,11 +155,11 @@ FIXED_ROLE_PATHS = MappingProxyType(
         ),
         "checkpoint_execution_authorization": (
             "docs/decisions/2026-07-26/representation_oracle_replay/"
-            "CHECKPOINT_EXECUTION_AUTHORIZATION_v2.json"
+            "CHECKPOINT_EXECUTION_AUTHORIZATION_v3.json"
         ),
         "fable_execution_review": (
             "docs/decisions/2026-07-29/"
-            "FABLE_5_HIGH_TASK20_COLLAPSE_V2_EXECUTION_REVIEW_2026-07-29.md"
+            "FABLE_5_HIGH_CROSS_BACKEND_TOLERANCE_V3_EXECUTION_REVIEW_2026-07-29.md"
         ),
     }
 )

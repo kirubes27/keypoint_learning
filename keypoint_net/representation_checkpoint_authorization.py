@@ -42,7 +42,7 @@ from keypoint_net import representation_checkpoint_replay as replay_registry
 
 CHECKPOINT_RUNTIME_SOURCE_MANIFEST_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/"
-    "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v2.json"
+    "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v3.json"
 )
 CHECKPOINT_HASH_PREFLIGHT_RESULT_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/"
@@ -50,19 +50,19 @@ CHECKPOINT_HASH_PREFLIGHT_RESULT_REPO_RELATIVE_PATH = (
 )
 CHECKPOINT_EXECUTION_AUTHORIZATION_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/"
-    "CHECKPOINT_EXECUTION_AUTHORIZATION_v2.json"
+    "CHECKPOINT_EXECUTION_AUTHORIZATION_v3.json"
 )
 FABLE_EXECUTION_REVIEW_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-29/"
-    "FABLE_5_HIGH_TASK20_COLLAPSE_V2_EXECUTION_REVIEW_2026-07-29.md"
+    "FABLE_5_HIGH_CROSS_BACKEND_TOLERANCE_V3_EXECUTION_REVIEW_2026-07-29.md"
 )
 TASK20_CHECKPOINT_REPLAY_RESULT_V1_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/results/"
     "TASK20_CHECKPOINT_REPLAY_RESULT_v1.json"
 )
-TASK20_CHECKPOINT_REPLAY_RESULT_V2_REPO_RELATIVE_PATH = (
+TASK20_CHECKPOINT_REPLAY_RESULT_V3_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/results/"
-    "TASK20_CHECKPOINT_REPLAY_RESULT_v2.json"
+    "TASK20_CHECKPOINT_REPLAY_RESULT_v3.json"
 )
 TASK20_V2_SEMANTIC_LOCK_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-29/"
@@ -71,6 +71,10 @@ TASK20_V2_SEMANTIC_LOCK_REPO_RELATIVE_PATH = (
 DECISION_SYNTHESIS_V2_8_AMENDMENT_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-29/"
     "DECISION_SYNTHESIS_v2_8_AMENDMENT_2026-07-29.md"
+)
+TASK55_CROSS_BACKEND_TOLERANCE_SEMANTIC_LOCK_REPO_RELATIVE_PATH = (
+    "docs/decisions/2026-07-29/"
+    "TASK55_COORDINATE_BACKEND_BRIDGE_SEMANTIC_LOCK.md"
 )
 TASK20_V2_ORACLE_HARNESS_REPO_RELATIVE_PATH = (
     "keypoint_net/diagnostics/run_task20_collapse_v2_oracles.py"
@@ -98,6 +102,7 @@ TASK20_V2_ORACLE_CASE_REPO_RELATIVE_PATHS = (
 TASK20_V2_REVIEWED_FILE_PATHS = (
     TASK20_V2_SEMANTIC_LOCK_REPO_RELATIVE_PATH,
     DECISION_SYNTHESIS_V2_8_AMENDMENT_REPO_RELATIVE_PATH,
+    TASK55_CROSS_BACKEND_TOLERANCE_SEMANTIC_LOCK_REPO_RELATIVE_PATH,
     TASK20_V2_ORACLE_HARNESS_REPO_RELATIVE_PATH,
     TASK20_V2_ORACLE_MANIFEST_REPO_RELATIVE_PATH,
     *TASK20_V2_ORACLE_CASE_REPO_RELATIVE_PATHS,
@@ -118,7 +123,7 @@ TASK20_V2_REVIEWED_FILE_PATHS = (
 )
 
 RUNTIME_SOURCE_MANIFEST_SCHEMA_VERSION = (
-    "representation_checkpoint_runtime_sources.v2"
+    "representation_checkpoint_runtime_sources.v3"
 )
 RUNTIME_SOURCE_MANIFEST_ARTIFACT_TYPE = (
     "representation_checkpoint_runtime_sources"
@@ -140,7 +145,7 @@ TASK20_V1_RESULT_SOURCE_COMMIT = (
     "426d1dbe94a655e6a90b4441b8e368be7338a4ae"
 )
 FABLE_REVIEW_BINDING_SCHEMA = (
-    "task20_collapse_v2_fable_execution_review_binding.v1"
+    "cross_backend_tolerance_v3_fable_execution_review_binding.v1"
 )
 TASK20_V2_ORACLE_RESULT_PREFIX = (
     "docs/decisions/2026-07-29/representation_oracle_results_v2/"
@@ -319,6 +324,8 @@ _EXPECTED_EXECUTION_BOUNDARY = {
     "inference_mode": True,
     "task_ids": [20, 55, 80],
     "task55_and_80_require_immutable_task20_v1_audit": True,
+    "task55_and_80_require_committed_task20_v3_stop_gate": True,
+    "checkpoint_float32_cross_backend_coordinate_tolerance": 1e-4,
     "training_or_weight_update_authorized": False,
     "selection_use_authorized": False,
 }
@@ -333,6 +340,8 @@ _EXPECTED_AUTHORIZATION_BOUNDARY = {
     "inference_mode": True,
     "task55_and_80_require_task20_pass": True,
     "task55_and_80_require_immutable_task20_v1_audit": True,
+    "checkpoint_float32_cross_backend_coordinate_tolerance": 1e-4,
+    "scientific_quality_threshold_changed": False,
     "training_or_weight_update_authorized": False,
     "selection_use_authorized": False,
 }
@@ -629,6 +638,7 @@ def _validate_fable_review_binding(
     checkpoint_hash_preflight_file_sha256: str,
     semantic_lock_file_sha256: str,
     decision_amendment_file_sha256: str,
+    cross_backend_tolerance_semantic_lock_file_sha256: str,
     task20_v2_oracle_harness_file_sha256: str,
     task20_v2_oracle_manifest_file_sha256: str,
     planted_v2_reviewed_fileset_sha256: str,
@@ -660,6 +670,10 @@ def _validate_fable_review_binding(
         (
             "DECISION_SYNTHESIS_V2_8_AMENDMENT_FILE_SHA256",
             decision_amendment_file_sha256,
+        ),
+        (
+            "CROSS_BACKEND_TOLERANCE_SEMANTIC_LOCK_FILE_SHA256",
+            cross_backend_tolerance_semantic_lock_file_sha256,
         ),
         (
             "TASK20_V2_ORACLE_HARNESS_FILE_SHA256",
@@ -1353,7 +1367,7 @@ def _validate_execution_review_roles(
     )
     _exact_value(
         execution["schema_version"],
-        "representation_checkpoint_execution_authorization.v2",
+        "representation_checkpoint_execution_authorization.v3",
         "checkpoint execution authorization schema",
     )
     _exact_value(
@@ -1496,12 +1510,13 @@ def _validate_execution_review_roles(
     amendment_records = execution["semantic_amendments"]
     _require(
         isinstance(amendment_records, list)
-        and len(amendment_records) == 2,
+        and len(amendment_records) == 3,
         "semantic amendment authorization records differ",
     )
     expected_amendment_paths = [
         TASK20_V2_SEMANTIC_LOCK_REPO_RELATIVE_PATH,
         DECISION_SYNTHESIS_V2_8_AMENDMENT_REPO_RELATIVE_PATH,
+        TASK55_CROSS_BACKEND_TOLERANCE_SEMANTIC_LOCK_REPO_RELATIVE_PATH,
     ]
     amendment_file_sha256_by_path: dict[str, str] = {}
     for index, (record, expected_path) in enumerate(
@@ -1586,6 +1601,11 @@ def _validate_execution_review_roles(
         decision_amendment_file_sha256=amendment_file_sha256_by_path[
             DECISION_SYNTHESIS_V2_8_AMENDMENT_REPO_RELATIVE_PATH
         ],
+        cross_backend_tolerance_semantic_lock_file_sha256=(
+            amendment_file_sha256_by_path[
+                TASK55_CROSS_BACKEND_TOLERANCE_SEMANTIC_LOCK_REPO_RELATIVE_PATH
+            ]
+        ),
         task20_v2_oracle_harness_file_sha256=hashlib.sha256(
             reviewed_v2_files[
                 TASK20_V2_ORACLE_HARNESS_REPO_RELATIVE_PATH
@@ -1813,22 +1833,22 @@ def _validate_immutable_task20_v1_result(
     }
 
 
-def _validate_committed_task20_v2_result(
+def _validate_committed_task20_v3_result(
     *,
     repo_root: Path,
     source_commit: str,
     runtime_source_manifest: Mapping[str, Any],
     checkpoint_hash_preflight_file_sha256: str,
 ) -> dict[str, str]:
-    """Require the exact committed v2 Task 20 stop-gate result."""
+    """Require the exact committed v3 Task 20 stop-gate result."""
 
     _, data = _committed_working_file(
         repo_root=repo_root,
         source_commit=source_commit,
-        repo_relative_path=TASK20_CHECKPOINT_REPLAY_RESULT_V2_REPO_RELATIVE_PATH,
-        name="Task 20 v2 checkpoint replay result",
+        repo_relative_path=TASK20_CHECKPOINT_REPLAY_RESULT_V3_REPO_RELATIVE_PATH,
+        name="Task 20 v3 checkpoint replay result",
     )
-    result = _strict_json(data, name="Task 20 v2 checkpoint replay result")
+    result = _strict_json(data, name="Task 20 v3 checkpoint replay result")
     expected_keys = {
         "schema_version",
         "artifact_type",
@@ -1857,8 +1877,8 @@ def _validate_committed_task20_v2_result(
     )
     _exact_value(
         result["schema_version"],
-        "representation_checkpoint_replay_result.v2",
-        "Task 20 v2 result schema",
+        "representation_checkpoint_replay_result.v3",
+        "Task 20 v3 result schema",
     )
     _exact_value(
         result["artifact_type"],
@@ -1905,7 +1925,6 @@ def _validate_committed_task20_v2_result(
         ["merge-base", "--is-ancestor", result_source_commit, source_commit],
         name="Task 20 result source_commit is not an ancestor of current source_commit",
     )
-
     execution_boundary = result["execution_boundary"]
     _exact_value(
         execution_boundary,
@@ -2399,7 +2418,7 @@ def authorize_checkpoint_runtime(
             repo_root=repo_root,
             source_commit=runtime_source_commit,
         )
-        task20_gate = _validate_committed_task20_v2_result(
+        task20_gate = _validate_committed_task20_v3_result(
             repo_root=repo_root,
             source_commit=runtime_source_commit,
             runtime_source_manifest=review_authorization[
@@ -3024,7 +3043,7 @@ __all__ = [
     "FABLE_EXECUTION_REVIEW_REPO_RELATIVE_PATH",
     "RUNTIME_ENTRYPOINT",
     "TASK20_CHECKPOINT_REPLAY_RESULT_V1_REPO_RELATIVE_PATH",
-    "TASK20_CHECKPOINT_REPLAY_RESULT_V2_REPO_RELATIVE_PATH",
+    "TASK20_CHECKPOINT_REPLAY_RESULT_V3_REPO_RELATIVE_PATH",
     "V2_COLLAPSE_FIELD",
     "authorize_checkpoint_runtime",
     "consume_checkpoint_provenance_load_receipt",

@@ -31,14 +31,14 @@ from keypoint_net import representation_evaluation_provenance as provenance
 from keypoint_net.diagnostics import build_checkpoint_replay_manifests as manifests
 
 
-RUNTIME_RESULT_SCHEMA_VERSION = "representation_checkpoint_replay_result.v2"
+RUNTIME_RESULT_SCHEMA_VERSION = "representation_checkpoint_replay_result.v3"
 RESULT_DIRECTORY_REPO_RELATIVE_PATH = (
     "docs/decisions/2026-07-26/representation_oracle_replay/results"
 )
 RESULT_FILENAMES = {
-    20: "TASK20_CHECKPOINT_REPLAY_RESULT_v2.json",
-    55: "TASK55_CHECKPOINT_REPLAY_RESULT_v2.json",
-    80: "TASK80_CHECKPOINT_REPLAY_RESULT_v2.json",
+    20: "TASK20_CHECKPOINT_REPLAY_RESULT_v3.json",
+    55: "TASK55_CHECKPOINT_REPLAY_RESULT_v3.json",
+    80: "TASK80_CHECKPOINT_REPLAY_RESULT_v3.json",
 }
 V2_COLLAPSE_FIELD = authorization.V2_COLLAPSE_FIELD
 

@@ -57,7 +57,7 @@ PRIMARY_GROUPS = _split_validator.PRIMARY_GROUPS
 validate_source_pair_document = _split_validator.validate_source_pair_document
 
 
-RUNTIME_SCHEMA_VERSION = "representation_checkpoint_runtime_sources.v2"
+RUNTIME_SCHEMA_VERSION = "representation_checkpoint_runtime_sources.v3"
 PAIR_SCHEMA_VERSION = "representation_checkpoint_replay_pair_index.v1"
 FRAME_MASK_SCHEMA_VERSION = (
     "representation_checkpoint_replay_frame_mask_inventory.v1"
@@ -79,7 +79,7 @@ OBJECT_ID = "engineers_hammer_vray"
 FRAME_COUNT = 180
 
 MANIFEST_FILENAMES = {
-    "runtime_source": "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v2.json",
+    "runtime_source": "CHECKPOINT_RUNTIME_SOURCE_MANIFEST_v3.json",
     "pair_index": "HAMMER_ROLL_PAIR_INDEX_MANIFEST_v1.json",
     "frame_mask": "HAMMER_ROLL_FRAME_MASK_INVENTORY_v1.json",
     "metadata": "HAMMER_ROLL_METADATA_MANIFEST_v1.json",
@@ -188,6 +188,8 @@ RUNTIME_EXECUTION_BOUNDARY = {
     "inference_mode": True,
     "task_ids": [20, 55, 80],
     "task55_and_80_require_immutable_task20_v1_audit": True,
+    "task55_and_80_require_committed_task20_v3_stop_gate": True,
+    "checkpoint_float32_cross_backend_coordinate_tolerance": 1e-4,
     "training_or_weight_update_authorized": False,
     "selection_use_authorized": False,
 }

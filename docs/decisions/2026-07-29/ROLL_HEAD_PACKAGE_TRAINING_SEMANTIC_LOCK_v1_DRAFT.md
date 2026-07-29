@@ -2,7 +2,8 @@
 
 Date: 2026-07-29
 
-Status: draft for independent review; no GPU smoke or full training authority
+Status: independently reviewed implementation lock; no GPU smoke or full
+training authority
 
 Parent decision:
 
@@ -106,12 +107,14 @@ validation dynamics.
   confidence interval or population-level claim is authorized.
 - No overall scalar score may trade operator quality against collapse.
 
-**Next gate.** A committed, clean-source, CPU-only semantic/training/evaluation
-smoke must prove the exact matrix below can be reconstructed, the train and
-validation endpoints remain disjoint, one optimizer step changes weights, the
-selected checkpoint can be reconstructed at both resolutions, and the
-production evaluator emits every required validation axis. Any mismatch blocks
-the one-job CUDA smoke and the full matrix.
+**Next gate.** Implement the fresh-checkpoint evaluator authority in Section
+8, Gate 2, while preserving the three immutable fixture paths. The ordering in
+Section 8 governs. Only after Gate 2 passes may a committed, clean-source,
+CPU-only semantic/training/evaluation smoke prove the exact matrix below can be
+constructed, the train and validation endpoints remain disjoint, one optimizer
+step changes weights, the selected checkpoint can be reconstructed at both
+resolutions, and the production evaluator emits every required validation
+axis. Any mismatch blocks the one-job CUDA smoke and the full matrix.
 
 ## 3. Frozen development matrix
 
@@ -149,6 +152,12 @@ Every cell uses:
 - validation evaluation at epoch 1 and every 10 epochs thereafter
 - authoritative checkpoint: lowest total validation loss among those recorded
   epochs, with no test loader
+
+The pair artifacts are six-object files. The mandatory `--object` filter and
+role lock reduce them to the stated hammer counts of 147 train pairs and 21
+validation pairs. `--img_size` defaults to 256 and `--operator_type` defaults
+to `dense` in the legacy CLI; the dedicated manifest path must pin them
+explicitly to 512 and `shared_affine`.
 
 The task-specific loss weights are:
 
@@ -215,6 +224,12 @@ separate read-only evaluator may:
 The full-orbit pass is explicitly labelled mixed train/validation support and
 cannot change the checkpoint, package, recipe, duration or seed set.
 
+The role-scoped scientific axes use the same development validation block
+whose total loss selects `best_model.pt`. Their absolute values are therefore
+selection-optimistic and are not confirmation estimates. Their permitted use
+is the matched within-development comparison; later fresh-object fixed-epoch
+train/test runs provide independent confirmation.
+
 The production representation evaluator must receive the actual logits and
 fixed spatial-softmax coordinates from the selected checkpoint, the masks
 processed with the same crop/resize convention, the exact shared affine
@@ -279,6 +294,11 @@ requires at least four of five paired wins on each extended condition and the
 unchanged guardrails. The other recipe is extended too if one common package
 is still the decision.
 
+Only the required AUC and drift conditions in items 2 and 3 trigger the
+five-seed extension. The categorical and count guardrails in items 4 to 6 do
+not create an extension by themselves; they retain 64 when the adoption rule
+is not met.
+
 Any other result retains the simpler 64 package. This conservative fallback is
 not a claim that 64 is scientifically superior; it means the added 128 head
 package did not demonstrate a sufficiently consistent benefit under the frozen
@@ -330,3 +350,11 @@ failed to improve, or gave mixed evidence on the frozen metrics.
 Any critical semantic mismatch, non-substantive Fable response, CPU failure,
 CUDA absence, dataset/source mismatch, missing evaluation axis, or
 untraceable Slurm artifact stops before the next gate.
+
+Here, reconstructable means that the recorded architecture and embedded config
+instantiate the intended model and reload the exact saved weights. It does not
+mean that a second training run must reproduce checkpoint bytes. The dedicated
+path must set and record deterministic-algorithm, cuDNN deterministic and
+cuDNN benchmark settings; if an intended CUDA operation cannot satisfy that
+policy, the CUDA smoke stops for an explicit amendment rather than silently
+relaxing determinism.

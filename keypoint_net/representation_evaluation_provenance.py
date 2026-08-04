@@ -153,6 +153,10 @@ FIXED_ROLE_PATHS = MappingProxyType(
             "docs/decisions/2026-07-26/representation_oracle_replay/"
             "HAMMER_ROLL_METADATA_MANIFEST_v1.json"
         ),
+        "replay_pair_index": (
+            "docs/decisions/2026-07-26/representation_oracle_replay/"
+            "HAMMER_ROLL_PAIR_INDEX_MANIFEST_v1.json"
+        ),
         "checkpoint_execution_authorization": (
             "docs/decisions/2026-07-26/representation_oracle_replay/"
             "CHECKPOINT_EXECUTION_AUTHORIZATION_v3.json"
@@ -230,6 +234,52 @@ _CHECKPOINT_EXTERNAL_ROLES = frozenset(
         "checkpoint_config",
         "checkpoint_metadata",
     }
+)
+FRESH_CHECKPOINT_ROLE_PATHS = MappingProxyType(
+    {
+        "provenance_source": "keypoint_net/representation_evaluation_provenance.py",
+        "evaluator_source": "keypoint_net/eval_representation.py",
+        "array_codec_source": "keypoint_net/representation_array_codec.py",
+        "split_adapter_source": "keypoint_net/representation_split_adapter.py",
+        "numeric_registry": (
+            "docs/decisions/2026-07-26/representation_oracle_calibration/"
+            "NUMERIC_CALIBRATION_v1_1.json"
+        ),
+        "fresh_authorization_source": (
+            "keypoint_net/representation_fresh_checkpoint_authorization.py"
+        ),
+        "fresh_runtime_source": (
+            "keypoint_net/representation_fresh_checkpoint_runtime.py"
+        ),
+        "model_source": "keypoint_net/model.py",
+        "experiment_manifest": (
+            "docs/decisions/2026-07-29/roll_head_package_training/"
+            "EXPERIMENT_MANIFEST_v1.json"
+        ),
+        "split_manifest": (
+            "docs/decisions/2026-07-26/representation_oracle_splits/"
+            "SPLIT_MANIFEST.json"
+        ),
+        "split_verifier_report": (
+            "docs/decisions/2026-07-26/representation_oracle_splits/"
+            "SPLIT_VERIFIER_REPORT.json"
+        ),
+        "corpus_inventory": (
+            "docs/decisions/2026-07-26/representation_oracle_splits/"
+            "inventories/CORPUS_INVENTORY__roll.json"
+        ),
+        "replay_frame_mask_inventory": (
+            "docs/decisions/2026-07-26/representation_oracle_replay/"
+            "HAMMER_ROLL_FRAME_MASK_INVENTORY_v1.json"
+        ),
+        "replay_metadata_manifest": (
+            "docs/decisions/2026-07-26/representation_oracle_replay/"
+            "HAMMER_ROLL_METADATA_MANIFEST_v1.json"
+        ),
+    }
+)
+FRESH_CHECKPOINT_EXTERNAL_ROLES = frozenset(
+    {"checkpoint", "checkpoint_config", "checkpoint_metadata", "completed_run_receipt"}
 )
 _CHECKPOINT_PROVENANCE_LOAD_RECEIPT_FIELDS = frozenset(
     {
@@ -329,6 +379,7 @@ def required_role_profile(
     case_kind: str,
     *,
     fit_from_pairs: bool,
+    checkpoint_profile: str = "fixture",
 ) -> tuple[frozenset[str], frozenset[str]]:
     """Return the exact committed and external role sets for one case."""
 
@@ -339,6 +390,20 @@ def required_role_profile(
     _require(
         isinstance(fit_from_pairs, bool),
         "fit_from_pairs must be a boolean",
+    )
+    _require(
+        checkpoint_profile in {"fixture", "fresh_run"},
+        f"unsupported checkpoint profile: {checkpoint_profile!r}",
+    )
+    if case_kind == "checkpoint" and checkpoint_profile == "fresh_run":
+        _require(not fit_from_pairs, "fresh roll checkpoint forbids fit_from_pairs")
+        return (
+            frozenset(FRESH_CHECKPOINT_ROLE_PATHS),
+            FRESH_CHECKPOINT_EXTERNAL_ROLES,
+        )
+    _require(
+        checkpoint_profile == "fixture",
+        "fresh_run checkpoint profile requires case_kind=checkpoint",
     )
     committed = set(CORE_ROLE_PATHS)
     external: set[str] = set()
@@ -950,6 +1015,7 @@ def _validate_evaluation_provenance_for_repo(
     repo_root: Path,
     provenance_loaded_source_digest: Mapping[str, str],
     checkpoint_provenance_load_receipt: Mapping[str, Any] | None = None,
+    checkpoint_profile: str = "fixture",
 ) -> dict[str, Any]:
     """Internal test seam; production callers must use the public wrapper."""
 
@@ -973,6 +1039,7 @@ def _validate_evaluation_provenance_for_repo(
     required_committed, required_external = required_role_profile(
         case_kind,
         fit_from_pairs=fit_from_pairs,
+        checkpoint_profile=checkpoint_profile,
     )
 
     committed_records = provenance["committed_files"]
@@ -1000,11 +1067,14 @@ def _validate_evaluation_provenance_for_repo(
         role: relative_path
         for role, relative_path, _claimed_sha256 in committed_shapes
     }
-    planted_profile = _resolve_planted_profile(
-        case_kind=case_kind,
-        committed_paths_by_role=committed_path_by_role,
-    )
-    planted_profile_paths = PLANTED_PROFILE_PATHS[planted_profile]
+    planted_profile = None
+    planted_profile_paths: Mapping[str, str] = {}
+    if "oracle_harness_source" in committed_path_by_role:
+        planted_profile = _resolve_planted_profile(
+            case_kind=case_kind,
+            committed_paths_by_role=committed_path_by_role,
+        )
+        planted_profile_paths = PLANTED_PROFILE_PATHS[planted_profile]
 
     external_shapes = [
         _validate_external_record_shape(record, index=index)
@@ -1057,7 +1127,7 @@ def _validate_evaluation_provenance_for_repo(
         else:
             expected_path = CORE_ROLE_PATHS.get(role) or FIXED_ROLE_PATHS.get(
                 role
-            )
+            ) or FRESH_CHECKPOINT_ROLE_PATHS.get(role)
         if expected_path is not None:
             _require(
                 relative_path == expected_path,
@@ -1247,6 +1317,7 @@ def validate_evaluation_provenance(
     fit_from_pairs: bool,
     loaded_source_digests: Mapping[str, Mapping[str, str]],
     checkpoint_provenance_load_receipt: Mapping[str, Any] | None = None,
+    checkpoint_profile: str = "fixture",
 ) -> dict[str, Any]:
     """Validate production provenance against this repository.
 
@@ -1265,6 +1336,7 @@ def validate_evaluation_provenance(
         checkpoint_provenance_load_receipt=(
             checkpoint_provenance_load_receipt
         ),
+        checkpoint_profile=checkpoint_profile,
     )
 
 
@@ -1277,6 +1349,8 @@ __representation_import_sha256__ = _LOADED_PROVENANCE_SOURCE_DIGEST["sha256"]
 
 __all__ = [
     "CORE_ROLE_PATHS",
+    "FRESH_CHECKPOINT_EXTERNAL_ROLES",
+    "FRESH_CHECKPOINT_ROLE_PATHS",
     "LOADED_SOURCE_ROLES",
     "PLANTED_PROFILE_PATHS",
     "PROVENANCE_SCHEMA_VERSION",

@@ -1,0 +1,157 @@
+{
+  "schema_version": "roll_head_package_experiment_manifest.v1",
+  "artifact_type": "roll_head_package_experiment_manifest",
+  "content_hash_sha256": "2089c039f3dd7cab220e530834342188d282d8513a22fc395008c213a7913625",
+  "reviewed_specification": {
+    "source_commit": "4736be95fe055d95f233e8a1ad8eda3ed528938d",
+    "repo_relative_path": "docs/decisions/2026-07-29/ROLL_HEAD_PACKAGE_TRAINING_SEMANTIC_LOCK_v1_DRAFT.md",
+    "file_sha256": "1f813a1902db3a32c9bda6d51bcd515ccb39b149af064381e9c8987cdae231f6"
+  },
+  "independent_review": {
+    "verdict": "PASS_WITH_NONBLOCKING_FINDINGS",
+    "repo_relative_path": "docs/decisions/2026-07-29/FABLE_HIGH_ROLL_HEAD_PACKAGE_TRAINING_LOCK_REVIEW_RAW_2026-07-29.md",
+    "file_sha256": "31b925a1010d9a49355f7a83af3aad2f5eb847c0f03dac59253238bea5cc9722"
+  },
+  "dataset": {
+    "basename": "_tdw_world_z_roll_base_panel_512_v2",
+    "binding_sha256": "acfa835813e128b6f3336fe1f51bc14ac6e4cb4cf1b285afe418d4dbdf598d93",
+    "corpus_inventory": {
+      "repo_relative_path": "docs/decisions/2026-07-26/representation_oracle_splits/inventories/CORPUS_INVENTORY__roll.json",
+      "file_sha256": "d1b989ac78866be12c06687d9141180845494895f7f03c8d1a3b1438779a8703",
+      "content_hash_sha256": "acfa835813e128b6f3336fe1f51bc14ac6e4cb4cf1b285afe418d4dbdf598d93"
+    }
+  },
+  "split_bundle": {
+    "manifest": {
+      "repo_relative_path": "docs/decisions/2026-07-26/representation_oracle_splits/SPLIT_MANIFEST.json",
+      "file_sha256": "9b70db2b2f30e151c1322d7839715167b9dbf750f4caa0b6986a31218ac7ed55",
+      "content_hash_sha256": "aae48879593e6bb7e4c9fdd4706a71f09785b8ebee9d1a7662c0fce62d640a7d"
+    },
+    "verifier_report": {
+      "repo_relative_path": "docs/decisions/2026-07-26/representation_oracle_splits/SPLIT_VERIFIER_REPORT.json",
+      "file_sha256": "7c809cf0817b50c3a40c1e85b74cc11aa359110475f52e419164f0a5bb0bba22",
+      "content_hash_sha256": "14414324ba1eda8500c0c0ab238443a28501adc1cb201afbe748d6dc37c5353e"
+    },
+    "train_pairs": {
+      "repo_relative_path": "docs/decisions/2026-07-26/representation_oracle_splits/pairs/roll__world_z__forward__train.json",
+      "file_sha256": "f4317b96e05562c22c8e51b96a290c33b0fc3e1f6ba2b9b6771ffe9df9daa063",
+      "content_hash_sha256": "40a70495d144fcf838146178bbdb2756251a413fcea65bc2626a87a5f75c5432",
+      "split": "train",
+      "pair_count_after_object_filter": 147
+    },
+    "validation_pairs": {
+      "repo_relative_path": "docs/decisions/2026-07-26/representation_oracle_splits/pairs/roll__world_z__forward__validation.json",
+      "file_sha256": "3e71c4f862a99d1882a8704140f8706612460d804a6ed7a833c8dee9f35514a4",
+      "content_hash_sha256": "c64e6c9e822a2cb744e2f681eab210f3d961f73f8b9ede5c786bb873dcf529e0",
+      "split": "validation",
+      "pair_count_after_object_filter": 21
+    }
+  },
+  "object": {
+    "name": "engineers_hammer_vray",
+    "role": "development"
+  },
+  "transform": {
+    "family": "roll",
+    "physical_axis": "world_z",
+    "direction": "forward",
+    "stride": 3,
+    "stride_units": "frames",
+    "signed_generator": 6.0,
+    "generator_units": "degrees",
+    "cyclic": true
+  },
+  "fixed_training": {
+    "indexed_mode": "development",
+    "img_size": 512,
+    "center_crop": null,
+    "num_keypoints": 10,
+    "base_channels": 32,
+    "temperature": 1.0,
+    "padding_mode": "reflect",
+    "operator_type": "shared_affine",
+    "epochs": 1000,
+    "batch_size": 16,
+    "lr": 0.0001,
+    "weight_decay": 0.00001,
+    "scheduler": "cosine_annealing",
+    "scheduler_t_max": 1000,
+    "scheduler_eta_min": 0.000001,
+    "sigma": 0.1,
+    "loc_bg_threshold": 30.0,
+    "num_action_classes": 0,
+    "save_every": 100,
+    "log_every": 10,
+    "auto_eval": false,
+    "checkpoint_policy": {
+      "selection": "minimum_total_validation_loss",
+      "authoritative_checkpoint": "best_model.pt",
+      "validation_epochs": "epoch_1_and_positive_multiples_of_10",
+      "test_loader": false
+    }
+  },
+  "recipes": {
+    "task55_clean": {
+      "lambda_ent": 0.01,
+      "lambda_disp": 0.1,
+      "lambda_inv": 0.0,
+      "lambda_cycle": 0.0,
+      "lambda_smooth": 0.0,
+      "lambda_act": 0.0,
+      "lambda_loc": 0.0,
+      "learn_inverse_operator": false
+    },
+    "task80_assisted": {
+      "lambda_ent": 0.01,
+      "lambda_disp": 0.1,
+      "lambda_inv": 0.5,
+      "lambda_cycle": 0.5,
+      "lambda_smooth": 0.001,
+      "lambda_act": 0.0,
+      "lambda_loc": 0.0,
+      "learn_inverse_operator": true
+    }
+  },
+  "head_packages": {
+    "64": {
+      "heatmap_res": 64,
+      "head_parameter_count": 1290,
+      "heatmap_cell_count_at_512": 4096
+    },
+    "128": {
+      "heatmap_res": 128,
+      "head_parameter_count": 74570,
+      "heatmap_cell_count_at_512": 16384
+    }
+  },
+  "primary_seeds": [
+    42,
+    43,
+    44
+  ],
+  "provisional_extension_seeds": [
+    45,
+    46
+  ],
+  "cells": [
+    {"cell_id": "task55_clean__r64__seed42", "recipe": "task55_clean", "head_package": "64", "seed": 42},
+    {"cell_id": "task55_clean__r64__seed43", "recipe": "task55_clean", "head_package": "64", "seed": 43},
+    {"cell_id": "task55_clean__r64__seed44", "recipe": "task55_clean", "head_package": "64", "seed": 44},
+    {"cell_id": "task55_clean__r128__seed42", "recipe": "task55_clean", "head_package": "128", "seed": 42},
+    {"cell_id": "task55_clean__r128__seed43", "recipe": "task55_clean", "head_package": "128", "seed": 43},
+    {"cell_id": "task55_clean__r128__seed44", "recipe": "task55_clean", "head_package": "128", "seed": 44},
+    {"cell_id": "task80_assisted__r64__seed42", "recipe": "task80_assisted", "head_package": "64", "seed": 42},
+    {"cell_id": "task80_assisted__r64__seed43", "recipe": "task80_assisted", "head_package": "64", "seed": 43},
+    {"cell_id": "task80_assisted__r64__seed44", "recipe": "task80_assisted", "head_package": "64", "seed": 44},
+    {"cell_id": "task80_assisted__r128__seed42", "recipe": "task80_assisted", "head_package": "128", "seed": 42},
+    {"cell_id": "task80_assisted__r128__seed43", "recipe": "task80_assisted", "head_package": "128", "seed": 43},
+    {"cell_id": "task80_assisted__r128__seed44", "recipe": "task80_assisted", "head_package": "128", "seed": 44}
+  ],
+  "authorization_boundary": {
+    "training_authorized_by_manifest": false,
+    "gpu_smoke_authorized_by_manifest": false,
+    "full_matrix_authorized_by_manifest": false,
+    "fresh_checkpoint_evaluation_requires_completed_run_receipt": true,
+    "fixture_authorization_path_modified": false
+  }
+}

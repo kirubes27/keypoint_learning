@@ -93,6 +93,24 @@ CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS = {
     "training_or_weight_update_authorized",
     "selection_use_authorized",
 }
+FRESH_CHECKPOINT_AUTHORIZATION_MODULE = (
+    "keypoint_net.representation_fresh_checkpoint_runtime"
+)
+FRESH_CHECKPOINT_AUTHORIZATION_VALIDATOR = (
+    "validate_fresh_checkpoint_evaluator_authorization"
+)
+FRESH_CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER = (
+    "consume_fresh_checkpoint_provenance_load_receipt"
+)
+FRESH_CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS = {
+    "checkpoint_evaluation_authorized",
+    "source_commit",
+    "cell_id",
+    "checkpoint_sha256",
+    "completed_run_receipt_sha256",
+    "training_or_weight_update_authorized",
+    "selection_use_authorized",
+}
 
 
 class EvaluationContractError(ValueError):
@@ -287,6 +305,7 @@ def _validate_production_provenance(
     case_kind: str,
     fit_from_pairs: bool,
     checkpoint_provenance_load_receipt: Mapping[str, Any] | None = None,
+    checkpoint_profile: str = "fixture",
 ) -> dict[str, Any]:
     """Production provenance boundary.
 
@@ -307,6 +326,7 @@ def _validate_production_provenance(
             checkpoint_provenance_load_receipt=(
                 checkpoint_provenance_load_receipt
             ),
+            checkpoint_profile=checkpoint_profile,
         )
     except provenance_contract.ProvenanceContractError as exc:
         raise EvaluationContractError(
@@ -3035,10 +3055,22 @@ def _require_checkpoint_evaluator_authorization(
     raises for any reason, checkpoint evaluation remains blocked.
     """
 
+    profile = bundle.get("checkpoint_authority", "fixture")
+    _require(profile in {"fixture", "fresh_run"}, "invalid checkpoint authority")
+    if profile == "fresh_run":
+        module_name = FRESH_CHECKPOINT_AUTHORIZATION_MODULE
+        validator_name = FRESH_CHECKPOINT_AUTHORIZATION_VALIDATOR
+        consumer_name = FRESH_CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER
+        receipt_fields = FRESH_CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS
+    else:
+        module_name = CHECKPOINT_AUTHORIZATION_MODULE
+        validator_name = CHECKPOINT_AUTHORIZATION_VALIDATOR
+        consumer_name = CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER
+        receipt_fields = CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS
     try:
-        authorization = importlib.import_module(CHECKPOINT_AUTHORIZATION_MODULE)
+        authorization = importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
-        if exc.name != CHECKPOINT_AUTHORIZATION_MODULE:
+        if exc.name != module_name:
             raise EvaluationContractError(
                 f"checkpoint authorization module failed to import: {exc}",
                 code="checkpoint_replay_blocked",
@@ -3053,7 +3085,7 @@ def _require_checkpoint_evaluator_authorization(
             code="checkpoint_replay_blocked",
         ) from exc
 
-    validator = getattr(authorization, CHECKPOINT_AUTHORIZATION_VALIDATOR, None)
+    validator = getattr(authorization, validator_name, None)
     _require(
         callable(validator),
         "checkpoint authorization validator is absent",
@@ -3087,7 +3119,7 @@ def _require_checkpoint_evaluator_authorization(
     )
     consumer = getattr(
         authorization,
-        CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER,
+        consumer_name,
         None,
     )
     if not callable(consumer):
@@ -3120,7 +3152,7 @@ def _require_checkpoint_evaluator_authorization(
     )
     _require_exact_keys(
         receipt,
-        required=CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS,
+        required=receipt_fields,
         name="checkpoint authorization receipt",
     )
     _require(
@@ -3131,27 +3163,36 @@ def _require_checkpoint_evaluator_authorization(
         receipt["training_or_weight_update_authorized"] is False,
         "checkpoint authorization receipt must forbid training and weight updates",
     )
+    expected_selection = profile == "fresh_run"
     _require(
-        receipt["selection_use_authorized"] is False,
-        "checkpoint authorization receipt must forbid selection use",
+        receipt["selection_use_authorized"] is expected_selection,
+        "checkpoint selection-use authority differs",
     )
-    _require(
-        isinstance(receipt["task_id"], int)
-        and not isinstance(receipt["task_id"], bool)
-        and receipt["task_id"] in {20, 55, 80},
-        "checkpoint authorization receipt has an invalid task_id",
-    )
-    _require(
-        isinstance(receipt["fixture_id"], str)
-        and bool(receipt["fixture_id"])
-        and receipt["fixture_id"] == bundle.get("case_id"),
-        "checkpoint authorization fixture_id differs from case_id",
-    )
-    for field in (
-        "checkpoint_sha256",
-        "runtime_source_manifest_file_sha256",
-        "checkpoint_hash_preflight_file_sha256",
-    ):
+    if profile == "fresh_run":
+        _require(
+            receipt["cell_id"] == bundle.get("case_id"),
+            "fresh checkpoint cell_id differs from case_id",
+        )
+        hash_fields = ("checkpoint_sha256", "completed_run_receipt_sha256")
+    else:
+        _require(
+            isinstance(receipt["task_id"], int)
+            and not isinstance(receipt["task_id"], bool)
+            and receipt["task_id"] in {20, 55, 80},
+            "checkpoint authorization receipt has an invalid task_id",
+        )
+        _require(
+            isinstance(receipt["fixture_id"], str)
+            and bool(receipt["fixture_id"])
+            and receipt["fixture_id"] == bundle.get("case_id"),
+            "checkpoint authorization fixture_id differs from case_id",
+        )
+        hash_fields = (
+            "checkpoint_sha256",
+            "runtime_source_manifest_file_sha256",
+            "checkpoint_hash_preflight_file_sha256",
+        )
+    for field in hash_fields:
         _require(
             _is_sha256(receipt[field]),
             f"checkpoint authorization receipt field {field} is invalid",
@@ -3188,7 +3229,7 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     _require_exact_keys(
         bundle,
         required=required,
-        optional={"fit"},
+        optional={"fit", "checkpoint_authority"},
         name="bundle",
     )
     _require(bundle["schema_version"] == BUNDLE_SCHEMA_VERSION, "unsupported bundle schema")
@@ -3205,6 +3246,7 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     checkpoint_authorization = None
     checkpoint_provenance_load_receipt = None
     if bundle["case_kind"] == "checkpoint":
+        checkpoint_profile = str(bundle.get("checkpoint_authority", "fixture"))
         (
             checkpoint_authorization,
             checkpoint_provenance_load_receipt,
@@ -3230,6 +3272,7 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
             provenance_kwargs["checkpoint_provenance_load_receipt"] = (
                 checkpoint_provenance_load_receipt
             )
+            provenance_kwargs["checkpoint_profile"] = checkpoint_profile
         validated_provenance = _validate_production_provenance(
             provenance,
             **provenance_kwargs,

@@ -38,6 +38,8 @@ from dataset import (
     SingleObjectDataset,
     inspect_index_pair_manifest,
 )
+import representation_fresh_checkpoint_authorization as fresh_authorization
+import representation_corpus_inventory
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,27 @@ def _seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def _configure_determinism(seed: int) -> dict:
+    """Enforce and report the frozen deterministic-algorithm policy."""
+    _seed_everything(seed)
+    torch.use_deterministic_algorithms(True)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    return {
+        "seed": seed,
+        "torch_deterministic_algorithms": bool(
+            torch.are_deterministic_algorithms_enabled()
+        ),
+        "cudnn_deterministic": bool(
+            getattr(torch.backends.cudnn, "deterministic", False)
+        ),
+        "cudnn_benchmark": bool(
+            getattr(torch.backends.cudnn, "benchmark", False)
+        ),
+    }
 
 
 def _infer_eval_frames_dir(data_root: str, object_name: str):
@@ -577,6 +600,48 @@ def _manifest_provenance(manifest: IndexPairManifest) -> dict:
     }
 
 
+def _validate_fresh_data_plan(
+    data_plan: TrainingDataPlan,
+    binding: fresh_authorization.FreshRunBinding,
+    *,
+    data_root: str,
+) -> None:
+    """Cross-bind the prepared datasets to the manifest cell."""
+    if data_plan.mode != "development" or data_plan.test_manifest is not None:
+        raise ValueError("fresh cell must use development mode without a test loader")
+    expected = binding.cell.expected_config
+    for split in ("train", "validation"):
+        actual = data_plan.index_provenance.get(split)
+        frozen = expected["split"][split]
+        expected_path = (
+            binding.cell.train_pairs_path
+            if split == "train"
+            else binding.cell.validation_pairs_path
+        )
+        if not isinstance(actual, dict) or (
+            actual.get("resolved_path") != expected_path
+            or actual.get("file_sha256") != frozen["file_sha256"]
+            or actual.get("content_hash_sha256") != frozen["content_hash_sha256"]
+            or actual.get("dataset_binding_sha256")
+            != expected["dataset"]["binding_sha256"]
+            or actual.get("pair_count_after_object_filter")
+            != frozen["pair_count_after_object_filter"]
+            or actual.get("transform") != expected["transform"]
+        ):
+            raise ValueError(f"fresh {split} split provenance differs")
+    inventory_record = expected["dataset"]["corpus_inventory"]
+    inventory_path = Path(__file__).resolve().parent.parent / inventory_record[
+        "repo_relative_path"
+    ]
+    inventory = representation_corpus_inventory.validate_corpus_inventory(
+        inventory_path.read_bytes(),
+        "roll",
+        data_root,
+    )
+    if inventory.content_hash_sha256 != expected["dataset"]["binding_sha256"]:
+        raise ValueError("fresh live corpus binding differs")
+
+
 def _prepare_training_data(
     args: argparse.Namespace,
     *,
@@ -651,7 +716,7 @@ def _prepare_training_data(
             )
             checkpoint_policy = {
                 "mode": "development",
-                "selection": "minimum_validation_loss",
+                "selection": "minimum_total_validation_loss",
                 "authoritative_checkpoint": "best_model.pt",
                 "best_model_written": True,
                 "validation_loader": True,
@@ -814,6 +879,15 @@ def main():
     
     # Data
     parser.add_argument("--data_root", type=str, required=True, help="Path to dataset root")
+    parser.add_argument(
+        "--fresh_cell_id",
+        type=str,
+        default=None,
+        help=(
+            "Internal exact-cell binding used only by run_fresh_roll_cell.py; "
+            "all scientific arguments must match the committed cell."
+        ),
+    )
     parser.add_argument("--object", type=str, default=None, help="Single object name (e.g., coffeemug)")
     parser.add_argument("--pairs_index", type=str, default=None,
                         help="Deprecated alias for --train_pairs_index. It is "
@@ -940,14 +1014,27 @@ def main():
     
     args = parser.parse_args()
 
-    # All indexed-mode argument/schema/path/hash/endpoint checks happen before
-    # device selection and before any output directory can be created.
+    # All fresh-cell, indexed-mode, path/hash, and endpoint checks happen
+    # before device selection and before any output directory is created.
+    repo_root = Path(__file__).resolve().parent.parent
+    fresh_binding = None
+    if args.fresh_cell_id is not None:
+        fresh_binding = fresh_authorization.bind_training_namespace(
+            repo_root,
+            args,
+        )
     _validate_training_arguments(args)
     include_backward = args.lambda_act > 0.0
     data_plan = _prepare_training_data(
         args,
         include_backward=include_backward,
     )
+    if fresh_binding is not None:
+        _validate_fresh_data_plan(
+            data_plan,
+            fresh_binding,
+            data_root=args.data_root,
+        )
     train_dataset = data_plan.train_dataset
     val_dataset = data_plan.val_dataset
     args.epochs = data_plan.effective_epochs
@@ -960,20 +1047,28 @@ def main():
     )
     
     # Reproducibility
-    _seed_everything(args.seed)
+    determinism = _configure_determinism(args.seed)
     print(f"Seed: {args.seed}")
     
     # Setup device
     device = _select_device()
     print(f"Using device: {device}")
+
+    # pin_memory only helps on CUDA; num_workers=0 is safest on MPS/CPU.
+    use_cuda = device.type == "cuda"
+    n_workers = 4 if use_cuda else 0
+    determinism["data_loader_workers"] = n_workers
     
     # Create output directory
     # Include pid (and microseconds) to avoid collisions when launching
     # multiple runs in parallel.
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    obj_name = args.object or "all"
-    run_name = f"phase_a_{obj_name}_{timestamp}_seed{args.seed}_pid{os.getpid()}"
-    run_dir = Path(args.output_dir) / run_name
+    if fresh_binding is not None:
+        run_dir = Path(fresh_binding.run_directory)
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        obj_name = args.object or "all"
+        run_name = f"phase_a_{obj_name}_{timestamp}_seed{args.seed}_pid{os.getpid()}"
+        run_dir = Path(args.output_dir) / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     
     # Save config
@@ -985,6 +1080,16 @@ def main():
     config['checkpoint_policy'] = data_plan.checkpoint_policy
     config['index_provenance'] = data_plan.index_provenance
     config['source_commit'] = source_commit
+    config['determinism'] = determinism
+    if fresh_binding is not None:
+        config['cell_id'] = fresh_binding.cell.cell_id
+        config['fresh_run_contract'] = dict(fresh_binding.cell.expected_config)
+        config['experiment_manifest'] = {
+            'file_sha256': fresh_binding.cell.manifest_file_sha256,
+            'content_hash_sha256': (
+                fresh_authorization.EXPERIMENT_MANIFEST_CONTENT_SHA256
+            ),
+        }
     with open(run_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
     print(f"Output directory: {run_dir}")
@@ -994,10 +1099,6 @@ def main():
         print(f"Validation samples: {len(val_dataset)}")
     elif data_plan.mode == "fixed-final":
         print("Validation samples: none (fixed-final checkpoint policy)")
-    
-    # pin_memory only helps on CUDA; num_workers=0 is safest on MPS/CPU
-    use_cuda = device.type == "cuda"
-    n_workers = 4 if use_cuda else 0
     
     train_loader = DataLoader(
         train_dataset,
@@ -1040,6 +1141,7 @@ def main():
     # Training loop
     history = []
     best_loss = float('inf')
+    optimizer_step_count = 0
     
     # Full config dict saved into every checkpoint for reproducibility
     ckpt_config = {
@@ -1085,6 +1187,12 @@ def main():
         ),
         'source_commit': source_commit,
     }
+    if fresh_binding is not None:
+        ckpt_config['cell_id'] = fresh_binding.cell.cell_id
+        ckpt_config['fresh_run_contract'] = dict(
+            fresh_binding.cell.expected_config
+        )
+        ckpt_config['determinism'] = determinism
     
     print(f"\nStarting training for {args.epochs} epochs...")
     print(f"Training mode: {data_plan.mode}")
@@ -1143,6 +1251,7 @@ def main():
             args.lambda_loc, args.lambda_inv, args.lambda_cycle,
             args.loc_bg_threshold, args.sigma, args.num_keypoints
         )
+        optimizer_step_count += len(train_loader)
         
         # Step scheduler
         scheduler.step()
@@ -1267,6 +1376,16 @@ def main():
     # Save history
     with open(run_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
+
+    if fresh_binding is not None:
+        receipt_path = fresh_authorization.write_completed_run_receipt(
+            repo_root,
+            fresh_binding,
+            device=str(device),
+            optimizer_step_count=optimizer_step_count,
+            determinism=determinism,
+        )
+        print(f"Completed-run receipt: {receipt_path}")
     
     print("-" * 60)
     if val_loader is not None:

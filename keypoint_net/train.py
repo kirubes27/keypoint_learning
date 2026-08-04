@@ -13,9 +13,12 @@ Usage:
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
+import platform
 import random
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -96,6 +99,12 @@ def _seed_everything(seed: int) -> None:
 
 def _configure_determinism(seed: int) -> dict:
     """Enforce and report the frozen deterministic-algorithm policy."""
+    cublas_workspace_config = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    if cublas_workspace_config not in (None, ":4096:8"):
+        raise ValueError(
+            "fresh runs require CUBLAS_WORKSPACE_CONFIG=:4096:8"
+        )
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     _seed_everything(seed)
     torch.use_deterministic_algorithms(True)
     if hasattr(torch.backends, "cudnn"):
@@ -112,6 +121,61 @@ def _configure_determinism(seed: int) -> dict:
         "cudnn_benchmark": bool(
             getattr(torch.backends.cudnn, "benchmark", False)
         ),
+        "cublas_workspace_config": os.environ["CUBLAS_WORKSPACE_CONFIG"],
+    }
+
+
+def _nvidia_driver_facts() -> tuple[str, str]:
+    """Return driver and driver-visible CUDA versions from nvidia-smi."""
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("CUDA run cannot record nvidia-smi provenance") from exc
+    driver = re.search(r"Driver Version:\s*([0-9.]+)", completed.stdout)
+    cuda = re.search(r"CUDA Version:\s*([0-9.]+)", completed.stdout)
+    if driver is None or cuda is None:
+        raise RuntimeError("CUDA run cannot parse nvidia-smi provenance")
+    return driver.group(1), cuda.group(1)
+
+
+def _runtime_environment(device: torch.device) -> dict:
+    """Record the reviewed runtime fields without importing torchvision."""
+    driver_version = None
+    driver_visible_cuda_version = None
+    gpu_name = None
+    if device.type == "cuda":
+        driver_version, driver_visible_cuda_version = _nvidia_driver_facts()
+        gpu_name = torch.cuda.get_device_name(device)
+    slurm_job_id = os.environ.get("SLURM_JOB_ID")
+    slurm_script_hash = os.environ.get("FRESH_ROLL_SLURM_SCRIPT_SHA256")
+    if (slurm_job_id is None) != (slurm_script_hash is None):
+        raise RuntimeError(
+            "Slurm runs require both SLURM_JOB_ID and "
+            "FRESH_ROLL_SLURM_SCRIPT_SHA256"
+        )
+    if slurm_script_hash is not None and re.fullmatch(
+        r"[0-9a-f]{64}", slurm_script_hash
+    ) is None:
+        raise RuntimeError("FRESH_ROLL_SLURM_SCRIPT_SHA256 is invalid")
+    return {
+        "python_implementation": platform.python_implementation(),
+        "python_version": platform.python_version(),
+        "pytorch_version": str(torch.__version__),
+        "torchvision_version": importlib.metadata.version("torchvision"),
+        "numpy_version": str(np.__version__),
+        "pytorch_cuda_version": torch.version.cuda,
+        "cudnn_version": torch.backends.cudnn.version(),
+        "device_type": device.type,
+        "gpu_name": gpu_name,
+        "nvidia_driver_version": driver_version,
+        "driver_visible_cuda_version": driver_visible_cuda_version,
+        "slurm_job_id": slurm_job_id,
+        "slurm_job_script_sha256": slurm_script_hash,
     }
 
 
@@ -618,6 +682,18 @@ def _validate_fresh_data_plan(
             if split == "train"
             else binding.cell.validation_pairs_path
         )
+        actual_transform = actual.get("transform") if isinstance(actual, dict) else None
+        frozen_transform = expected["transform"]
+        transform_matches = (
+            isinstance(actual_transform, dict)
+            and set(actual_transform) == set(frozen_transform) | {"expected_2d_family"}
+            and all(
+                actual_transform.get(key) == value
+                for key, value in frozen_transform.items()
+            )
+            and actual_transform.get("expected_2d_family")
+            == "planar_rotation_about_projected_center"
+        )
         if not isinstance(actual, dict) or (
             actual.get("resolved_path") != expected_path
             or actual.get("file_sha256") != frozen["file_sha256"]
@@ -626,7 +702,7 @@ def _validate_fresh_data_plan(
             != expected["dataset"]["binding_sha256"]
             or actual.get("pair_count_after_object_filter")
             != frozen["pair_count_after_object_filter"]
-            or actual.get("transform") != expected["transform"]
+            or not transform_matches
         ):
             raise ValueError(f"fresh {split} split provenance differs")
     inventory_record = expected["dataset"]["corpus_inventory"]
@@ -1046,8 +1122,19 @@ def main():
         or args.lambda_cycle > 0.0
     )
     
-    # Reproducibility
-    determinism = _configure_determinism(args.seed)
+    # Claim the fresh cell atomically after every source/data preflight and
+    # before any CUDA query can initialize a device context.
+    if fresh_binding is not None:
+        run_dir = Path(fresh_binding.run_directory)
+        run_dir.parent.mkdir(parents=True, exist_ok=True)
+        run_dir.mkdir(exist_ok=False)
+
+    # Reproducibility. Preserve legacy behavior outside the dedicated path.
+    if fresh_binding is not None:
+        determinism = _configure_determinism(args.seed)
+    else:
+        _seed_everything(args.seed)
+        determinism = None
     print(f"Seed: {args.seed}")
     
     # Setup device
@@ -1057,19 +1144,24 @@ def main():
     # pin_memory only helps on CUDA; num_workers=0 is safest on MPS/CPU.
     use_cuda = device.type == "cuda"
     n_workers = 4 if use_cuda else 0
-    determinism["data_loader_workers"] = n_workers
+    if determinism is not None:
+        determinism["data_loader_workers"] = n_workers
+    runtime_environment = (
+        _runtime_environment(device) if fresh_binding is not None else None
+    )
+    full_command = (
+        [sys.executable, *sys.argv] if fresh_binding is not None else None
+    )
     
     # Create output directory
     # Include pid (and microseconds) to avoid collisions when launching
     # multiple runs in parallel.
-    if fresh_binding is not None:
-        run_dir = Path(fresh_binding.run_directory)
-    else:
+    if fresh_binding is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         obj_name = args.object or "all"
         run_name = f"phase_a_{obj_name}_{timestamp}_seed{args.seed}_pid{os.getpid()}"
         run_dir = Path(args.output_dir) / run_name
-    run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir.mkdir(parents=True, exist_ok=True)
     
     # Save config
     config = dict(vars(args))
@@ -1080,8 +1172,10 @@ def main():
     config['checkpoint_policy'] = data_plan.checkpoint_policy
     config['index_provenance'] = data_plan.index_provenance
     config['source_commit'] = source_commit
-    config['determinism'] = determinism
     if fresh_binding is not None:
+        config['determinism'] = determinism
+        config['full_command'] = full_command
+        config['runtime_environment'] = runtime_environment
         config['cell_id'] = fresh_binding.cell.cell_id
         config['fresh_run_contract'] = dict(fresh_binding.cell.expected_config)
         config['experiment_manifest'] = {
@@ -1384,6 +1478,8 @@ def main():
             device=str(device),
             optimizer_step_count=optimizer_step_count,
             determinism=determinism,
+            full_command=full_command,
+            runtime_environment=runtime_environment,
         )
         print(f"Completed-run receipt: {receipt_path}")
     

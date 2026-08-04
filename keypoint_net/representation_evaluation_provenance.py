@@ -153,10 +153,6 @@ FIXED_ROLE_PATHS = MappingProxyType(
             "docs/decisions/2026-07-26/representation_oracle_replay/"
             "HAMMER_ROLL_METADATA_MANIFEST_v1.json"
         ),
-        "replay_pair_index": (
-            "docs/decisions/2026-07-26/representation_oracle_replay/"
-            "HAMMER_ROLL_PAIR_INDEX_MANIFEST_v1.json"
-        ),
         "checkpoint_execution_authorization": (
             "docs/decisions/2026-07-26/representation_oracle_replay/"
             "CHECKPOINT_EXECUTION_AUTHORIZATION_v3.json"

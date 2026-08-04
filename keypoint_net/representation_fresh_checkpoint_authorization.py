@@ -18,7 +18,7 @@ import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 
 EXPERIMENT_MANIFEST_RELATIVE_PATH = Path(
@@ -350,6 +350,9 @@ def training_arguments(
     cell = resolve_fresh_cell(repo_root, cell_id)
     training = cell.expected_config["training"]
     transform = cell.expected_config["transform"]
+    yaw_step_deg = transform["signed_generator"] / transform["stride"]
+    _require(math.isclose(yaw_step_deg, 2.0, rel_tol=0.0, abs_tol=0.0),
+             "fresh roll generator no longer implies the pinned 2-degree step")
     return {
         "fresh_cell_id": cell_id,
         "data_root": str(Path(data_root).expanduser().resolve(strict=True)),
@@ -379,7 +382,7 @@ def training_arguments(
         "loc_bg_threshold": training["loc_bg_threshold"],
         "num_action_classes": training["num_action_classes"],
         "frame_skip": transform["stride"],
-        "yaw_step_deg": training.get("yaw_step_deg", 2.0),
+        "yaw_step_deg": yaw_step_deg,
         "center_crop": training["center_crop"],
         "epochs": training["epochs"],
         "frozen_epochs": None,
@@ -458,6 +461,8 @@ def write_completed_run_receipt(
     device: str,
     optimizer_step_count: int,
     determinism: Mapping[str, Any],
+    full_command: list[str],
+    runtime_environment: Mapping[str, Any],
 ) -> Path:
     """Write the receipt once, after all three authoritative files exist."""
 
@@ -494,6 +499,8 @@ def write_completed_run_receipt(
             "test_loader_constructed": False,
             "selection_use_authorized": True,
             "determinism": dict(determinism),
+            "full_command": list(full_command),
+            "runtime_environment": dict(runtime_environment),
         },
         "expected_embedded_config": copy.deepcopy(dict(binding.cell.expected_config)),
     }
@@ -587,6 +594,14 @@ def authorize_completed_fresh_run(
              "config source commit differs")
     execution = document["execution"]
     _require(isinstance(execution, Mapping), "receipt execution is invalid")
+    expected_execution_keys = {
+        "training_completed", "training_mode", "device",
+        "optimizer_step_count", "authoritative_checkpoint_name",
+        "test_loader_constructed", "selection_use_authorized",
+        "determinism", "full_command", "runtime_environment",
+    }
+    _require(set(execution) == expected_execution_keys,
+             "receipt execution keys differ")
     _require(execution.get("training_completed") is True
              and execution.get("training_mode") == "development",
              "training is not complete development training")
@@ -598,6 +613,49 @@ def authorize_completed_fresh_run(
     _require(type(execution.get("optimizer_step_count")) is int
              and execution["optimizer_step_count"] > 0,
              "optimizer step count is invalid")
+    full_command = execution.get("full_command")
+    _require(isinstance(full_command, list) and full_command
+             and all(isinstance(value, str) and value for value in full_command),
+             "full command is invalid")
+    runtime_environment = execution.get("runtime_environment")
+    expected_environment_keys = {
+        "python_implementation", "python_version", "pytorch_version",
+        "torchvision_version", "numpy_version", "pytorch_cuda_version",
+        "cudnn_version", "device_type", "gpu_name",
+        "nvidia_driver_version", "driver_visible_cuda_version",
+        "slurm_job_id", "slurm_job_script_sha256",
+    }
+    _require(isinstance(runtime_environment, Mapping)
+             and set(runtime_environment) == expected_environment_keys,
+             "runtime environment keys differ")
+    for version_key in (
+        "python_implementation", "python_version", "pytorch_version",
+        "torchvision_version", "numpy_version", "device_type",
+    ):
+        _require(isinstance(runtime_environment.get(version_key), str)
+                 and runtime_environment[version_key],
+                 f"runtime environment {version_key} is invalid")
+    _require(runtime_environment["device_type"] == device,
+             "runtime environment device differs")
+    if device == "cuda":
+        for cuda_key in (
+            "pytorch_cuda_version", "gpu_name", "nvidia_driver_version",
+            "driver_visible_cuda_version",
+        ):
+            _require(isinstance(runtime_environment.get(cuda_key), str)
+                     and runtime_environment[cuda_key],
+                     f"CUDA environment {cuda_key} is invalid")
+    slurm_job_id = runtime_environment.get("slurm_job_id")
+    slurm_script_hash = runtime_environment.get("slurm_job_script_sha256")
+    _require((slurm_job_id is None and slurm_script_hash is None)
+             or (isinstance(slurm_job_id, str) and slurm_job_id
+                 and isinstance(slurm_script_hash, str)
+                 and _SHA256_RE.fullmatch(slurm_script_hash) is not None),
+             "Slurm provenance is incomplete")
+    _require(config_doc.get("full_command") == full_command,
+             "config full command differs")
+    _require(config_doc.get("runtime_environment") == runtime_environment,
+             "config runtime environment differs")
     _require(document["expected_embedded_config"] == cell.expected_config,
              "receipt embedded config differs")
     return FreshCheckpointCapability(

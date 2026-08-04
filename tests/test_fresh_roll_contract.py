@@ -7,7 +7,10 @@ their small uniquely named fixtures below the operating-system temp root.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
+import platform
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +26,10 @@ from keypoint_net import representation_fresh_checkpoint_runtime as runtime
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = REPO_ROOT / "_tdw_world_z_roll_base_panel_512_v2"
+KEYPOINT_NET_ROOT = REPO_ROOT / "keypoint_net"
+if str(KEYPOINT_NET_ROOT) not in sys.path:
+    sys.path.insert(0, str(KEYPOINT_NET_ROOT))
+from keypoint_net import train as train_module
 
 
 def _model_for(cell: fresh.FrozenFreshCell) -> model_module.PhaseAModel:
@@ -52,10 +59,33 @@ def _completed_fixture(cell_id: str):
     )
     run_dir = Path(binding.run_directory)
     run_dir.mkdir()
+    full_command = [
+        sys.executable,
+        "keypoint_net/train.py",
+        "--fresh_cell_id",
+        cell_id,
+    ]
+    runtime_environment = {
+        "python_implementation": "CPython",
+        "python_version": platform.python_version(),
+        "pytorch_version": str(torch.__version__),
+        "torchvision_version": importlib.metadata.version("torchvision"),
+        "numpy_version": str(np.__version__),
+        "pytorch_cuda_version": torch.version.cuda,
+        "cudnn_version": torch.backends.cudnn.version(),
+        "device_type": "cpu",
+        "gpu_name": None,
+        "nvidia_driver_version": None,
+        "driver_visible_cuda_version": None,
+        "slurm_job_id": None,
+        "slurm_job_script_sha256": None,
+    }
     config = {
         "cell_id": cell_id,
         "source_commit": binding.cell.source_commit,
         "fresh_run_contract": dict(binding.cell.expected_config),
+        "full_command": full_command,
+        "runtime_environment": runtime_environment,
     }
     (run_dir / "config.json").write_text(json.dumps(config))
     (run_dir / "history.json").write_text(json.dumps([{"epoch": 1, "val_loss": 1.0}]))
@@ -81,12 +111,42 @@ def _completed_fixture(cell_id: str):
             "cudnn_deterministic": True,
             "cudnn_benchmark": False,
             "data_loader_workers": 0,
+            "cublas_workspace_config": ":4096:8",
         },
+        full_command=full_command,
+        runtime_environment=runtime_environment,
     )
     return binding, receipt, model
 
 
 class FreshRollContractTests(unittest.TestCase):
+    def test_real_corpus_dry_run_constructs_exact_64_and_128_data_plans(self) -> None:
+        output_root = Path(tempfile.mkdtemp(prefix="fresh_roll_dry_run_test_"))
+        for cell_id in (
+            "task55_clean__r64__seed42",
+            "task55_clean__r128__seed42",
+        ):
+            arguments = fresh.training_arguments(
+                REPO_ROOT,
+                cell_id,
+                data_root=DATA_ROOT,
+                output_root=output_root,
+            )
+            namespace = argparse.Namespace(**arguments)
+            binding = fresh.bind_training_namespace(REPO_ROOT, namespace)
+            plan = train_module._prepare_training_data(
+                namespace,
+                include_backward=False,
+            )
+            train_module._validate_fresh_data_plan(
+                plan,
+                binding,
+                data_root=str(DATA_ROOT),
+            )
+            self.assertEqual(len(plan.train_dataset), 147)
+            self.assertEqual(len(plan.val_dataset), 21)
+            self.assertFalse(Path(binding.run_directory).exists())
+
     def test_frozen_cells_construct_exact_64_and_128_heads(self) -> None:
         clean = fresh.resolve_fresh_cell(REPO_ROOT, "task55_clean__r64__seed42")
         assisted = fresh.resolve_fresh_cell(

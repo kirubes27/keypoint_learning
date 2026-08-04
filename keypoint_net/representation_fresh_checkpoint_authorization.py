@@ -635,9 +635,10 @@ def authorize_completed_fresh_run(
         _require(isinstance(runtime_environment.get(version_key), str)
                  and runtime_environment[version_key],
                  f"runtime environment {version_key} is invalid")
-    _require(runtime_environment["device_type"] == device,
+    receipt_device = execution.get("device")
+    _require(runtime_environment["device_type"] == receipt_device,
              "runtime environment device differs")
-    if device == "cuda":
+    if receipt_device == "cuda":
         for cuda_key in (
             "pytorch_cuda_version", "gpu_name", "nvidia_driver_version",
             "driver_visible_cuda_version",

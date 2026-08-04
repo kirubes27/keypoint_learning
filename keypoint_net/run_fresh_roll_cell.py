@@ -13,6 +13,10 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from keypoint_net import representation_fresh_checkpoint_authorization as fresh
 
 
@@ -22,16 +26,15 @@ def build_command(
     data_root: str,
     output_root: str,
 ) -> list[str]:
-    repo_root = Path(__file__).resolve().parents[1]
     arguments = fresh.training_arguments(
-        repo_root,
+        REPO_ROOT,
         cell_id,
         data_root=data_root,
         output_root=output_root,
     )
     return [
         sys.executable,
-        str((repo_root / "keypoint_net/train.py").resolve()),
+        str((REPO_ROOT / "keypoint_net/train.py").resolve()),
         *fresh.command_arguments(arguments),
     ]
 

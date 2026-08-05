@@ -1,8 +1,7 @@
 #!/bin/bash
 #SBATCH -J fresh_roll_cuda_smoke
-#SBATCH -p acc_short
 #SBATCH -t 00:30:00
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gres=gpu:1
 #SBATCH --mem-per-cpu=5000
 #SBATCH -n 1
 #SBATCH -c 8

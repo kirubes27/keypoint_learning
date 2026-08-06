@@ -1,10 +1,10 @@
 """Run the bounded CUDA gate for the frozen roll head-package matrix.
 
-This is implementation evidence only.  It executes exactly one optimizer
-update for the four seed-42 recipe/head combinations, safely reloads each
-smoke checkpoint on CPU, and checks the restored model on CUDA.  It never
-writes a completed-run receipt and therefore cannot authorize selection or
-scientific use of the checkpoints it creates.
+This is implementation evidence only.  It executes two identical three-step
+replicas for the four seed-42 recipe/head combinations, records repeatability
+descriptively, safely reloads one checkpoint per cell on CPU, and checks the
+restored model on CUDA.  It never writes a completed-run receipt and therefore
+cannot authorize selection or scientific use of the checkpoints it creates.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import model as model_module
+import fresh_roll_determinism as determinism_module
 import representation_fresh_checkpoint_authorization as fresh
 import train as train_module
 
@@ -174,20 +175,39 @@ def _preflight_cells(data_root: Path, output_root: Path) -> list[tuple[Any, Any]
     return prepared
 
 
-def _run_cell(
+def _run_replica(
     *,
     binding: Any,
     plan: Any,
-    output_root: Path,
     device: torch.device,
     source_commit: str,
     encoder_key_reference: tuple[str, ...] | None,
-) -> tuple[dict[str, Any], tuple[str, ...]]:
+    replica_index: int,
+    checkpoint_path: Path | None,
+) -> tuple[
+    dict[str, Any],
+    dict[str, torch.Tensor],
+    torch.Tensor,
+    tuple[str, ...],
+    int,
+]:
     cell_id = binding.cell.cell_id
     training = dict(binding.cell.expected_config["training"])
-    determinism = train_module._configure_determinism(binding.cell.seed)
-    if not torch.are_deterministic_algorithms_enabled():
-        raise RuntimeError("deterministic algorithms are not enabled")
+    policy = determinism_module.policy_for_heatmap_resolution(
+        REPO_ROOT,
+        training["heatmap_res"],
+    )
+    determinism = train_module._configure_determinism(
+        binding.cell.seed,
+        policy=policy,
+    )
+    determinism["data_loader_workers"] = 0
+    determinism_module.validate_determinism_record(
+        determinism,
+        expected_seed=binding.cell.seed,
+        expected_policy=policy,
+    )
+    warning_evidence = determinism_module.new_warning_evidence(policy)
 
     model = _build_model(training).to(device)
     encoder_keys = tuple(model.extractor.encoder.state_dict().keys())
@@ -198,13 +218,6 @@ def _run_cell(
     if head_count != expected_head_count:
         raise RuntimeError("head parameter count differs")
 
-    loader = DataLoader(
-        Subset(plan.train_dataset, [0]),
-        batch_size=1,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=True,
-    )
     before_parameters = {
         name: parameter.detach().cpu().clone()
         for name, parameter in model.named_parameters()
@@ -215,25 +228,42 @@ def _run_cell(
         lr=training["lr"],
         weight_decay=training["weight_decay"],
     )
-    metrics = train_module.train_epoch(
-        model,
-        loader,
-        optimizer,
-        device,
-        training["lambda_smooth"],
-        training["lambda_disp"],
-        training["lambda_ent"],
-        training["lambda_act"],
-        training["lambda_loc"],
-        training["lambda_inv"],
-        training["lambda_cycle"],
-        training["loc_bg_threshold"],
-        training["sigma"],
-        training["num_keypoints"],
-    )
+    step_metrics = []
+    for sample_index in range(3):
+        loader = DataLoader(
+            Subset(plan.train_dataset, [sample_index]),
+            batch_size=1,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=True,
+        )
+        metrics = train_module.train_epoch(
+            model,
+            loader,
+            optimizer,
+            device,
+            training["lambda_smooth"],
+            training["lambda_disp"],
+            training["lambda_ent"],
+            training["lambda_act"],
+            training["lambda_loc"],
+            training["lambda_inv"],
+            training["lambda_cycle"],
+            training["loc_bg_threshold"],
+            training["sigma"],
+            training["num_keypoints"],
+            nondeterminism_policy=policy,
+            nondeterminism_evidence=warning_evidence,
+        )
+        if not all(math.isfinite(float(value)) for value in metrics.values()):
+            raise RuntimeError("non-finite smoke metric")
+        step_metrics.append({key: float(value) for key, value in metrics.items()})
     torch.cuda.synchronize(device)
-    if not all(math.isfinite(float(value)) for value in metrics.values()):
-        raise RuntimeError("non-finite smoke metric")
+    completed_warning_evidence = determinism_module.finalize_warning_evidence(
+        warning_evidence,
+        policy=policy,
+        device_type="cuda",
+    )
     changed_parameters = sorted(
         name
         for name, parameter in model.named_parameters()
@@ -241,7 +271,7 @@ def _run_cell(
     )
     after_digest = _state_digest(model)
     if not changed_parameters or before_digest == after_digest:
-        raise RuntimeError("one CUDA optimizer step did not change parameters")
+        raise RuntimeError("three CUDA optimizer steps did not change parameters")
     if not optimizer.state:
         raise RuntimeError("optimizer has no state after the CUDA update")
     if not all(
@@ -249,37 +279,50 @@ def _run_cell(
     ):
         raise RuntimeError("model contains a non-finite parameter after update")
 
-    checkpoint_dir = output_root / "smoke_checkpoints" / cell_id
-    checkpoint_dir.mkdir(parents=True, exist_ok=False)
-    checkpoint_path = checkpoint_dir / "one_step_cuda_smoke.pt"
-    torch.save(
-        {
-            "artifact_type": "fresh_roll_cuda_smoke_checkpoint",
-            "scope": "implementation_smoke_only_not_training_completion",
-            "cell_id": cell_id,
-            "source_commit": source_commit,
-            "optimizer_steps": 1,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-        },
-        checkpoint_path,
-    )
-    payload, checkpoint_hash, checkpoint_size = _safe_reload(checkpoint_path)
-    if payload.get("scope") != "implementation_smoke_only_not_training_completion":
-        raise RuntimeError("smoke checkpoint scope differs")
-    state = payload.get("model_state_dict")
-    if not isinstance(state, Mapping) or not all(
-        torch.is_tensor(value) and value.device.type == "cpu" for value in state.values()
-    ):
-        raise RuntimeError("safe smoke reload did not map every weight to CPU")
-
-    restored = _build_model(training).cpu()
-    restored.load_state_dict(state, strict=True)
-    restored.requires_grad_(False)
-    restored.eval()
-    if _state_digest(restored) != after_digest:
-        raise RuntimeError("restored smoke checkpoint weights differ")
-    restored.to(device)
+    checkpoint_record = None
+    inference_model = model
+    if checkpoint_path is not None:
+        torch.save(
+            {
+                "artifact_type": "fresh_roll_cuda_smoke_checkpoint",
+                "scope": "implementation_smoke_only_not_training_completion",
+                "cell_id": cell_id,
+                "source_commit": source_commit,
+                "replica_index": replica_index,
+                "optimizer_steps": 3,
+                "determinism": determinism,
+                "nondeterminism_evidence": completed_warning_evidence,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+            },
+            checkpoint_path,
+        )
+        payload, checkpoint_hash, checkpoint_size = _safe_reload(checkpoint_path)
+        if payload.get("scope") != "implementation_smoke_only_not_training_completion":
+            raise RuntimeError("smoke checkpoint scope differs")
+        state = payload.get("model_state_dict")
+        if not isinstance(state, Mapping) or not all(
+            torch.is_tensor(value) and value.device.type == "cpu"
+            for value in state.values()
+        ):
+            raise RuntimeError("safe smoke reload did not map every weight to CPU")
+        restored = _build_model(training).cpu()
+        restored.load_state_dict(state, strict=True)
+        restored.requires_grad_(False)
+        restored.eval()
+        if _state_digest(restored) != after_digest:
+            raise RuntimeError("restored smoke checkpoint weights differ")
+        restored.to(device)
+        inference_model = restored
+        checkpoint_record = {
+            "absolute_path": str(checkpoint_path),
+            "sha256": checkpoint_hash,
+            "size_bytes": checkpoint_size,
+            "scope": payload["scope"],
+            "safe_same_descriptor_reload": True,
+            "all_reloaded_weights_on_cpu": True,
+            "weights_exact_after_reload": True,
+        }
 
     validation_loader = DataLoader(
         Subset(plan.val_dataset, [0]),
@@ -292,8 +335,8 @@ def _run_cell(
     x_t = validation_batch["x_t"].to(device, non_blocking=True)
     x_t1 = validation_batch["x_t1"].to(device, non_blocking=True)
     with torch.inference_mode():
-        points, logits = restored.extractor(x_t)
-        outputs = restored(x_t, x_t1)
+        points, logits = inference_model.extractor(x_t)
+        outputs = inference_model(x_t, x_t1)
     torch.cuda.synchronize(device)
     expected_resolution = training["heatmap_res"]
     if tuple(logits.shape) != (
@@ -308,6 +351,116 @@ def _run_cell(
     if tuple(outputs["p_hat_t1"].shape) != tuple(points.shape):
         raise RuntimeError("restored operator output shape differs")
 
+    parameter_state = {
+        name: parameter.detach().cpu().clone()
+        for name, parameter in model.named_parameters()
+    }
+    heatmaps = logits.detach().cpu().clone()
+    record = {
+        "replica_index": replica_index,
+        "seed_reset_to": binding.cell.seed,
+        "optimizer_steps": 3,
+        "sample_indices_in_order": [0, 1, 2],
+        "step_metrics": step_metrics,
+        "changed_parameter_count": len(changed_parameters),
+        "before_state_sha256": before_digest,
+        "after_state_sha256": after_digest,
+        "checkpoint": checkpoint_record,
+        "heatmap_shape": list(logits.shape),
+        "point_shape": list(points.shape),
+        "operator_output_shape": list(outputs["p_hat_t1"].shape),
+        "determinism": determinism,
+        "nondeterminism_evidence": completed_warning_evidence,
+        "passed": True,
+    }
+
+    del before_parameters, optimizer, outputs, points, logits
+    del validation_batch, validation_loader, loader, inference_model, model
+    del x_t, x_t1
+    gc.collect()
+    torch.cuda.empty_cache()
+    return record, parameter_state, heatmaps, encoder_keys, head_count
+
+
+def _run_cell(
+    *,
+    binding: Any,
+    plan: Any,
+    output_root: Path,
+    device: torch.device,
+    source_commit: str,
+    encoder_key_reference: tuple[str, ...] | None,
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    cell_id = binding.cell.cell_id
+    training = dict(binding.cell.expected_config["training"])
+    checkpoint_dir = output_root / "smoke_checkpoints" / cell_id
+    checkpoint_dir.mkdir(parents=True, exist_ok=False)
+    replicas = []
+    parameter_states = []
+    heatmaps = []
+    encoder_keys = None
+    head_count = None
+    for replica_index in range(2):
+        replica, parameters, fixed_heatmaps, current_encoder_keys, current_head_count = (
+            _run_replica(
+                binding=binding,
+                plan=plan,
+                device=device,
+                source_commit=source_commit,
+                encoder_key_reference=encoder_key_reference,
+                replica_index=replica_index,
+                checkpoint_path=(
+                    checkpoint_dir / "replica0_three_step_cuda_smoke.pt"
+                    if replica_index == 0
+                    else None
+                ),
+            )
+        )
+        if encoder_keys is not None and current_encoder_keys != encoder_keys:
+            raise RuntimeError("replica encoder state keys differ")
+        if head_count is not None and current_head_count != head_count:
+            raise RuntimeError("replica head parameter counts differ")
+        encoder_keys = current_encoder_keys
+        head_count = current_head_count
+        replicas.append(replica)
+        parameter_states.append(parameters)
+        heatmaps.append(fixed_heatmaps)
+
+    if set(parameter_states[0]) != set(parameter_states[1]):
+        raise RuntimeError("replica parameter names differ")
+    per_parameter_max_abs_difference = {
+        name: float(
+            (parameter_states[0][name] - parameter_states[1][name])
+            .abs()
+            .max()
+            .item()
+        )
+        for name in sorted(parameter_states[0])
+    }
+    loss_differences = [
+        abs(
+            replicas[0]["step_metrics"][index]["loss"]
+            - replicas[1]["step_metrics"][index]["loss"]
+        )
+        for index in range(3)
+    ]
+    comparison = {
+        "decision_use": "descriptive_only",
+        "numeric_acceptance_threshold": None,
+        "state_digest_equal": (
+            replicas[0]["after_state_sha256"]
+            == replicas[1]["after_state_sha256"]
+        ),
+        "per_parameter_max_abs_difference": per_parameter_max_abs_difference,
+        "maximum_parameter_abs_difference": max(
+            per_parameter_max_abs_difference.values()
+        ),
+        "per_step_loss_absolute_difference": loss_differences,
+        "maximum_fixed_batch_heatmap_absolute_difference": float(
+            (heatmaps[0] - heatmaps[1]).abs().max().item()
+        ),
+        "used_as_pass_fail_criterion": False,
+    }
     record = {
         "cell_id": cell_id,
         "recipe": binding.cell.recipe,
@@ -319,34 +472,18 @@ def _run_cell(
         "validation_pair_count": len(plan.val_dataset),
         "batch_size_used_for_bounded_smoke": 1,
         "frozen_full_run_batch_size": training["batch_size"],
-        "optimizer_steps": 1,
-        "metrics": {key: float(value) for key, value in metrics.items()},
-        "changed_parameter_count": len(changed_parameters),
-        "before_state_sha256": before_digest,
-        "after_state_sha256": after_digest,
-        "checkpoint": {
-            "absolute_path": str(checkpoint_path),
-            "sha256": checkpoint_hash,
-            "size_bytes": checkpoint_size,
-            "scope": payload["scope"],
-            "safe_same_descriptor_reload": True,
-            "all_reloaded_weights_on_cpu": True,
-            "weights_exact_after_reload": True,
-        },
-        "heatmap_shape": list(logits.shape),
-        "point_shape": list(points.shape),
-        "operator_output_shape": list(outputs["p_hat_t1"].shape),
+        "replica_count": 2,
+        "optimizer_steps_per_replica": 3,
         "head_parameter_count": head_count,
         "encoder_state_keys": list(encoder_keys),
-        "determinism": determinism,
+        "determinism_amendment": determinism_module.amendment_record(
+            REPO_ROOT
+        ),
+        "replicas": replicas,
+        "repeatability_comparison": comparison,
         "fresh_cell_output_directory_created": False,
         "passed": True,
     }
-
-    del before_parameters, optimizer, payload, restored, outputs, points, logits
-    del validation_batch, validation_loader, loader, model, plan, x_t, x_t1
-    gc.collect()
-    torch.cuda.empty_cache()
     return record, encoder_keys
 
 
@@ -388,7 +525,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_root.mkdir(parents=True, exist_ok=False)
     report_path = output_root / "CUDA_SMOKE_REPORT.json"
     report: dict[str, Any] = {
-        "schema_version": "fresh_roll_cuda_smoke.v1",
+        "schema_version": "fresh_roll_cuda_smoke.v2",
         "artifact_type": "fresh_roll_cuda_training_smoke_report",
         "scope": "deterministic_implementation_evidence_only_not_scientific_result",
         "source_commit": args.expected_commit,
@@ -402,10 +539,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             "script_sha256": slurm_script_hash,
         },
         "environment_lock_sha256": environment_lock_hash,
+        "determinism_amendment": determinism_module.amendment_record(
+            REPO_ROOT
+        ),
+        "repeatability_contract": {
+            "replicas_per_cell": 2,
+            "optimizer_steps_per_replica": 3,
+            "decision_use": "descriptive_only",
+            "numeric_acceptance_threshold": None,
+        },
         "constraints": {
             "full_training_run": False,
-            "completed_run_receipt_issued_for_one_step_checkpoint": False,
+            "completed_run_receipt_issued_for_smoke_checkpoint": False,
             "selection_or_scientific_use_authorized": False,
+            "repeatability_difference_used_as_pass_fail_criterion": False,
             "cuda_used": True,
             "protected_untracked_calibration_file_accessed": False,
             "cleanup_or_deletion_performed": False,

@@ -13,6 +13,7 @@ import platform
 import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -20,6 +21,7 @@ import numpy as np
 import torch
 
 from keypoint_net import eval_representation as evaluator
+from keypoint_net import fresh_roll_determinism as fresh_det
 from keypoint_net import model as model_module
 from keypoint_net import representation_fresh_checkpoint_authorization as fresh
 from keypoint_net import representation_fresh_checkpoint_runtime as runtime
@@ -81,10 +83,26 @@ def _completed_fixture(cell_id: str):
         "slurm_job_id": None,
         "slurm_job_script_sha256": None,
     }
+    policy = fresh_det.policy_for_heatmap_resolution(
+        REPO_ROOT,
+        binding.cell.expected_config["training"]["heatmap_res"],
+    )
+    determinism = fresh_det.configure_torch_determinism(
+        binding.cell.seed,
+        policy,
+    )
+    determinism["data_loader_workers"] = 0
+    nondeterminism_evidence = fresh_det.finalize_warning_evidence(
+        fresh_det.new_warning_evidence(policy),
+        policy=policy,
+        device_type="cpu",
+    )
     config = {
         "cell_id": cell_id,
         "source_commit": binding.cell.source_commit,
         "fresh_run_contract": dict(binding.cell.expected_config),
+        "determinism": determinism,
+        "determinism_amendment": fresh_det.amendment_record(REPO_ROOT),
         "full_command": full_command,
         "runtime_environment": runtime_environment,
     }
@@ -106,14 +124,8 @@ def _completed_fixture(cell_id: str):
         binding,
         device="cpu",
         optimizer_step_count=1,
-        determinism={
-            "seed": binding.cell.seed,
-            "torch_deterministic_algorithms": True,
-            "cudnn_deterministic": True,
-            "cudnn_benchmark": False,
-            "data_loader_workers": 0,
-            "cublas_workspace_config": ":4096:8",
-        },
+        determinism=determinism,
+        nondeterminism_evidence=nondeterminism_evidence,
         full_command=full_command,
         runtime_environment=runtime_environment,
     )
@@ -121,6 +133,87 @@ def _completed_fixture(cell_id: str):
 
 
 class FreshRollContractTests(unittest.TestCase):
+    def test_head_specific_warning_policy_is_hash_bound_and_exact(self) -> None:
+        policy64 = fresh_det.policy_for_heatmap_resolution(REPO_ROOT, 64)
+        policy128 = fresh_det.policy_for_heatmap_resolution(REPO_ROOT, 128)
+        self.assertEqual(
+            policy64["allowed_operations"],
+            [fresh_det.REFLECTION_OPERATION],
+        )
+        self.assertEqual(
+            policy128["allowed_operations"],
+            [fresh_det.REFLECTION_OPERATION, fresh_det.BILINEAR_OPERATION],
+        )
+        self.assertEqual(policy64["amendment"], policy128["amendment"])
+        self.assertRegex(policy64["amendment"]["file_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_warning_gate_steps_only_after_allowed_warning(self) -> None:
+        class WarningLoss:
+            def __init__(self, operation: str):
+                self.operation = operation
+
+            def backward(self) -> None:
+                warnings.warn(
+                    f"{self.operation} does not have a deterministic implementation",
+                    UserWarning,
+                )
+
+        policy64 = fresh_det.policy_for_heatmap_resolution(REPO_ROOT, 64)
+        allowed_optimizer = mock.Mock()
+        allowed_evidence = fresh_det.new_warning_evidence(policy64)
+        fresh_det.backward_and_step(
+            WarningLoss(fresh_det.REFLECTION_OPERATION),
+            allowed_optimizer,
+            policy=policy64,
+            evidence=allowed_evidence,
+        )
+        allowed_optimizer.step.assert_called_once_with()
+        self.assertEqual(
+            allowed_evidence["observed_operation_counts"],
+            {fresh_det.REFLECTION_OPERATION: 1},
+        )
+
+        rejected_optimizer = mock.Mock()
+        rejected_evidence = fresh_det.new_warning_evidence(policy64)
+        with self.assertRaisesRegex(
+            fresh_det.FreshRollDeterminismError,
+            fresh_det.BILINEAR_OPERATION,
+        ):
+            fresh_det.backward_and_step(
+                WarningLoss(fresh_det.BILINEAR_OPERATION),
+                rejected_optimizer,
+                policy=policy64,
+                evidence=rejected_evidence,
+            )
+        rejected_optimizer.step.assert_not_called()
+
+    def test_cuda_positive_control_is_required_but_128_bilinear_is_optional(self) -> None:
+        policy128 = fresh_det.policy_for_heatmap_resolution(REPO_ROOT, 128)
+        empty = fresh_det.new_warning_evidence(policy128)
+        with self.assertRaisesRegex(
+            fresh_det.FreshRollDeterminismError,
+            "positive-control",
+        ):
+            fresh_det.finalize_warning_evidence(
+                empty,
+                policy=policy128,
+                device_type="cuda",
+            )
+        observed = fresh_det.new_warning_evidence(policy128)
+        observed["backward_calls"] = 1
+        observed["captured_warning_count"] = 1
+        observed["observed_operation_counts"][fresh_det.REFLECTION_OPERATION] = 1
+        completed = fresh_det.finalize_warning_evidence(
+            observed,
+            policy=policy128,
+            device_type="cuda",
+        )
+        self.assertTrue(completed["positive_control_observed"])
+        self.assertEqual(
+            completed["observed_operation_counts"][fresh_det.BILINEAR_OPERATION],
+            0,
+        )
+
     def test_nvidia_smi_provenance_accepts_legacy_and_kmd_headers(self) -> None:
         headers = (
             (

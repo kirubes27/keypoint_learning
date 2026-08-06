@@ -20,6 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+try:
+    from . import fresh_roll_determinism
+except ImportError:  # train.py also supports direct script execution.
+    import fresh_roll_determinism
+
 
 EXPERIMENT_MANIFEST_RELATIVE_PATH = Path(
     "docs/decisions/2026-07-29/roll_head_package_training/"
@@ -32,7 +37,7 @@ EXPERIMENT_MANIFEST_CONTENT_SHA256 = (
     "2089c039f3dd7cab220e530834342188d282d8513a22fc395008c213a7913625"
 )
 RUN_RECEIPT_NAME = "COMPLETED_RUN_RECEIPT.json"
-RUN_RECEIPT_SCHEMA_VERSION = "roll_head_package_completed_run_receipt.v1"
+RUN_RECEIPT_SCHEMA_VERSION = "roll_head_package_completed_run_receipt.v2"
 EXPECTED_BRANCH = "agent/representation-oracles-20260726"
 REVIEWED_LOCK_COMMIT = "4736be95fe055d95f233e8a1ad8eda3ed528938d"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -41,6 +46,8 @@ _CELL_RE = re.compile(
     r"^(task55_clean|task80_assisted)__r(64|128)__seed(42|43|44)$"
 )
 RUN_SOURCE_PATHS = (
+    "keypoint_net/FRESH_ROLL_DETERMINISM_AMENDMENT.json",
+    "keypoint_net/fresh_roll_determinism.py",
     "keypoint_net/train.py",
     "keypoint_net/run_fresh_roll_cell.py",
     "keypoint_net/run_fresh_roll_primary_matrix.py",
@@ -462,6 +469,7 @@ def write_completed_run_receipt(
     device: str,
     optimizer_step_count: int,
     determinism: Mapping[str, Any],
+    nondeterminism_evidence: Mapping[str, Any],
     full_command: list[str],
     runtime_environment: Mapping[str, Any],
 ) -> Path:
@@ -472,6 +480,21 @@ def write_completed_run_receipt(
     _require(current_commit == binding.cell.source_commit, "source commit changed during run")
     _require(current_branch == binding.source_branch, "source branch changed during run")
     run_directory = Path(binding.run_directory).resolve(strict=True)
+    policy = fresh_roll_determinism.policy_for_heatmap_resolution(
+        root,
+        int(binding.cell.expected_config["training"]["heatmap_res"]),
+    )
+    amendment = fresh_roll_determinism.amendment_record(root)
+    fresh_roll_determinism.validate_determinism_record(
+        determinism,
+        expected_seed=binding.cell.seed,
+        expected_policy=policy,
+    )
+    fresh_roll_determinism.validate_final_warning_evidence(
+        nondeterminism_evidence,
+        policy=policy,
+        device_type=device.split(":", 1)[0],
+    )
     files = {
         "checkpoint": _file_record(run_directory / "best_model.pt", name="checkpoint"),
         "config": _file_record(run_directory / "config.json", name="config"),
@@ -485,6 +508,7 @@ def write_completed_run_receipt(
             "file_sha256": binding.cell.manifest_file_sha256,
             "content_hash_sha256": EXPERIMENT_MANIFEST_CONTENT_SHA256,
         },
+        "determinism_amendment": amendment,
         "cell_id": binding.cell.cell_id,
         "source_commit": current_commit,
         "source_branch": current_branch,
@@ -500,6 +524,9 @@ def write_completed_run_receipt(
             "test_loader_constructed": False,
             "selection_use_authorized": True,
             "determinism": dict(determinism),
+            "nondeterminism_evidence": copy.deepcopy(
+                dict(nondeterminism_evidence)
+            ),
             "full_command": list(full_command),
             "runtime_environment": dict(runtime_environment),
         },
@@ -554,7 +581,8 @@ def authorize_completed_fresh_run(
     _content_hash_is_valid(document, name="completed-run receipt")
     required = {
         "schema_version", "artifact_type", "content_hash_sha256",
-        "experiment_manifest", "cell_id", "source_commit", "source_branch",
+        "experiment_manifest", "determinism_amendment", "cell_id",
+        "source_commit", "source_branch",
         "run_directory", "source_files", "files", "execution",
         "expected_embedded_config",
     }
@@ -571,6 +599,9 @@ def authorize_completed_fresh_run(
         "file_sha256": cell.manifest_file_sha256,
         "content_hash_sha256": EXPERIMENT_MANIFEST_CONTENT_SHA256,
     }, "receipt experiment binding differs")
+    amendment = fresh_roll_determinism.amendment_record(root)
+    _require(document["determinism_amendment"] == amendment,
+             "receipt determinism amendment differs")
     _require(document["source_files"] == committed_source_records(root, source_commit),
              "receipt source files differ")
     run_directory = Path(str(document["run_directory"])).resolve(strict=True)
@@ -599,7 +630,8 @@ def authorize_completed_fresh_run(
         "training_completed", "training_mode", "device",
         "optimizer_step_count", "authoritative_checkpoint_name",
         "test_loader_constructed", "selection_use_authorized",
-        "determinism", "full_command", "runtime_environment",
+        "determinism", "nondeterminism_evidence", "full_command",
+        "runtime_environment",
     }
     _require(set(execution) == expected_execution_keys,
              "receipt execution keys differ")
@@ -639,6 +671,20 @@ def authorize_completed_fresh_run(
     receipt_device = execution.get("device")
     _require(runtime_environment["device_type"] == receipt_device,
              "runtime environment device differs")
+    policy = fresh_roll_determinism.policy_for_heatmap_resolution(
+        root,
+        int(cell.expected_config["training"]["heatmap_res"]),
+    )
+    fresh_roll_determinism.validate_determinism_record(
+        execution.get("determinism"),
+        expected_seed=cell.seed,
+        expected_policy=policy,
+    )
+    fresh_roll_determinism.validate_final_warning_evidence(
+        execution.get("nondeterminism_evidence"),
+        policy=policy,
+        device_type=str(receipt_device).split(":", 1)[0],
+    )
     if receipt_device == "cuda":
         for cuda_key in (
             "pytorch_cuda_version", "gpu_name", "nvidia_driver_version",
@@ -658,6 +704,10 @@ def authorize_completed_fresh_run(
              "config full command differs")
     _require(config_doc.get("runtime_environment") == runtime_environment,
              "config runtime environment differs")
+    _require(config_doc.get("determinism") == execution["determinism"],
+             "config determinism record differs")
+    _require(config_doc.get("determinism_amendment") == amendment,
+             "config determinism amendment differs")
     _require(document["expected_embedded_config"] == cell.expected_config,
              "receipt embedded config differs")
     return FreshCheckpointCapability(

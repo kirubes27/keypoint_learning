@@ -43,6 +43,7 @@ from dataset import (
 )
 import representation_fresh_checkpoint_authorization as fresh_authorization
 import representation_corpus_inventory
+import fresh_roll_determinism
 
 
 @dataclass(frozen=True)
@@ -97,32 +98,10 @@ def _seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def _configure_determinism(seed: int) -> dict:
-    """Enforce and report the frozen deterministic-algorithm policy."""
-    cublas_workspace_config = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
-    if cublas_workspace_config not in (None, ":4096:8"):
-        raise ValueError(
-            "fresh runs require CUBLAS_WORKSPACE_CONFIG=:4096:8"
-        )
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+def _configure_determinism(seed: int, *, policy: dict) -> dict:
+    """Seed the run and enable the approved warn-only CUDA policy."""
     _seed_everything(seed)
-    torch.use_deterministic_algorithms(True)
-    if hasattr(torch.backends, "cudnn"):
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-    return {
-        "seed": seed,
-        "torch_deterministic_algorithms": bool(
-            torch.are_deterministic_algorithms_enabled()
-        ),
-        "cudnn_deterministic": bool(
-            getattr(torch.backends.cudnn, "deterministic", False)
-        ),
-        "cudnn_benchmark": bool(
-            getattr(torch.backends.cudnn, "benchmark", False)
-        ),
-        "cublas_workspace_config": os.environ["CUBLAS_WORKSPACE_CONFIG"],
-    }
+    return fresh_roll_determinism.configure_torch_determinism(seed, policy)
 
 
 def _nvidia_driver_facts() -> tuple[str, str]:
@@ -299,6 +278,9 @@ def train_epoch(
     loc_bg_threshold: float,
     sigma: float,
     num_keypoints: int,
+    *,
+    nondeterminism_policy: Optional[dict] = None,
+    nondeterminism_evidence: Optional[dict] = None,
 ) -> dict:
     """Train for one epoch."""
     model.train()
@@ -340,9 +322,25 @@ def train_epoch(
         )
 
         # Backward pass
-        optimizer.zero_grad()
-        losses['loss'].backward()
-        optimizer.step()
+        if nondeterminism_policy is None:
+            if nondeterminism_evidence is not None:
+                raise ValueError(
+                    "nondeterminism evidence requires an active policy"
+                )
+            optimizer.zero_grad()
+            losses['loss'].backward()
+            optimizer.step()
+        else:
+            if nondeterminism_evidence is None:
+                raise ValueError(
+                    "nondeterminism policy requires an evidence accumulator"
+                )
+            fresh_roll_determinism.backward_and_step(
+                losses['loss'],
+                optimizer,
+                policy=nondeterminism_policy,
+                evidence=nondeterminism_evidence,
+            )
 
         # Accumulate metrics
         total_loss += losses['loss'].item()
@@ -1128,8 +1126,29 @@ def main():
         or args.lambda_cycle > 0.0
     )
     
-    # Claim the fresh cell atomically after every source/data preflight and
-    # before any CUDA query can initialize a device context.
+    # Resolve the executable amendment before claiming an output directory or
+    # allowing any CUDA query to initialize a device context.
+    if fresh_binding is not None:
+        nondeterminism_policy = (
+            fresh_roll_determinism.policy_for_heatmap_resolution(
+                repo_root,
+                args.heatmap_res,
+            )
+        )
+        determinism_amendment = fresh_roll_determinism.amendment_record(
+            repo_root
+        )
+        nondeterminism_evidence = (
+            fresh_roll_determinism.new_warning_evidence(
+                nondeterminism_policy
+            )
+        )
+    else:
+        nondeterminism_policy = None
+        determinism_amendment = None
+        nondeterminism_evidence = None
+
+    # Claim the fresh cell atomically after every source/data/policy preflight.
     if fresh_binding is not None:
         run_dir = Path(fresh_binding.run_directory)
         run_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -1137,7 +1156,10 @@ def main():
 
     # Reproducibility. Preserve legacy behavior outside the dedicated path.
     if fresh_binding is not None:
-        determinism = _configure_determinism(args.seed)
+        determinism = _configure_determinism(
+            args.seed,
+            policy=nondeterminism_policy,
+        )
     else:
         _seed_everything(args.seed)
         determinism = None
@@ -1180,6 +1202,7 @@ def main():
     config['source_commit'] = source_commit
     if fresh_binding is not None:
         config['determinism'] = determinism
+        config['determinism_amendment'] = determinism_amendment
         config['full_command'] = full_command
         config['runtime_environment'] = runtime_environment
         config['cell_id'] = fresh_binding.cell.cell_id
@@ -1293,6 +1316,7 @@ def main():
             fresh_binding.cell.expected_config
         )
         ckpt_config['determinism'] = determinism
+        ckpt_config['determinism_amendment'] = determinism_amendment
     
     print(f"\nStarting training for {args.epochs} epochs...")
     print(f"Training mode: {data_plan.mode}")
@@ -1349,7 +1373,9 @@ def main():
             model, train_loader, optimizer, device,
             args.lambda_smooth, args.lambda_disp, args.lambda_ent, args.lambda_act,
             args.lambda_loc, args.lambda_inv, args.lambda_cycle,
-            args.loc_bg_threshold, args.sigma, args.num_keypoints
+            args.loc_bg_threshold, args.sigma, args.num_keypoints,
+            nondeterminism_policy=nondeterminism_policy,
+            nondeterminism_evidence=nondeterminism_evidence,
         )
         optimizer_step_count += len(train_loader)
         
@@ -1478,12 +1504,20 @@ def main():
         json.dump(history, f, indent=2)
 
     if fresh_binding is not None:
+        completed_nondeterminism_evidence = (
+            fresh_roll_determinism.finalize_warning_evidence(
+                nondeterminism_evidence,
+                policy=nondeterminism_policy,
+                device_type=device.type,
+            )
+        )
         receipt_path = fresh_authorization.write_completed_run_receipt(
             repo_root,
             fresh_binding,
             device=str(device),
             optimizer_step_count=optimizer_step_count,
             determinism=determinism,
+            nondeterminism_evidence=completed_nondeterminism_evidence,
             full_command=full_command,
             runtime_environment=runtime_environment,
         )

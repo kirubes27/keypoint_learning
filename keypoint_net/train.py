@@ -136,8 +136,14 @@ def _nvidia_driver_facts() -> tuple[str, str]:
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RuntimeError("CUDA run cannot record nvidia-smi provenance") from exc
-    driver = re.search(r"Driver Version:\s*([0-9.]+)", completed.stdout)
-    cuda = re.search(r"CUDA Version:\s*([0-9.]+)", completed.stdout)
+    driver = re.search(
+        r"(?:Driver|KMD) Version:\s*([0-9.]+)",
+        completed.stdout,
+    )
+    cuda = re.search(
+        r"CUDA(?: UMD)? Version:\s*([0-9.]+)",
+        completed.stdout,
+    )
     if driver is None or cuda is None:
         raise RuntimeError("CUDA run cannot parse nvidia-smi provenance")
     return driver.group(1), cuda.group(1)

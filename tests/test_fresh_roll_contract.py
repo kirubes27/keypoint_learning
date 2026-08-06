@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import torch
@@ -120,6 +121,35 @@ def _completed_fixture(cell_id: str):
 
 
 class FreshRollContractTests(unittest.TestCase):
+    def test_nvidia_smi_provenance_accepts_legacy_and_kmd_headers(self) -> None:
+        headers = (
+            (
+                "NVIDIA-SMI 580.173.02 Driver Version: 580.173.02 "
+                "CUDA Version: 13.0\n",
+                ("580.173.02", "13.0"),
+            ),
+            (
+                "NVIDIA-SMI 610.43.02 KMD Version: 610.43.02 "
+                "CUDA UMD Version: 13.3\n",
+                ("610.43.02", "13.3"),
+            ),
+        )
+        for stdout, expected in headers:
+            with self.subTest(stdout=stdout), mock.patch.object(
+                train_module.subprocess,
+                "run",
+                return_value=mock.Mock(stdout=stdout),
+            ):
+                self.assertEqual(expected, train_module._nvidia_driver_facts())
+
+        with mock.patch.object(
+            train_module.subprocess,
+            "run",
+            return_value=mock.Mock(stdout="NVIDIA-SMI unknown format\n"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cannot parse"):
+                train_module._nvidia_driver_facts()
+
     def test_real_corpus_dry_run_constructs_exact_64_and_128_data_plans(self) -> None:
         output_root = Path(tempfile.mkdtemp(prefix="fresh_roll_dry_run_test_"))
         for cell_id in (

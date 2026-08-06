@@ -2,7 +2,7 @@
 #SBATCH -J fresh_roll_primary
 #SBATCH -t 06:00:00
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="nvd&avx512"
+#SBATCH --constraint="nvd&a100&avx512"
 #SBATCH --mem-per-cpu=5000
 #SBATCH -n 1
 #SBATCH -c 8

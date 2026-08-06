@@ -164,15 +164,16 @@ class FreshRollPrimaryMatrixTests(unittest.TestCase):
         self.assertNotIn("#SBATCH -A", text)
         self.assertNotIn("sbatch ", text)
         self.assertIn("srun python -B -u", text)
-        for script in (SLURM_SCRIPT, SMOKE_SLURM_SCRIPT):
+        expected_constraints = {
+            SLURM_SCRIPT: '#SBATCH --constraint="nvd&a100&avx512"',
+            SMOKE_SLURM_SCRIPT: '#SBATCH --constraint="nvd&avx512"',
+        }
+        for script, expected_constraint in expected_constraints.items():
             script_text = script.read_text(encoding="utf-8")
             self.assertIn("module purge", script_text)
             self.assertNotRegex(script_text, r"module(?:\s+--ignore_cache)?\s+load")
             self.assertIn('source "$VENV_DIR/bin/activate"', script_text)
-            self.assertIn(
-                '#SBATCH --constraint="nvd&avx512"',
-                script_text,
-            )
+            self.assertIn(expected_constraint, script_text)
             subprocess.run(["bash", "-n", str(script)], check=True)
         self.assertEqual(len(hashlib.sha256(SLURM_SCRIPT.read_bytes()).hexdigest()), 64)
 

@@ -169,6 +169,10 @@ class FreshRollPrimaryMatrixTests(unittest.TestCase):
             self.assertIn("module purge", script_text)
             self.assertNotRegex(script_text, r"module(?:\s+--ignore_cache)?\s+load")
             self.assertIn('source "$VENV_DIR/bin/activate"', script_text)
+            self.assertIn(
+                '#SBATCH --constraint="nvd&avx512"',
+                script_text,
+            )
             subprocess.run(["bash", "-n", str(script)], check=True)
         self.assertEqual(len(hashlib.sha256(SLURM_SCRIPT.read_bytes()).hexdigest()), 64)
 

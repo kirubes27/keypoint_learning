@@ -49,6 +49,11 @@ DATASET_ROOTS = {
     "translation": FUTURE_ROOT / "_tdw_camera_plane_xy_grid11_scale060_base_panel_512_v1",
 }
 GENERATOR_COMMIT = "a" * 40
+ROLL_INVENTORY_PATH = (
+    REPO_ROOT
+    / "docs/decisions/2026-07-26/representation_oracle_splits/inventories/"
+    "CORPUS_INVENTORY__roll.json"
+)
 
 
 def _decode(data: bytes) -> dict:
@@ -101,6 +106,48 @@ def _replace_manifest(bundle: dict[str, bytes], mutation) -> dict[str, bytes]:
         trailing_newline=True,
     )
     return changed
+
+
+class CorpusInventoryPortabilityTests(unittest.TestCase):
+    def test_inventory_allows_only_source_root_relocation(self) -> None:
+        original = ROLL_INVENTORY_PATH.read_bytes()
+        relocated = _decode(original)
+        relocated["source_root_provenance"] = (
+            "/work/scratch/example/_tdw_world_z_roll_base_panel_512_v2"
+        )
+        relocated["content_hash_sha256"] = inventory_content_hash(relocated)
+        relocated_bytes = inventory_json_bytes(relocated, trailing_newline=True)
+
+        with patch(
+            "keypoint_net.representation_corpus_inventory.build_corpus_inventory",
+            return_value=relocated_bytes,
+        ):
+            validated = validate_corpus_inventory(
+                original,
+                "roll",
+                DATASET_ROOTS["roll"],
+            )
+        self.assertEqual(
+            _decode(original)["content_hash_sha256"],
+            validated.content_hash_sha256,
+        )
+
+        relocated["files"][0]["size_bytes"] += 1
+        relocated["content_hash_sha256"] = inventory_content_hash(relocated)
+        changed_bytes = inventory_json_bytes(relocated, trailing_newline=True)
+        with patch(
+            "keypoint_net.representation_corpus_inventory.build_corpus_inventory",
+            return_value=changed_bytes,
+        ):
+            with self.assertRaisesRegex(
+                CorpusInventoryError,
+                "does not match the current exact corpus contents/metadata",
+            ):
+                validate_corpus_inventory(
+                    original,
+                    "roll",
+                    DATASET_ROOTS["roll"],
+                )
 
 
 class RepresentationSplitTests(unittest.TestCase):

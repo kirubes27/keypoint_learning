@@ -691,6 +691,11 @@ def validate_corpus_inventory(
 
     fresh_bytes = build_corpus_inventory(dataset_key, dataset_root)
     fresh_document = _decode_json_bytes(fresh_bytes, f"fresh {context}")
+    # The recorded source root is provenance, not corpus identity.  Rebase the
+    # freshly scanned document to the committed provenance path before exact
+    # comparison so byte-identical copies remain valid across machines.
+    fresh_document["source_root_provenance"] = document["source_root_provenance"]
+    fresh_document["content_hash_sha256"] = inventory_content_hash(fresh_document)
     _require(
         document == fresh_document,
         f"{context}: inventory does not match the current exact corpus contents/metadata",

@@ -25,6 +25,7 @@ from keypoint_net import fresh_roll_determinism as fresh_det
 from keypoint_net import model as model_module
 from keypoint_net import representation_fresh_checkpoint_authorization as fresh
 from keypoint_net import representation_fresh_checkpoint_runtime as runtime
+from keypoint_net.diagnostics import run_fresh_roll_cuda_smoke as cuda_smoke
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -133,6 +134,16 @@ def _completed_fixture(cell_id: str):
 
 
 class FreshRollContractTests(unittest.TestCase):
+    def test_smoke_fixed_batch_inference_forces_eval_mode(self) -> None:
+        model = torch.nn.Sequential(
+            torch.nn.BatchNorm2d(3),
+            torch.nn.Dropout2d(p=0.5),
+        )
+        model.train()
+        self.assertIs(cuda_smoke._fixed_batch_eval(model), model)
+        self.assertFalse(model.training)
+        self.assertTrue(all(not module.training for module in model.modules()))
+
     def test_head_specific_warning_policy_is_hash_bound_and_exact(self) -> None:
         policy64 = fresh_det.policy_for_heatmap_resolution(REPO_ROOT, 64)
         policy128 = fresh_det.policy_for_heatmap_resolution(REPO_ROOT, 128)

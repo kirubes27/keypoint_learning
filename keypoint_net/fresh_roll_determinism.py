@@ -27,7 +27,7 @@ EVIDENCE_SCHEMA_VERSION = "fresh_roll_nondeterminism_evidence.v1"
 MODE = "warn_only_fail_closed_allowlist"
 COVERAGE_SCOPE = "pytorch_declared_nondeterminism_only"
 REFLECTION_OPERATION = "reflection_pad2d_backward_cuda"
-BILINEAR_OPERATION = "upsample_bilinear2d_backward_cuda"
+BILINEAR_OPERATION = "upsample_bilinear2d_backward_out_cuda"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _OPERATION_RE = re.compile(
     r"\b([A-Za-z0-9_]+) does not have a deterministic implementation\b"

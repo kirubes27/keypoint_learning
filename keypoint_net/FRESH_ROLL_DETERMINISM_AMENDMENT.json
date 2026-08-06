@@ -8,7 +8,7 @@
     ],
     "128": [
       "reflection_pad2d_backward_cuda",
-      "upsample_bilinear2d_backward_cuda"
+      "upsample_bilinear2d_backward_out_cuda"
     ]
   },
   "required_cuda_positive_control": "reflection_pad2d_backward_cuda",
@@ -36,5 +36,5 @@
     "head_128_may_expose_an_additional_allowed_kernel": true,
     "repeatability_differences_are_acceptance_criteria": false
   },
-  "content_hash_sha256": "42cf1d2db487ae990bb2b3256fab5208926795ff04874c063e1ccf1895f09cc0"
+  "content_hash_sha256": "72a4c0fb15374fc11db3d7a4de963a7ad70e26e660011ad1dac57750a7db386d"
 }

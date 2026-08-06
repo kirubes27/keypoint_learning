@@ -108,6 +108,13 @@ def _head_parameter_count(model: model_module.PhaseAModel) -> int:
     return count
 
 
+def _fixed_batch_eval(model: torch.nn.Module) -> torch.nn.Module:
+    """Use identical BatchNorm/dropout semantics for both smoke replicas."""
+
+    model.eval()
+    return model
+
+
 def _safe_reload(path: Path) -> tuple[Mapping[str, Any], str, int]:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags)
@@ -278,6 +285,9 @@ def _run_replica(
         bool(torch.isfinite(parameter).all()) for parameter in model.parameters()
     ):
         raise RuntimeError("model contains a non-finite parameter after update")
+    # Both replicas must use the same BatchNorm semantics for the fixed-batch
+    # comparison.  Replica 0 is also reloaded into eval mode below.
+    _fixed_batch_eval(model)
 
     checkpoint_record = None
     inference_model = model
@@ -309,7 +319,7 @@ def _run_replica(
         restored = _build_model(training).cpu()
         restored.load_state_dict(state, strict=True)
         restored.requires_grad_(False)
-        restored.eval()
+        _fixed_batch_eval(restored)
         if _state_digest(restored) != after_digest:
             raise RuntimeError("restored smoke checkpoint weights differ")
         restored.to(device)
@@ -371,6 +381,7 @@ def _run_replica(
         "operator_output_shape": list(outputs["p_hat_t1"].shape),
         "determinism": determinism,
         "nondeterminism_evidence": completed_warning_evidence,
+        "fixed_batch_inference_mode": "eval",
         "passed": True,
     }
 

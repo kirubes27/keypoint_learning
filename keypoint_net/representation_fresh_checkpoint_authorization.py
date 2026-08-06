@@ -43,6 +43,7 @@ _CELL_RE = re.compile(
 RUN_SOURCE_PATHS = (
     "keypoint_net/train.py",
     "keypoint_net/run_fresh_roll_cell.py",
+    "keypoint_net/run_fresh_roll_primary_matrix.py",
     "keypoint_net/representation_fresh_checkpoint_authorization.py",
     "keypoint_net/representation_fresh_checkpoint_runtime.py",
     "keypoint_net/model.py",

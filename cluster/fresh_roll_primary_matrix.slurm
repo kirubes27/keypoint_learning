@@ -56,9 +56,8 @@ if [[ "$ACTUAL_ENV_LOCK_SHA256" != "$EXPECTED_ENV_LOCK_SHA256" ]]; then
 fi
 
 module purge
-module --ignore_cache load gcc
-module --ignore_cache load openmpi
-module load python
+# The pinned venv resolves its exact shared Python interpreter directly.
+# Generic compiler/MPI module aliases differ across accelerator node images.
 source "$VENV_DIR/bin/activate"
 cd "$PROJECT_ROOT"
 

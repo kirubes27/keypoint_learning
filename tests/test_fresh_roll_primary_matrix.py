@@ -20,6 +20,7 @@ from keypoint_net import run_fresh_roll_primary_matrix as matrix
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = REPO_ROOT / "_tdw_world_z_roll_base_panel_512_v2"
 SLURM_SCRIPT = REPO_ROOT / "cluster/fresh_roll_primary_matrix.slurm"
+SMOKE_SLURM_SCRIPT = REPO_ROOT / "cluster/fresh_roll_cuda_smoke.slurm"
 COMMIT = "a" * 40
 
 
@@ -163,7 +164,12 @@ class FreshRollPrimaryMatrixTests(unittest.TestCase):
         self.assertNotIn("#SBATCH -A", text)
         self.assertNotIn("sbatch ", text)
         self.assertIn("srun python -B -u", text)
-        subprocess.run(["bash", "-n", str(SLURM_SCRIPT)], check=True)
+        for script in (SLURM_SCRIPT, SMOKE_SLURM_SCRIPT):
+            script_text = script.read_text(encoding="utf-8")
+            self.assertIn("module purge", script_text)
+            self.assertNotRegex(script_text, r"module(?:\s+--ignore_cache)?\s+load")
+            self.assertIn('source "$VENV_DIR/bin/activate"', script_text)
+            subprocess.run(["bash", "-n", str(script)], check=True)
         self.assertEqual(len(hashlib.sha256(SLURM_SCRIPT.read_bytes()).hexdigest()), 64)
 
 

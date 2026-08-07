@@ -306,12 +306,14 @@ class RollHeadPackageDecisionTests(unittest.TestCase):
 
     def test_full_evaluation_config_is_exact_and_fail_closed(self) -> None:
         result = _evaluator_result("task55_clean__r64__seed42")
-        for mutation in ("omit", "change"):
+        for mutation in ("omit", "change", "bool_for_int"):
             candidate = copy.deepcopy(result)
             if mutation == "omit":
                 candidate["evaluation_config"].pop("motion_fraction_min")
-            else:
+            elif mutation == "change":
                 candidate["evaluation_config"]["motion_fraction_min"] = 0.2
+            else:
+                candidate["evaluation_config"]["full_rollout_horizons"][0] = True
             candidate["evaluation_config_sha256"] = decision.canonical_sha256(
                 candidate["evaluation_config"]
             )

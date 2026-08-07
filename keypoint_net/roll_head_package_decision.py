@@ -498,8 +498,11 @@ def extract_cell_evidence(result: Mapping[str, Any]) -> CellEvidence:
         and evaluation_config_sha256 == canonical_sha256(evaluation_config),
         f"{cell_id}: evaluation config hash differs",
     )
-    _require(dict(evaluation_config) == FROZEN_EVALUATION_CONFIG,
-             f"{cell_id}: frozen evaluation config differs")
+    _require(
+        canonical_json_bytes(evaluation_config)
+        == canonical_json_bytes(FROZEN_EVALUATION_CONFIG),
+        f"{cell_id}: frozen evaluation config differs",
+    )
 
     authorization = _mapping(
         result.get("checkpoint_authorization"),

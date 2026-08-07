@@ -32,6 +32,88 @@ CELL_RE = re.compile(
 )
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+EXPECTED_BRANCH = "agent/representation-oracles-20260726"
+PRIMARY_MATRIX_SCHEMA_VERSION = "roll_head_package_primary_matrix_launch.v1"
+PRIMARY_MATRIX_LOCK_NAME = "PRIMARY_MATRIX_LAUNCH_LOCK.json"
+FROZEN_EVALUATION_CONFIG: Mapping[str, Any] = {
+    "protocol": "full_primary_roll",
+    "representation_thresholds": {
+        "close_distance_objdiag": 0.06,
+        "persistent_fraction": 0.50,
+        "recurrent_fraction": 0.10,
+        "transient_longest_fraction": 0.10,
+        "clustered_median_objdiag": 0.12,
+    },
+    "motion_reference_magnitude_image01": 0.1,
+    "motion_fraction_min": 0.1,
+    "on_object_rate_min": 0.75,
+    "minimum_eligible_channels": 2,
+    "operator_composition_horizons": [1, 2, 10],
+    "full_rollout_horizons": list(range(1, 60)),
+    "role_scoped_holdout_frame_ids": list(range(24)),
+    "holdout_rollout_horizons": list(range(1, 8)),
+    "closure_horizon": 60,
+}
+FRESH_AUTHORIZATION_KEYS = frozenset({
+    "checkpoint_evaluation_authorized",
+    "source_commit",
+    "cell_id",
+    "checkpoint_sha256",
+    "completed_run_receipt_sha256",
+    "training_or_weight_update_authorized",
+    "selection_use_authorized",
+})
+FRESH_EXTERNAL_HASH_BINDINGS = {
+    "checkpoint": "checkpoint_sha256",
+    "completed_run_receipt": "completed_run_receipt_sha256",
+}
+FRESH_EXTERNAL_ROLES = frozenset({
+    "checkpoint",
+    "checkpoint_config",
+    "checkpoint_metadata",
+    "completed_run_receipt",
+})
+FRESH_COMMITTED_ROLE_PATHS = {
+    "provenance_source": "keypoint_net/representation_evaluation_provenance.py",
+    "evaluator_source": "keypoint_net/eval_representation.py",
+    "array_codec_source": "keypoint_net/representation_array_codec.py",
+    "split_adapter_source": "keypoint_net/representation_split_adapter.py",
+    "numeric_registry": (
+        "docs/decisions/2026-07-26/representation_oracle_calibration/"
+        "NUMERIC_CALIBRATION_v1_1.json"
+    ),
+    "fresh_authorization_source": (
+        "keypoint_net/representation_fresh_checkpoint_authorization.py"
+    ),
+    "fresh_runtime_source": (
+        "keypoint_net/representation_fresh_checkpoint_runtime.py"
+    ),
+    "model_source": "keypoint_net/model.py",
+    "experiment_manifest": (
+        "docs/decisions/2026-07-29/roll_head_package_training/"
+        "EXPERIMENT_MANIFEST_v1.json"
+    ),
+    "split_manifest": (
+        "docs/decisions/2026-07-26/representation_oracle_splits/"
+        "SPLIT_MANIFEST.json"
+    ),
+    "split_verifier_report": (
+        "docs/decisions/2026-07-26/representation_oracle_splits/"
+        "SPLIT_VERIFIER_REPORT.json"
+    ),
+    "corpus_inventory": (
+        "docs/decisions/2026-07-26/representation_oracle_splits/inventories/"
+        "CORPUS_INVENTORY__roll.json"
+    ),
+    "replay_frame_mask_inventory": (
+        "docs/decisions/2026-07-26/representation_oracle_replay/"
+        "HAMMER_ROLL_FRAME_MASK_INVENTORY_v1.json"
+    ),
+    "replay_metadata_manifest": (
+        "docs/decisions/2026-07-26/representation_oracle_replay/"
+        "HAMMER_ROLL_METADATA_MANIFEST_v1.json"
+    ),
+}
 
 
 class PackageDecisionError(ValueError):
@@ -55,6 +137,8 @@ class CellEvidence:
     source_commit: str | None
     evaluation_config_sha256: str
     result_content_sha256: str
+    checkpoint_sha256: str
+    completed_run_receipt_sha256: str
 
 
 def _require(condition: bool, message: str) -> None:
@@ -155,6 +239,211 @@ def _read_regular(path: Path, *, name: str) -> bytes:
         os.close(descriptor)
 
 
+def _validate_live_result_provenance(
+    result: Mapping[str, Any],
+    *,
+    repo_root: Path,
+    expected_commit: str,
+) -> dict[str, dict[str, Any]]:
+    cell_id = result.get("case_id")
+    provenance = _mapping(result.get("provenance"), name=f"{cell_id} provenance")
+    _require(
+        set(provenance) == {
+            "schema_version", "source_commit", "source_commit_verified",
+            "repository_root", "case_kind", "fit_from_pairs",
+            "committed_files", "external_files", "loaded_sources",
+            "provenance_loaded_source",
+        },
+        f"{cell_id}: live provenance keys differ",
+    )
+    _require(
+        provenance.get("source_commit") == expected_commit
+        and provenance.get("source_commit_verified") is True
+        and provenance.get("repository_root") == str(repo_root)
+        and provenance.get("case_kind") == "checkpoint"
+        and provenance.get("fit_from_pairs") is False,
+        f"{cell_id}: live provenance identity differs",
+    )
+
+    committed = provenance.get("committed_files")
+    _require(isinstance(committed, list),
+             f"{cell_id}: committed provenance is invalid")
+    committed_by_role: dict[str, Mapping[str, Any]] = {}
+    for index, record in enumerate(committed):
+        _require(isinstance(record, Mapping),
+                 f"{cell_id}: committed record {index} is invalid")
+        _require(
+            set(record) == {
+                "role", "repo_relative_path", "absolute_path",
+                "file_sha256", "git_blob_oid",
+            },
+            f"{cell_id}: committed record {index} keys differ",
+        )
+        role = record.get("role")
+        _require(isinstance(role, str) and role not in committed_by_role,
+                 f"{cell_id}: committed provenance roles are invalid")
+        committed_by_role[role] = record
+    _require(set(committed_by_role) == set(FRESH_COMMITTED_ROLE_PATHS),
+             f"{cell_id}: committed provenance role profile differs")
+    for role, relative_path in FRESH_COMMITTED_ROLE_PATHS.items():
+        record = committed_by_role[role]
+        expected_path = (repo_root / relative_path).absolute()
+        _require(
+            record.get("repo_relative_path") == relative_path
+            and record.get("absolute_path") == str(expected_path)
+            and isinstance(record.get("file_sha256"), str)
+            and SHA256_RE.fullmatch(str(record["file_sha256"])) is not None,
+            f"{cell_id}: committed role {role} binding differs",
+        )
+        live = _read_regular(expected_path, name=f"{cell_id} committed {role}")
+        _require(hashlib.sha256(live).hexdigest() == record["file_sha256"],
+                 f"{cell_id}: committed role {role} live hash differs")
+
+    loaded_sources = provenance.get("loaded_sources")
+    _require(
+        isinstance(loaded_sources, Mapping)
+        and set(loaded_sources) == {"array_codec_source", "evaluator_source"},
+        f"{cell_id}: loaded source roles differ",
+    )
+    for role, loaded_record in loaded_sources.items():
+        committed_record = committed_by_role[role]
+        _require(
+            isinstance(loaded_record, Mapping)
+            and set(loaded_record) == {"absolute_path", "sha256"}
+            and loaded_record == {
+                "absolute_path": committed_record["absolute_path"],
+                "sha256": committed_record["file_sha256"],
+            },
+            f"{cell_id}: loaded source {role} binding differs",
+        )
+    provenance_loaded = provenance.get("provenance_loaded_source")
+    provenance_committed = committed_by_role["provenance_source"]
+    _require(
+        isinstance(provenance_loaded, Mapping)
+        and set(provenance_loaded) == {"absolute_path", "sha256"}
+        and provenance_loaded == {
+            "absolute_path": provenance_committed["absolute_path"],
+            "sha256": provenance_committed["file_sha256"],
+        },
+        f"{cell_id}: loaded provenance source binding differs",
+    )
+
+    external = provenance.get("external_files")
+    _require(isinstance(external, list),
+             f"{cell_id}: external provenance is invalid")
+    external_by_role: dict[str, Mapping[str, Any]] = {}
+    for index, record in enumerate(external):
+        _require(isinstance(record, Mapping),
+                 f"{cell_id}: external record {index} is invalid")
+        _require(
+            set(record) == {"role", "absolute_path", "file_sha256", "size_bytes"},
+            f"{cell_id}: external record {index} keys differ",
+        )
+        role = record.get("role")
+        _require(isinstance(role, str) and role not in external_by_role,
+                 f"{cell_id}: external provenance roles are invalid")
+        external_by_role[role] = record
+    _require(set(external_by_role) == FRESH_EXTERNAL_ROLES,
+             f"{cell_id}: external provenance role profile differs")
+    external_bytes: dict[str, bytes] = {}
+    for role, record in external_by_role.items():
+        path = Path(str(record.get("absolute_path")))
+        _require(
+            path.is_absolute()
+            and isinstance(record.get("file_sha256"), str)
+            and SHA256_RE.fullmatch(str(record["file_sha256"])) is not None
+            and type(record.get("size_bytes")) is int
+            and int(record["size_bytes"]) > 0,
+            f"{cell_id}: external role {role} shape differs",
+        )
+        live = _read_regular(path, name=f"{cell_id} external {role}")
+        _require(
+            len(live) == record["size_bytes"]
+            and hashlib.sha256(live).hexdigest() == record["file_sha256"],
+            f"{cell_id}: external role {role} live binding differs",
+        )
+        external_bytes[role] = live
+
+    receipt = _strict_json(
+        external_bytes["completed_run_receipt"],
+        name=f"{cell_id} completed-run receipt",
+    )
+    receipt_hash = receipt.get("content_hash_sha256")
+    _require(isinstance(receipt_hash, str) and SHA256_RE.fullmatch(receipt_hash),
+             f"{cell_id}: completed-run receipt content hash is invalid")
+    receipt_payload = dict(receipt)
+    receipt_payload.pop("content_hash_sha256")
+    _require(canonical_sha256(receipt_payload) == receipt_hash,
+             f"{cell_id}: completed-run receipt content hash differs")
+    _require(
+        receipt.get("schema_version")
+        == "roll_head_package_completed_run_receipt.v3"
+        and receipt.get("cell_id") == cell_id
+        and receipt.get("source_commit") == expected_commit,
+        f"{cell_id}: completed-run receipt identity differs",
+    )
+    receipt_files = receipt.get("files")
+    _require(
+        isinstance(receipt_files, Mapping)
+        and set(receipt_files) == {"checkpoint", "config", "history"},
+        f"{cell_id}: completed-run receipt file roles differ",
+    )
+    for receipt_role, external_role in (
+        ("checkpoint", "checkpoint"),
+        ("config", "checkpoint_config"),
+        ("history", "checkpoint_metadata"),
+    ):
+        receipt_record = receipt_files[receipt_role]
+        external_record = external_by_role[external_role]
+        _require(
+            isinstance(receipt_record, Mapping)
+            and receipt_record == {
+                "absolute_path": external_record["absolute_path"],
+                "sha256": external_record["file_sha256"],
+                "size_bytes": external_record["size_bytes"],
+            },
+            f"{cell_id}: receipt-to-{external_role} binding differs",
+        )
+    execution = receipt.get("execution")
+    _require(
+        isinstance(execution, Mapping)
+        and execution.get("training_completed") is True
+        and execution.get("selection_use_authorized") is True
+        and execution.get("test_loader_constructed") is False,
+        f"{cell_id}: completed-run execution authority differs",
+    )
+    runtime_environment = execution.get("runtime_environment")
+    _require(isinstance(runtime_environment, Mapping),
+             f"{cell_id}: runtime environment is invalid")
+    launch_chain: dict[str, dict[str, Any]] = {}
+    for receipt_role, output_role in (
+        ("primary_matrix_launch_lock", "primary_matrix_launch_lock"),
+        ("environment_lock", "environment_lock"),
+        ("slurm_job_script", "slurm_job_script"),
+    ):
+        receipt_record = runtime_environment.get(receipt_role)
+        _require(
+            isinstance(receipt_record, Mapping)
+            and set(receipt_record) == {"absolute_path", "sha256", "size_bytes"},
+            f"{cell_id}: receipt {receipt_role} record differs",
+        )
+        path = Path(str(receipt_record["absolute_path"]))
+        _require(path.is_absolute(), f"{cell_id}: {receipt_role} path is not absolute")
+        live = _read_regular(path, name=f"{cell_id} receipt {receipt_role}")
+        _require(
+            type(receipt_record["size_bytes"]) is int
+            and receipt_record["size_bytes"] == len(live)
+            and receipt_record["sha256"] == hashlib.sha256(live).hexdigest(),
+            f"{cell_id}: receipt {receipt_role} live binding differs",
+        )
+        launch_chain[output_role] = {
+            "absolute_path": str(path),
+            "file_sha256": receipt_record["sha256"],
+            "size_bytes": receipt_record["size_bytes"],
+        }
+    return launch_chain
+
+
 def extract_cell_evidence(result: Mapping[str, Any]) -> CellEvidence:
     """Validate one hashed evaluator result and extract decision axes."""
 
@@ -209,19 +498,15 @@ def extract_cell_evidence(result: Mapping[str, Any]) -> CellEvidence:
         and evaluation_config_sha256 == canonical_sha256(evaluation_config),
         f"{cell_id}: evaluation config hash differs",
     )
-    _require(
-        evaluation_config.get("protocol") == "full_primary_roll"
-        and evaluation_config.get("role_scoped_holdout_frame_ids") == list(range(24))
-        and evaluation_config.get("holdout_rollout_horizons") == list(range(1, 8))
-        and evaluation_config.get("full_rollout_horizons") == list(range(1, 60))
-        and evaluation_config.get("closure_horizon") == 60,
-        f"{cell_id}: frozen evaluation scope differs",
-    )
+    _require(dict(evaluation_config) == FROZEN_EVALUATION_CONFIG,
+             f"{cell_id}: frozen evaluation config differs")
 
     authorization = _mapping(
         result.get("checkpoint_authorization"),
         name=f"{cell_id} checkpoint authorization",
     )
+    _require(set(authorization) == FRESH_AUTHORIZATION_KEYS,
+             f"{cell_id}: checkpoint authorization keys differ")
     _require(
         authorization.get("checkpoint_evaluation_authorized") is True
         and authorization.get("selection_use_authorized") is True
@@ -232,7 +517,7 @@ def extract_cell_evidence(result: Mapping[str, Any]) -> CellEvidence:
     source_commit = authorization.get("source_commit")
     _require(isinstance(source_commit, str) and COMMIT_RE.fullmatch(source_commit) is not None,
              f"{cell_id}: source commit is invalid")
-    for key in ("checkpoint_sha256", "completed_run_receipt_sha256"):
+    for key in FRESH_EXTERNAL_HASH_BINDINGS.values():
         value = authorization.get(key)
         _require(isinstance(value, str) and SHA256_RE.fullmatch(value) is not None,
                  f"{cell_id}: authorization {key} is invalid")
@@ -322,14 +607,39 @@ def extract_cell_evidence(result: Mapping[str, Any]) -> CellEvidence:
         canonical_drift = None
         reasons.append("canonical_drift_missing")
 
-    provenance = result.get("provenance")
-    if (
-        not isinstance(provenance, Mapping)
-        or provenance.get("source_commit") != source_commit
-        or not isinstance(provenance.get("committed_files"), list)
-        or not isinstance(provenance.get("external_files"), list)
-    ):
-        reasons.append("provenance_missing_or_contradictory")
+    provenance = _mapping(result.get("provenance"), name=f"{cell_id} provenance")
+    _require(
+        provenance.get("source_commit") == source_commit
+        and provenance.get("source_commit_verified") is True,
+        f"{cell_id}: provenance source commit is not verified",
+    )
+    committed_files = provenance.get("committed_files")
+    external_files = provenance.get("external_files")
+    _require(isinstance(committed_files, list) and bool(committed_files),
+             f"{cell_id}: committed provenance is empty")
+    _require(isinstance(external_files, list),
+             f"{cell_id}: external provenance is invalid")
+    external_by_role: dict[str, Mapping[str, Any]] = {}
+    for index, record in enumerate(external_files):
+        _require(isinstance(record, Mapping),
+                 f"{cell_id}: external provenance record {index} is invalid")
+        role = record.get("role")
+        _require(isinstance(role, str) and role not in external_by_role,
+                 f"{cell_id}: external provenance roles are invalid")
+        external_by_role[role] = record
+    _require(set(external_by_role) == FRESH_EXTERNAL_ROLES,
+             f"{cell_id}: external provenance role profile differs")
+    for role, authorization_key in FRESH_EXTERNAL_HASH_BINDINGS.items():
+        record = external_by_role[role]
+        _require(
+            set(record) == {"role", "absolute_path", "file_sha256", "size_bytes"}
+            and record.get("file_sha256") == authorization[authorization_key]
+            and isinstance(record.get("absolute_path"), str)
+            and Path(str(record["absolute_path"])).is_absolute()
+            and type(record.get("size_bytes")) is int
+            and int(record["size_bytes"]) > 0,
+            f"{cell_id}: {role} provenance binding differs",
+        )
 
     return CellEvidence(
         cell_id=cell_id,
@@ -347,6 +657,10 @@ def extract_cell_evidence(result: Mapping[str, Any]) -> CellEvidence:
         source_commit=source_commit,
         evaluation_config_sha256=evaluation_config_sha256,
         result_content_sha256=claimed_hash,
+        checkpoint_sha256=str(authorization["checkpoint_sha256"]),
+        completed_run_receipt_sha256=str(
+            authorization["completed_run_receipt_sha256"]
+        ),
     )
 
 
@@ -557,16 +871,147 @@ def decide_primary_package(cells: Sequence[CellEvidence]) -> dict[str, Any]:
     }
 
 
+def _file_record(path: Path, *, name: str) -> dict[str, Any]:
+    data = _read_regular(path, name=name)
+    return {
+        "absolute_path": str(path),
+        "file_sha256": hashlib.sha256(data).hexdigest(),
+        "size_bytes": len(data),
+    }
+
+
+def _validate_matrix_lock(
+    path: Path,
+    *,
+    expected_commit: str,
+) -> tuple[Mapping[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    _require(path.is_absolute() and path.name == PRIMARY_MATRIX_LOCK_NAME,
+             "primary matrix lock path differs")
+    data = _read_regular(path, name="primary matrix launch lock")
+    document = _strict_json(data, name="primary matrix launch lock")
+    claimed_hash = document.get("content_hash_sha256")
+    _require(isinstance(claimed_hash, str) and SHA256_RE.fullmatch(claimed_hash),
+             "primary matrix content hash is invalid")
+    payload = dict(document)
+    payload.pop("content_hash_sha256")
+    _require(canonical_sha256(payload) == claimed_hash,
+             "primary matrix content hash differs")
+    _require(
+        set(document) == {
+            "schema_version", "artifact_type", "matrix_root", "source_commit",
+            "source_branch", "slurm_script", "environment_lock",
+            "primary_cell_ids_by_task_index", "task_count",
+            "gpu_count_per_task", "max_concurrent_gpu_nodes", "output_layout",
+            "submission", "content_hash_sha256",
+        },
+        "primary matrix keys differ",
+    )
+    matrix_root = path.parent
+    expected_cells = _expected_cell_ids()
+    _require(
+        document.get("schema_version") == PRIMARY_MATRIX_SCHEMA_VERSION
+        and document.get("artifact_type")
+        == "roll_head_package_primary_matrix_launch_lock",
+        "primary matrix identity differs",
+    )
+    _require(
+        document.get("matrix_root") == str(matrix_root)
+        and document.get("source_commit") == expected_commit
+        and document.get("source_branch") == EXPECTED_BRANCH,
+        "primary matrix source/root binding differs",
+    )
+    primary_cells = document.get("primary_cell_ids_by_task_index")
+    _require(
+        isinstance(primary_cells, list)
+        and set(primary_cells) == expected_cells
+        and len(primary_cells) == len(expected_cells)
+        and document.get("task_count") == 12
+        and document.get("gpu_count_per_task") == 1
+        and document.get("max_concurrent_gpu_nodes") == 1,
+        "primary matrix cell/resource binding differs",
+    )
+    _require(
+        document.get("submission") == {
+            "performed_by_prepare_command": False,
+            "resume_authorized": False,
+            "overwrite_authorized": False,
+        },
+        "primary matrix submission boundary differs",
+    )
+    _require(
+        document.get("output_layout") == {
+            "runs_directory": str(matrix_root / "runs"),
+            "evaluations_directory": str(matrix_root / "evaluations"),
+            "evaluation_filename_template": "{cell_id}.json",
+        },
+        "primary matrix output layout differs",
+    )
+
+    bound_records: dict[str, dict[str, Any]] = {}
+    for role in ("environment_lock", "slurm_script"):
+        claimed = document.get(role)
+        _require(
+            isinstance(claimed, Mapping)
+            and set(claimed) == {"absolute_path", "sha256", "size_bytes"},
+            f"primary matrix {role} record differs",
+        )
+        live = _file_record(
+            Path(str(claimed["absolute_path"])),
+            name=f"primary matrix {role}",
+        )
+        normalized = {
+            "absolute_path": live["absolute_path"],
+            "sha256": live["file_sha256"],
+            "size_bytes": live["size_bytes"],
+        }
+        _require(dict(claimed) == normalized,
+                 f"live primary matrix {role} differs")
+        bound_records[role] = live
+    matrix_record = {
+        "absolute_path": str(path),
+        "file_sha256": hashlib.sha256(data).hexdigest(),
+        "size_bytes": len(data),
+    }
+    return (
+        document,
+        matrix_record,
+        bound_records["environment_lock"],
+        bound_records["slurm_script"],
+    )
+
+
 def _git(root: Path, *arguments: str) -> str:
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C",
+    })
     try:
         return subprocess.run(
-            ["git", "-C", str(root), "--no-replace-objects", *arguments],
+            ["git", "--no-replace-objects", "-C", str(root), *arguments],
             check=True,
             capture_output=True,
             text=True,
+            env=environment,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         raise PackageDecisionError("cannot establish decision-tool Git provenance") from exc
+
+
+def _validate_decision_source(repo_root: Path, *, expected_commit: str) -> None:
+    _require(COMMIT_RE.fullmatch(expected_commit) is not None,
+             "expected decision commit is invalid")
+    _require(_git(repo_root, "rev-parse", "HEAD") == expected_commit,
+             "decision-tool commit differs")
+    _require(_git(repo_root, "rev-parse", "--abbrev-ref", "HEAD") == EXPECTED_BRANCH,
+             "decision-tool branch differs")
+    _require(
+        not _git(repo_root, "status", "--porcelain", "--untracked-files=no"),
+        "decision-tool tracked worktree is dirty",
+    )
 
 
 def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
@@ -587,18 +1032,43 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result", type=Path, action="append", required=True)
+    parser.add_argument("--matrix-lock", type=Path, required=True)
+    parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     _require(len(args.result) == 12, "exactly twelve --result paths are required")
 
     repo_root = Path(__file__).resolve().parents[1]
     script_path = Path(__file__).resolve()
+    _validate_decision_source(repo_root, expected_commit=args.expected_commit)
+    matrix_lock_path = args.matrix_lock.expanduser().absolute()
+    matrix_lock, matrix_record, environment_record, slurm_record = (
+        _validate_matrix_lock(
+            matrix_lock_path,
+            expected_commit=args.expected_commit,
+        )
+    )
+    evaluations_directory = Path(
+        str(matrix_lock["output_layout"]["evaluations_directory"])
+    )
     cells = []
     input_files = []
+    launch_chains: list[dict[str, dict[str, Any]]] = []
     for index, supplied in enumerate(args.result):
         path = supplied.expanduser().absolute()
+        _require(path.parent == evaluations_directory,
+                 "evaluator result is outside the bound matrix")
         data = _read_regular(path, name=f"evaluator result {index + 1}")
-        cells.append(extract_cell_evidence(_strict_json(data, name=str(path))))
+        result = _strict_json(data, name=str(path))
+        launch_chains.append(_validate_live_result_provenance(
+            result,
+            repo_root=repo_root,
+            expected_commit=args.expected_commit,
+        ))
+        cell = extract_cell_evidence(result)
+        _require(path.name == f"{cell.cell_id}.json",
+                 "evaluator result filename differs from its cell")
+        cells.append(cell)
         input_files.append({
             "absolute_path": str(path),
             "file_sha256": hashlib.sha256(data).hexdigest(),
@@ -606,14 +1076,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         })
 
     decision = decide_primary_package(cells)
+    _require(decision["input_source_commits"] == [args.expected_commit],
+             "decision inputs differ from the matrix source commit")
+    expected_launch_chain = {
+        "primary_matrix_launch_lock": matrix_record,
+        "environment_lock": environment_record,
+        "slurm_job_script": slurm_record,
+    }
+    _require(
+        len(launch_chains) == 12
+        and all(chain == expected_launch_chain for chain in launch_chains),
+        "decision inputs differ from the live matrix provenance chain",
+    )
+    decision["primary_matrix_lock_sha256"] = matrix_record["file_sha256"]
+    decision["environment_lock_sha256"] = environment_record["file_sha256"]
+    decision["slurm_script_sha256"] = slurm_record["file_sha256"]
     decision["input_files"] = sorted(input_files, key=lambda row: row["absolute_path"])
+    decision["primary_matrix_launch_lock"] = matrix_record
+    decision["environment_lock"] = environment_record
+    decision["slurm_job_script"] = slurm_record
     decision["decision_tool"] = {
         "repo_relative_path": str(script_path.relative_to(repo_root)),
-        "file_sha256": hashlib.sha256(script_path.read_bytes()).hexdigest(),
-        "source_commit": _git(repo_root, "rev-parse", "HEAD"),
-        "tracked_worktree_clean": not bool(
-            _git(repo_root, "status", "--porcelain", "--untracked-files=no")
-        ),
+        "file_sha256": hashlib.sha256(
+            _read_regular(script_path, name="decision tool source")
+        ).hexdigest(),
+        "source_commit": args.expected_commit,
+        "tracked_worktree_clean": True,
+        "git_replace_objects_disabled": True,
+        "git_environment_sanitized": True,
     }
     decision["decision_content_sha256"] = canonical_sha256(decision)
     _write_exclusive(args.output.expanduser().absolute(), decision)

@@ -37,7 +37,7 @@ EXPERIMENT_MANIFEST_CONTENT_SHA256 = (
     "2089c039f3dd7cab220e530834342188d282d8513a22fc395008c213a7913625"
 )
 RUN_RECEIPT_NAME = "COMPLETED_RUN_RECEIPT.json"
-RUN_RECEIPT_SCHEMA_VERSION = "roll_head_package_completed_run_receipt.v2"
+RUN_RECEIPT_SCHEMA_VERSION = "roll_head_package_completed_run_receipt.v3"
 EXPECTED_BRANCH = "agent/representation-oracles-20260726"
 REVIEWED_LOCK_COMMIT = "4736be95fe055d95f233e8a1ad8eda3ed528938d"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -102,8 +102,27 @@ class FreshCheckpointCapability:
     receipt_absolute_path: str
     receipt_file_sha256: str
     receipt_size_bytes: int
+    primary_matrix_lock_absolute_path: str
+    primary_matrix_lock_sha256: str
+    primary_matrix_lock_size_bytes: int
+    environment_lock_absolute_path: str
+    environment_lock_sha256: str
+    environment_lock_size_bytes: int
+    slurm_script_absolute_path: str
+    slurm_script_sha256: str
+    slurm_script_size_bytes: int
+    expected_checkpoint_epoch: int
+    expected_checkpoint_loss: float
     expected_embedded_config: Mapping[str, Any]
     _capability: object
+
+
+@dataclass(frozen=True)
+class _CapturedFile:
+    absolute_path: str
+    sha256: str
+    size_bytes: int
+    data: bytes
 
 
 _VERIFIED_FRESH_CAPABILITY = object()
@@ -184,12 +203,21 @@ def _read_regular(path: Path, *, name: str) -> tuple[bytes, int]:
 
 
 def _git(root: Path, *arguments: str, binary: bool = False) -> str | bytes:
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C",
+    })
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), *arguments],
+            ["git", "--no-replace-objects", "-C", str(root), *arguments],
             check=True,
             capture_output=True,
             text=not binary,
+            env=environment,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise FreshCheckpointAuthorizationError(
@@ -441,12 +469,235 @@ def bind_training_namespace(
 
 
 def _file_record(path: Path, *, name: str) -> dict[str, Any]:
-    data, size = _read_regular(path.absolute(), name=name)
+    captured = _capture_file(path, name=name)
     return {
-        "absolute_path": str(path.absolute()),
-        "sha256": hashlib.sha256(data).hexdigest(),
-        "size_bytes": size,
+        "absolute_path": captured.absolute_path,
+        "sha256": captured.sha256,
+        "size_bytes": captured.size_bytes,
     }
+
+
+def _capture_file(path: Path, *, name: str) -> _CapturedFile:
+    absolute = path.absolute()
+    data, size = _read_regular(absolute, name=name)
+    _require(size == len(data), f"{name} size changed while reading")
+    return _CapturedFile(
+        absolute_path=str(absolute),
+        sha256=hashlib.sha256(data).hexdigest(),
+        size_bytes=size,
+        data=data,
+    )
+
+
+def _record_for(captured: _CapturedFile) -> dict[str, Any]:
+    return {
+        "absolute_path": captured.absolute_path,
+        "sha256": captured.sha256,
+        "size_bytes": captured.size_bytes,
+    }
+
+
+def _expected_primary_cell_ids() -> list[str]:
+    return [
+        f"{recipe}__r{head}__seed{seed}"
+        for recipe in ("task55_clean", "task80_assisted")
+        for head in (64, 128)
+        for seed in (42, 43, 44)
+    ]
+
+
+def _validate_completion_schedule(
+    cell: FrozenFreshCell,
+    *,
+    config_doc: Mapping[str, Any],
+    history_doc: list[Any],
+    optimizer_step_count: Any,
+) -> tuple[int, float]:
+    training = cell.expected_config["training"]
+    expected_config_values = {
+        "fresh_cell_id": cell.cell_id,
+        "cell_id": cell.cell_id,
+        "epochs": training["epochs"],
+        "effective_epochs": training["epochs"],
+        "batch_size": training["batch_size"],
+        "log_every": training["log_every"],
+        "save_every": training["save_every"],
+        "training_mode": training["indexed_mode"],
+        "checkpoint_policy": training["checkpoint_policy"],
+        "auto_eval": training["auto_eval"],
+        "auto_eval_checkpoint": "best",
+        "train_pairs_index": cell.train_pairs_path,
+        "val_pairs_index": cell.validation_pairs_path,
+        "test_pairs_index": None,
+    }
+    for key, expected in expected_config_values.items():
+        _require(
+            key in config_doc
+            and type(config_doc[key]) is type(expected)
+            and config_doc[key] == expected,
+            f"config {key} differs from the completed frozen schedule",
+        )
+
+    epochs = int(training["epochs"])
+    log_every = int(training["log_every"])
+    expected_validation_epochs = [1, *range(log_every, epochs + 1, log_every)]
+    _require(len(history_doc) == len(expected_validation_epochs),
+             "history validation-entry count differs")
+    observed_epochs: list[int] = []
+    validation_losses: list[float] = []
+    for index, entry in enumerate(history_doc):
+        _require(isinstance(entry, Mapping), f"history entry {index} is invalid")
+        epoch = entry.get("epoch")
+        loss = entry.get("val_loss")
+        _require(type(epoch) is int, f"history entry {index} epoch is invalid")
+        _require(
+            type(loss) in (int, float) and not isinstance(loss, bool)
+            and math.isfinite(float(loss)),
+            f"history entry {index} validation loss is invalid",
+        )
+        observed_epochs.append(epoch)
+        validation_losses.append(float(loss))
+    _require(observed_epochs == expected_validation_epochs,
+             "history validation epochs differ from the frozen schedule")
+
+    train_pair_count = cell.expected_config["split"]["train"][
+        "pair_count_after_object_filter"
+    ]
+    expected_steps = epochs * math.ceil(
+        int(train_pair_count) / int(training["batch_size"])
+    )
+    _require(
+        type(optimizer_step_count) is int
+        and optimizer_step_count == expected_steps,
+        "optimizer step count differs from the completed frozen schedule",
+    )
+    best_index = min(range(len(validation_losses)), key=validation_losses.__getitem__)
+    return observed_epochs[best_index], validation_losses[best_index]
+
+
+def _validated_bound_file_record(
+    record: Any,
+    *,
+    name: str,
+) -> _CapturedFile:
+    _require(
+        isinstance(record, Mapping)
+        and set(record) == {"absolute_path", "sha256", "size_bytes"},
+        f"{name} record keys differ",
+    )
+    path = Path(str(record["absolute_path"]))
+    _require(path.is_absolute(), f"{name} path must be absolute")
+    captured = _capture_file(path, name=name)
+    _require(
+        type(record["size_bytes"]) is int
+        and record["size_bytes"] == captured.size_bytes,
+        f"{name} size mismatch",
+    )
+    _require(record["sha256"] == captured.sha256, f"{name} hash mismatch")
+    return captured
+
+
+def _validate_primary_matrix_environment(
+    cell: FrozenFreshCell,
+    *,
+    run_directory: Path,
+    runtime_environment: Any,
+) -> tuple[_CapturedFile, _CapturedFile, _CapturedFile]:
+    expected_environment_keys = {
+        "python_implementation", "python_version", "pytorch_version",
+        "torchvision_version", "numpy_version", "pytorch_cuda_version",
+        "cudnn_version", "device_type", "gpu_name",
+        "nvidia_driver_version", "driver_visible_cuda_version",
+        "slurm_job_id", "primary_matrix_launch_lock", "environment_lock",
+        "slurm_job_script",
+    }
+    _require(
+        isinstance(runtime_environment, Mapping)
+        and set(runtime_environment) == expected_environment_keys,
+        "runtime environment keys differ",
+    )
+    slurm_job_id = runtime_environment.get("slurm_job_id")
+    _require(isinstance(slurm_job_id, str) and slurm_job_id,
+             "primary run lacks a Slurm job id")
+    matrix_capture = _validated_bound_file_record(
+        runtime_environment.get("primary_matrix_launch_lock"),
+        name="primary matrix launch lock",
+    )
+    environment_capture = _validated_bound_file_record(
+        runtime_environment.get("environment_lock"),
+        name="environment lock",
+    )
+    slurm_capture = _validated_bound_file_record(
+        runtime_environment.get("slurm_job_script"),
+        name="Slurm job script",
+    )
+    matrix_doc = _strict_json(
+        matrix_capture.data, name="primary matrix launch lock"
+    )
+    _require(isinstance(matrix_doc, Mapping),
+             "primary matrix launch lock must be an object")
+    _content_hash_is_valid(matrix_doc, name="primary matrix launch lock")
+    _require(
+        set(matrix_doc) == {
+            "schema_version", "artifact_type", "matrix_root", "source_commit",
+            "source_branch", "slurm_script", "environment_lock",
+            "primary_cell_ids_by_task_index", "task_count",
+            "gpu_count_per_task", "max_concurrent_gpu_nodes", "output_layout",
+            "submission", "content_hash_sha256",
+        },
+        "primary matrix launch lock keys differ",
+    )
+    expected_matrix_root = run_directory.parent.parent
+    _require(
+        matrix_capture.absolute_path
+        == str(expected_matrix_root / "PRIMARY_MATRIX_LAUNCH_LOCK.json"),
+        "primary matrix launch lock path differs",
+    )
+    _require(
+        matrix_doc.get("schema_version")
+        == "roll_head_package_primary_matrix_launch.v1"
+        and matrix_doc.get("artifact_type")
+        == "roll_head_package_primary_matrix_launch_lock",
+        "primary matrix launch lock identity differs",
+    )
+    _require(matrix_doc.get("matrix_root") == str(expected_matrix_root),
+             "primary matrix root binding differs")
+    _require(
+        matrix_doc.get("source_commit") == cell.source_commit
+        and matrix_doc.get("source_branch") == EXPECTED_BRANCH,
+        "primary matrix source binding differs",
+    )
+    _require(
+        matrix_doc.get("primary_cell_ids_by_task_index")
+        == _expected_primary_cell_ids()
+        and matrix_doc.get("task_count") == 12
+        and matrix_doc.get("gpu_count_per_task") == 1,
+        "primary matrix cell/resource binding differs",
+    )
+    _require(
+        matrix_doc.get("max_concurrent_gpu_nodes") == 1
+        and matrix_doc.get("submission") == {
+            "performed_by_prepare_command": False,
+            "resume_authorized": False,
+            "overwrite_authorized": False,
+        },
+        "primary matrix submission/resource boundary differs",
+    )
+    _require(cell.cell_id in matrix_doc["primary_cell_ids_by_task_index"],
+             "cell is absent from primary matrix lock")
+    _require(matrix_doc.get("environment_lock") == _record_for(environment_capture),
+             "matrix environment-lock binding differs")
+    _require(matrix_doc.get("slurm_script") == _record_for(slurm_capture),
+             "matrix Slurm-script binding differs")
+    _require(
+        matrix_doc.get("output_layout") == {
+            "runs_directory": str(expected_matrix_root / "runs"),
+            "evaluations_directory": str(expected_matrix_root / "evaluations"),
+            "evaluation_filename_template": "{cell_id}.json",
+        },
+        "primary matrix output layout differs",
+    )
+    return matrix_capture, environment_capture, slurm_capture
 
 
 def committed_source_records(repo_root: Path, source_commit: str) -> list[dict[str, str]]:
@@ -495,10 +746,30 @@ def write_completed_run_receipt(
         policy=policy,
         device_type=device.split(":", 1)[0],
     )
+    checkpoint_capture = _capture_file(
+        run_directory / "best_model.pt", name="checkpoint"
+    )
+    config_capture = _capture_file(run_directory / "config.json", name="config")
+    history_capture = _capture_file(run_directory / "history.json", name="history")
+    config_doc = _strict_json(config_capture.data, name="config")
+    history_doc = _strict_json(history_capture.data, name="history")
+    _require(isinstance(config_doc, Mapping), "config must be an object")
+    _require(isinstance(history_doc, list), "history must be a list")
+    _validate_completion_schedule(
+        binding.cell,
+        config_doc=config_doc,
+        history_doc=history_doc,
+        optimizer_step_count=optimizer_step_count,
+    )
+    _validate_primary_matrix_environment(
+        binding.cell,
+        run_directory=run_directory,
+        runtime_environment=runtime_environment,
+    )
     files = {
-        "checkpoint": _file_record(run_directory / "best_model.pt", name="checkpoint"),
-        "config": _file_record(run_directory / "config.json", name="config"),
-        "history": _file_record(run_directory / "history.json", name="history"),
+        "checkpoint": _record_for(checkpoint_capture),
+        "config": _record_for(config_capture),
+        "history": _record_for(history_capture),
     }
     document: dict[str, Any] = {
         "schema_version": RUN_RECEIPT_SCHEMA_VERSION,
@@ -551,18 +822,18 @@ def write_completed_run_receipt(
 
 def _validated_run_file(
     record: Mapping[str, Any], *, name: str, run_directory: Path
-) -> tuple[str, int, str]:
+) -> _CapturedFile:
     _require(set(record) == {"absolute_path", "sha256", "size_bytes"},
              f"{name} record keys differ")
     path = Path(str(record["absolute_path"]))
     _require(path.is_absolute() and path.parent == run_directory,
              f"{name} is outside run directory")
-    data, size = _read_regular(path, name=name)
-    digest = hashlib.sha256(data).hexdigest()
-    _require(type(record["size_bytes"]) is int and record["size_bytes"] == size,
+    captured = _capture_file(path, name=name)
+    _require(type(record["size_bytes"]) is int
+             and record["size_bytes"] == captured.size_bytes,
              f"{name} size mismatch")
-    _require(record["sha256"] == digest, f"{name} hash mismatch")
-    return str(path), size, digest
+    _require(record["sha256"] == captured.sha256, f"{name} hash mismatch")
+    return captured
 
 
 def authorize_completed_fresh_run(
@@ -615,8 +886,8 @@ def authorize_completed_fresh_run(
                                  run_directory=run_directory)
     history = _validated_run_file(files["history"], name="history",
                                   run_directory=run_directory)
-    config_doc = _strict_json(Path(config[0]).read_bytes(), name="config")
-    history_doc = _strict_json(Path(history[0]).read_bytes(), name="history")
+    config_doc = _strict_json(config.data, name="config")
+    history_doc = _strict_json(history.data, name="history")
     _require(isinstance(config_doc, Mapping), "config must be an object")
     _require(isinstance(history_doc, list) and history_doc,
              "history must be a non-empty list")
@@ -639,28 +910,32 @@ def authorize_completed_fresh_run(
              and execution.get("training_mode") == "development",
              "training is not complete development training")
     _require(execution.get("authoritative_checkpoint_name") == "best_model.pt"
-             and Path(checkpoint[0]).name == "best_model.pt",
+             and Path(checkpoint.absolute_path).name == "best_model.pt",
              "authoritative checkpoint differs")
     _require(execution.get("test_loader_constructed") is False,
              "test loader was constructed")
-    _require(type(execution.get("optimizer_step_count")) is int
-             and execution["optimizer_step_count"] > 0,
-             "optimizer step count is invalid")
+    _require(execution.get("selection_use_authorized") is True,
+             "selection use is not authorized")
+    expected_checkpoint_epoch, expected_checkpoint_loss = (
+        _validate_completion_schedule(
+            cell,
+            config_doc=config_doc,
+            history_doc=history_doc,
+            optimizer_step_count=execution.get("optimizer_step_count"),
+        )
+    )
     full_command = execution.get("full_command")
     _require(isinstance(full_command, list) and full_command
              and all(isinstance(value, str) and value for value in full_command),
              "full command is invalid")
     runtime_environment = execution.get("runtime_environment")
-    expected_environment_keys = {
-        "python_implementation", "python_version", "pytorch_version",
-        "torchvision_version", "numpy_version", "pytorch_cuda_version",
-        "cudnn_version", "device_type", "gpu_name",
-        "nvidia_driver_version", "driver_visible_cuda_version",
-        "slurm_job_id", "slurm_job_script_sha256",
-    }
-    _require(isinstance(runtime_environment, Mapping)
-             and set(runtime_environment) == expected_environment_keys,
-             "runtime environment keys differ")
+    matrix_capture, environment_capture, slurm_capture = (
+        _validate_primary_matrix_environment(
+            cell,
+            run_directory=run_directory,
+            runtime_environment=runtime_environment,
+        )
+    )
     for version_key in (
         "python_implementation", "python_version", "pytorch_version",
         "torchvision_version", "numpy_version", "device_type",
@@ -669,7 +944,10 @@ def authorize_completed_fresh_run(
                  and runtime_environment[version_key],
                  f"runtime environment {version_key} is invalid")
     receipt_device = execution.get("device")
-    _require(runtime_environment["device_type"] == receipt_device,
+    _require(isinstance(receipt_device, str) and receipt_device,
+             "receipt device is invalid")
+    receipt_device_type = receipt_device.split(":", 1)[0]
+    _require(runtime_environment["device_type"] == receipt_device_type,
              "runtime environment device differs")
     policy = fresh_roll_determinism.policy_for_heatmap_resolution(
         root,
@@ -685,7 +963,7 @@ def authorize_completed_fresh_run(
         policy=policy,
         device_type=str(receipt_device).split(":", 1)[0],
     )
-    if receipt_device == "cuda":
+    if receipt_device_type == "cuda":
         for cuda_key in (
             "pytorch_cuda_version", "gpu_name", "nvidia_driver_version",
             "driver_visible_cuda_version",
@@ -693,13 +971,6 @@ def authorize_completed_fresh_run(
             _require(isinstance(runtime_environment.get(cuda_key), str)
                      and runtime_environment[cuda_key],
                      f"CUDA environment {cuda_key} is invalid")
-    slurm_job_id = runtime_environment.get("slurm_job_id")
-    slurm_script_hash = runtime_environment.get("slurm_job_script_sha256")
-    _require((slurm_job_id is None and slurm_script_hash is None)
-             or (isinstance(slurm_job_id, str) and slurm_job_id
-                 and isinstance(slurm_script_hash, str)
-                 and _SHA256_RE.fullmatch(slurm_script_hash) is not None),
-             "Slurm provenance is incomplete")
     _require(config_doc.get("full_command") == full_command,
              "config full command differs")
     _require(config_doc.get("runtime_environment") == runtime_environment,
@@ -713,18 +984,29 @@ def authorize_completed_fresh_run(
     return FreshCheckpointCapability(
         cell_id=expected_cell_id,
         source_commit=source_commit,
-        checkpoint_absolute_path=checkpoint[0],
-        checkpoint_size_bytes=checkpoint[1],
-        checkpoint_sha256=checkpoint[2],
-        config_absolute_path=config[0],
-        config_size_bytes=config[1],
-        config_sha256=config[2],
-        history_absolute_path=history[0],
-        history_size_bytes=history[1],
-        history_sha256=history[2],
+        checkpoint_absolute_path=checkpoint.absolute_path,
+        checkpoint_size_bytes=checkpoint.size_bytes,
+        checkpoint_sha256=checkpoint.sha256,
+        config_absolute_path=config.absolute_path,
+        config_size_bytes=config.size_bytes,
+        config_sha256=config.sha256,
+        history_absolute_path=history.absolute_path,
+        history_size_bytes=history.size_bytes,
+        history_sha256=history.sha256,
         receipt_absolute_path=str(receipt),
         receipt_file_sha256=hashlib.sha256(receipt_data).hexdigest(),
         receipt_size_bytes=receipt_size,
+        primary_matrix_lock_absolute_path=matrix_capture.absolute_path,
+        primary_matrix_lock_sha256=matrix_capture.sha256,
+        primary_matrix_lock_size_bytes=matrix_capture.size_bytes,
+        environment_lock_absolute_path=environment_capture.absolute_path,
+        environment_lock_sha256=environment_capture.sha256,
+        environment_lock_size_bytes=environment_capture.size_bytes,
+        slurm_script_absolute_path=slurm_capture.absolute_path,
+        slurm_script_sha256=slurm_capture.sha256,
+        slurm_script_size_bytes=slurm_capture.size_bytes,
+        expected_checkpoint_epoch=expected_checkpoint_epoch,
+        expected_checkpoint_loss=expected_checkpoint_loss,
         expected_embedded_config=cell.expected_config,
         _capability=_VERIFIED_FRESH_CAPABILITY,
     )
@@ -752,6 +1034,19 @@ def validate_loaded_checkpoint(
     _require(config.get("source_commit") == checked.source_commit,
              "checkpoint source commit differs")
     _require(config.get("cell_id") == checked.cell_id, "checkpoint cell differs")
+    epoch = loaded_checkpoint.get("epoch")
+    loss = loaded_checkpoint.get("loss")
+    _require(type(epoch) is int and epoch == checked.expected_checkpoint_epoch,
+             "checkpoint epoch is not the first validation minimum")
+    _require(
+        type(loss) in (int, float) and not isinstance(loss, bool)
+        and math.isfinite(float(loss))
+        and math.isclose(
+            float(loss), checked.expected_checkpoint_loss,
+            rel_tol=0.0, abs_tol=0.0,
+        ),
+        "checkpoint loss is not the minimum validation loss",
+    )
 
 
 def command_arguments(arguments: Mapping[str, Any]) -> list[str]:

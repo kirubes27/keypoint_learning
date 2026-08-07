@@ -75,6 +75,16 @@ def _state_digest(model: torch.nn.Module) -> str:
     return digest.hexdigest()
 
 
+def _array_digest(value: np.ndarray) -> str:
+    _require(isinstance(value, np.ndarray), "inference output is not an ndarray")
+    contiguous = np.ascontiguousarray(value)
+    digest = hashlib.sha256()
+    digest.update(str(contiguous.dtype).encode("ascii"))
+    digest.update(json.dumps(list(contiguous.shape)).encode("ascii"))
+    digest.update(contiguous.tobytes())
+    return digest.hexdigest()
+
+
 def load_authorized_fresh_checkpoint(
     repo_root: Path | str,
     receipt_path: Path | str,
@@ -149,13 +159,15 @@ def load_authorized_fresh_checkpoint(
         "same_open_file_descriptor_hash_and_load": True,
         "weights_only": True,
     }
-    register_fresh_checkpoint_load(capability, load_record)
+    register_fresh_checkpoint_load(capability, load_record, model=model)
     return model, capability, load_record
 
 
 def register_fresh_checkpoint_load(
     capability: authorization.FreshCheckpointCapability,
     checkpoint_record: Mapping[str, Any],
+    *,
+    model: torch.nn.Module,
 ) -> None:
     checked = authorization.require_fresh_checkpoint_capability(capability)
     _require(_LOADED_CHECKPOINT.get() is None and _PENDING_EVALUATOR.get() is None,
@@ -168,7 +180,16 @@ def register_fresh_checkpoint_load(
         "weights_only": True,
     }
     _require(dict(checkpoint_record) == expected, "fresh load record differs")
-    _LOADED_CHECKPOINT.set({"capability": checked, "load_record": expected})
+    _require(isinstance(model, model_module.PhaseAModel),
+             "fresh load did not construct the expected model")
+    _LOADED_CHECKPOINT.set({
+        "capability": checked,
+        "load_record": expected,
+        "model": model,
+        "state_sha256": _state_digest(model),
+        "inference_record": None,
+        "built_bundle_sha256": None,
+    })
 
 
 def arm_fresh_checkpoint_evaluator(
@@ -182,9 +203,8 @@ def arm_fresh_checkpoint_evaluator(
     checked = authorization.require_fresh_checkpoint_capability(capability)
     _require(isinstance(loaded, Mapping) and loaded.get("capability") is checked,
              "fresh evaluator requires the registered checkpoint load")
-    _require(inference_record.get("state_unchanged") is True
-             and inference_record.get("gradients_enabled_inside_inference") is False,
-             "fresh inference did not preserve state/no-gradient semantics")
+    _require(inference_record is loaded.get("inference_record"),
+             "fresh evaluator requires the actual one-shot inference record")
     _require(bundle.get("case_kind") == "checkpoint"
              and bundle.get("checkpoint_authority") == "fresh_run"
              and bundle.get("case_id") == checked.cell_id,
@@ -194,6 +214,8 @@ def arm_fresh_checkpoint_evaluator(
     payload.pop("bundle_content_sha256", None)
     _require(claimed_hash == evaluator.canonical_sha256(payload),
              "fresh bundle content hash differs")
+    _require(claimed_hash == loaded.get("built_bundle_sha256"),
+             "fresh bundle was not built from the actual inference outputs")
     _PENDING_EVALUATOR.set({"bundle_content_sha256": claimed_hash, "loaded": loaded})
 
 
@@ -353,6 +375,24 @@ def build_fresh_checkpoint_bundle(
     partition: str,
     full_primary_roll: bool,
 ) -> dict[str, Any]:
+    checked = authorization.require_fresh_checkpoint_capability(capability)
+    loaded = _LOADED_CHECKPOINT.get()
+    _require(
+        isinstance(loaded, Mapping)
+        and loaded.get("capability") is checked
+        and loaded.get("model") is model,
+        "fresh bundle requires the exact loaded checkpoint model",
+    )
+    inference_record = loaded.get("inference_record")
+    _require(isinstance(inference_record, Mapping),
+             "fresh bundle requires actual model inference")
+    _require(
+        inference_record.get("points_sha256") == _array_digest(points)
+        and inference_record.get("logits_sha256") == _array_digest(logits)
+        and inference_record.get("model_state_sha256") == _state_digest(model)
+        == loaded.get("state_sha256"),
+        "fresh bundle arrays/model differ from the live inference context",
+    )
     training = capability.expected_embedded_config["training"]
     A = model.operator.A.detach().cpu().numpy().astype(np.float64)
     b = model.operator.bias.detach().cpu().numpy().astype(np.float64)
@@ -408,6 +448,7 @@ def build_fresh_checkpoint_bundle(
         "operator": {"mode": "supplied", "A": A.tolist(), "b": b.tolist()},
     }
     bundle["bundle_content_sha256"] = evaluator.canonical_sha256(bundle)
+    loaded["built_bundle_sha256"] = bundle["bundle_content_sha256"]
     return bundle
 
 
@@ -442,7 +483,16 @@ def _load_full_orbit(data_root: Path, repo_root: Path) -> tuple[list[np.ndarray]
 
 
 def _infer(model: torch.nn.Module, images: Sequence[np.ndarray], *, heatmap_res: int) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    loaded = _LOADED_CHECKPOINT.get()
+    _require(
+        isinstance(loaded, Mapping)
+        and loaded.get("model") is model
+        and loaded.get("inference_record") is None,
+        "inference requires the exact loaded checkpoint model and is one-shot",
+    )
     before = _state_digest(model)
+    _require(before == loaded.get("state_sha256"),
+             "loaded model state changed before inference")
     point_batches = []
     logit_batches = []
     mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
@@ -462,10 +512,16 @@ def _infer(model: torch.nn.Module, images: Sequence[np.ndarray], *, heatmap_res:
              "logit output shape differs")
     after = _state_digest(model)
     _require(before == after, "model state changed during inference")
-    return points, logits, {
+    inference_record = {
         "state_unchanged": True,
         "gradients_enabled_inside_inference": False,
+        "model_state_sha256": after,
+        "points_sha256": _array_digest(points),
+        "logits_sha256": _array_digest(logits),
+        "inference_token": object(),
     }
+    loaded["inference_record"] = inference_record
+    return points, logits, inference_record
 
 
 def evaluate_authorized_fresh_run(

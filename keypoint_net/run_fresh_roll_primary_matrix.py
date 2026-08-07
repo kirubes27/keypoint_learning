@@ -394,12 +394,35 @@ def run_primary_task(
     print_commands: bool = False,
 ) -> tuple[Path, Path] | None:
     root = Path(matrix_root).expanduser().resolve(strict=True)
-    validate_primary_matrix(
+    lock = validate_primary_matrix(
         root,
         expected_commit=expected_commit,
         slurm_script_sha256=slurm_script_sha256,
         environment_lock_sha256=environment_lock_sha256,
     )
+    lock_path = root / PRIMARY_MATRIX_LOCK_NAME
+    live_lock_bytes = _read_regular(lock_path, name="primary matrix launch lock")
+    _require(
+        _strict_json(live_lock_bytes, name="primary matrix launch lock") == lock,
+        "primary matrix launch lock changed after validation",
+    )
+    lock_record = {
+        "absolute_path": str(lock_path),
+        "sha256": hashlib.sha256(live_lock_bytes).hexdigest(),
+        "size_bytes": len(live_lock_bytes),
+    }
+    environment_record = _file_record(
+        Path(str(lock["environment_lock"]["absolute_path"])),
+        name="environment lock",
+    )
+    script_record = _file_record(
+        Path(str(lock["slurm_script"]["absolute_path"])),
+        name="primary Slurm script",
+    )
+    _require(environment_record == lock["environment_lock"],
+             "live environment lock differs from matrix lock")
+    _require(script_record == lock["slurm_script"],
+             "live Slurm script differs from matrix lock")
     _source_state(expected_commit=expected_commit, require_clean=True)
     cell_id, train_command, evaluation_command = build_task_commands(
         task_index=task_index, data_root=data_root, matrix_root=root
@@ -414,8 +437,20 @@ def run_primary_task(
         print(shlex.join(train_command))
         print(shlex.join(evaluation_command))
         return None
+    slurm_job_id = os.environ.get("SLURM_JOB_ID")
+    _require(isinstance(slurm_job_id, str) and slurm_job_id,
+             "primary task requires SLURM_JOB_ID")
+    training_environment = dict(os.environ)
+    training_environment.update({
+        "FRESH_ROLL_PRIMARY_MATRIX_LOCK": lock_record["absolute_path"],
+        "FRESH_ROLL_PRIMARY_MATRIX_LOCK_SHA256": lock_record["sha256"],
+        "FRESH_ROLL_ENV_LOCK": environment_record["absolute_path"],
+        "FRESH_ROLL_ENV_LOCK_SHA256": environment_record["sha256"],
+        "FRESH_ROLL_SLURM_SCRIPT": script_record["absolute_path"],
+        "FRESH_ROLL_SLURM_SCRIPT_SHA256": script_record["sha256"],
+    })
     print(f"primary_cell_id={cell_id} task_index={task_index}", flush=True)
-    subprocess.run(train_command, check=True)
+    subprocess.run(train_command, check=True, env=training_environment)
     receipt = run_directory / fresh.RUN_RECEIPT_NAME
     _read_regular(receipt.absolute(), name="completed-run receipt")
     subprocess.run(evaluation_command, check=True)
@@ -433,7 +468,11 @@ def run_primary_decision(*, matrix_root: Path | str, output: Path | str) -> int:
         arguments.extend([
             "--result", str(root / "evaluations" / f"{cell_id}.json")
         ])
-    arguments.extend(["--output", str(Path(output).expanduser().absolute())])
+    arguments.extend([
+        "--matrix-lock", str(root / PRIMARY_MATRIX_LOCK_NAME),
+        "--expected-commit", source_commit,
+        "--output", str(Path(output).expanduser().absolute()),
+    ])
     return package_decision.main(arguments)
 
 

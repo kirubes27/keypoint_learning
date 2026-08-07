@@ -19,6 +19,7 @@ import os
 import platform
 import random
 import re
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -136,17 +137,60 @@ def _runtime_environment(device: torch.device) -> dict:
     if device.type == "cuda":
         driver_version, driver_visible_cuda_version = _nvidia_driver_facts()
         gpu_name = torch.cuda.get_device_name(device)
+    def bound_file(path_variable: str, hash_variable: str, name: str) -> dict:
+        supplied_path = os.environ.get(path_variable)
+        expected_hash = os.environ.get(hash_variable)
+        if not supplied_path or not expected_hash:
+            raise RuntimeError(f"fresh primary run lacks {name} provenance")
+        if re.fullmatch(r"[0-9a-f]{64}", expected_hash) is None:
+            raise RuntimeError(f"{hash_variable} is invalid")
+        path = Path(supplied_path)
+        if not path.is_absolute():
+            raise RuntimeError(f"{name} path must be absolute")
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError as exc:
+            raise RuntimeError(f"cannot open {name}") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise RuntimeError(f"{name} is not a regular file")
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                block = os.read(descriptor, 1024 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+                size += len(block)
+        finally:
+            os.close(descriptor)
+        if size != metadata.st_size or digest.hexdigest() != expected_hash:
+            raise RuntimeError(f"{name} live file binding differs")
+        return {
+            "absolute_path": str(path),
+            "sha256": digest.hexdigest(),
+            "size_bytes": size,
+        }
+
     slurm_job_id = os.environ.get("SLURM_JOB_ID")
-    slurm_script_hash = os.environ.get("FRESH_ROLL_SLURM_SCRIPT_SHA256")
-    if (slurm_job_id is None) != (slurm_script_hash is None):
-        raise RuntimeError(
-            "Slurm runs require both SLURM_JOB_ID and "
-            "FRESH_ROLL_SLURM_SCRIPT_SHA256"
-        )
-    if slurm_script_hash is not None and re.fullmatch(
-        r"[0-9a-f]{64}", slurm_script_hash
-    ) is None:
-        raise RuntimeError("FRESH_ROLL_SLURM_SCRIPT_SHA256 is invalid")
+    if not slurm_job_id:
+        raise RuntimeError("fresh primary run lacks SLURM_JOB_ID")
+    matrix_lock = bound_file(
+        "FRESH_ROLL_PRIMARY_MATRIX_LOCK",
+        "FRESH_ROLL_PRIMARY_MATRIX_LOCK_SHA256",
+        "primary matrix launch lock",
+    )
+    environment_lock = bound_file(
+        "FRESH_ROLL_ENV_LOCK",
+        "FRESH_ROLL_ENV_LOCK_SHA256",
+        "environment lock",
+    )
+    slurm_script = bound_file(
+        "FRESH_ROLL_SLURM_SCRIPT",
+        "FRESH_ROLL_SLURM_SCRIPT_SHA256",
+        "Slurm job script",
+    )
     return {
         "python_implementation": platform.python_implementation(),
         "python_version": platform.python_version(),
@@ -160,7 +204,9 @@ def _runtime_environment(device: torch.device) -> dict:
         "nvidia_driver_version": driver_version,
         "driver_visible_cuda_version": driver_visible_cuda_version,
         "slurm_job_id": slurm_job_id,
-        "slurm_job_script_sha256": slurm_script_hash,
+        "primary_matrix_launch_lock": matrix_lock,
+        "environment_lock": environment_lock,
+        "slurm_job_script": slurm_script,
     }
 
 

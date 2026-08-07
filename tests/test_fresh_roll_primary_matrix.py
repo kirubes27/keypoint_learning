@@ -128,7 +128,83 @@ class FreshRollPrimaryMatrixTests(unittest.TestCase):
             )
         decision_arguments = decide.call_args.args[0]
         self.assertEqual(decision_arguments.count("--result"), 12)
-        self.assertEqual(decision_arguments[-2:], ["--output", str(decision_output)])
+        self.assertEqual(
+            decision_arguments[-6:],
+            [
+                "--matrix-lock", str(root.resolve() / matrix.PRIMARY_MATRIX_LOCK_NAME),
+                "--expected-commit", COMMIT,
+                "--output", str(decision_output),
+            ],
+        )
+
+    def test_task_rehashes_and_propagates_full_launch_chain(self) -> None:
+        root, lock = _prepared_matrix()
+        cell_id = matrix.PRIMARY_CELL_IDS[0]
+        train_command = ["python", "train.py"]
+        evaluation_command = ["python", "evaluate.py"]
+        completed = mock.Mock(returncode=0)
+        original_read_regular = matrix._read_regular
+
+        def read_existing_or_stub(path: Path, *, name: str) -> bytes:
+            if path.exists():
+                return original_read_regular(path, name=name)
+            return b"{}"
+
+        with (
+            mock.patch.object(matrix, "_source_state"),
+            mock.patch.object(
+                matrix,
+                "build_task_commands",
+                return_value=(cell_id, train_command, evaluation_command),
+            ),
+            mock.patch.object(
+                matrix.fresh,
+                "resolve_fresh_cell",
+                return_value=mock.Mock(source_commit=COMMIT),
+            ),
+            mock.patch.object(matrix.subprocess, "run", return_value=completed) as run,
+            mock.patch.object(
+                matrix, "_read_regular", side_effect=read_existing_or_stub
+            ),
+            mock.patch.dict(matrix.os.environ, {"SLURM_JOB_ID": "12345"}),
+        ):
+            matrix.run_primary_task(
+                task_index=0,
+                data_root=DATA_ROOT,
+                matrix_root=root,
+                expected_commit=COMMIT,
+                slurm_script_sha256=lock["slurm_script"]["sha256"],
+                environment_lock_sha256=lock["environment_lock"]["sha256"],
+            )
+        training_environment = run.call_args_list[0].kwargs["env"]
+        self.assertEqual(
+            training_environment["FRESH_ROLL_ENV_LOCK_SHA256"],
+            lock["environment_lock"]["sha256"],
+        )
+        self.assertEqual(
+            training_environment["FRESH_ROLL_SLURM_SCRIPT_SHA256"],
+            lock["slurm_script"]["sha256"],
+        )
+        self.assertRegex(
+            training_environment["FRESH_ROLL_PRIMARY_MATRIX_LOCK_SHA256"],
+            r"^[0-9a-f]{64}$",
+        )
+
+    def test_task_rejects_live_environment_lock_mutation(self) -> None:
+        root, lock = _prepared_matrix()
+        environment_path = Path(lock["environment_lock"]["absolute_path"])
+        environment_path.write_text('{"changed":true}\n', encoding="utf-8")
+        with self.assertRaisesRegex(
+            matrix.PrimaryMatrixError, "live environment lock differs"
+        ):
+            matrix.run_primary_task(
+                task_index=0,
+                data_root=DATA_ROOT,
+                matrix_root=root,
+                expected_commit=COMMIT,
+                slurm_script_sha256=lock["slurm_script"]["sha256"],
+                environment_lock_sha256=lock["environment_lock"]["sha256"],
+            )
 
     def test_evaluation_writes_once_only_after_decision_schema_validation(self) -> None:
         parent = Path(tempfile.mkdtemp(prefix="fresh_primary_eval_test_"))

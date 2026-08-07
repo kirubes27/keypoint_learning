@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from keypoint_net import roll_head_package_decision as decision
 
@@ -41,6 +43,8 @@ def _cell(
         source_commit="1" * 40,
         evaluation_config_sha256="4" * 64,
         result_content_sha256=("a" if head == "64" else "b") * 64,
+        checkpoint_sha256="2" * 64,
+        completed_run_receipt_sha256="3" * 64,
     )
 
 
@@ -90,13 +94,7 @@ def _evaluator_result(cell_id: str) -> dict:
             "cyclic": True,
             "signed_generator": 6.0,
         },
-        "evaluation_config": {
-            "protocol": "full_primary_roll",
-            "role_scoped_holdout_frame_ids": list(range(24)),
-            "holdout_rollout_horizons": list(range(1, 8)),
-            "full_rollout_horizons": list(range(1, 60)),
-            "closure_horizon": 60,
-        },
+        "evaluation_config": copy.deepcopy(decision.FROZEN_EVALUATION_CONFIG),
         "checkpoint_authorization": {
             "checkpoint_evaluation_authorized": True,
             "source_commit": source_commit,
@@ -108,8 +106,26 @@ def _evaluator_result(cell_id: str) -> dict:
         },
         "provenance": {
             "source_commit": source_commit,
-            "committed_files": [],
-            "external_files": [],
+            "source_commit_verified": True,
+            "committed_files": [{
+                "role": "evaluator_source",
+                "repo_relative_path": "keypoint_net/eval_representation.py",
+                "file_sha256": "a" * 64,
+            }],
+            "external_files": [
+                {
+                    "role": role,
+                    "absolute_path": f"/tmp/{cell_id}/{role}",
+                    "file_sha256": digest,
+                    "size_bytes": 1,
+                }
+                for role, digest in (
+                    ("checkpoint", "2" * 64),
+                    ("checkpoint_config", "8" * 64),
+                    ("checkpoint_metadata", "9" * 64),
+                    ("completed_run_receipt", "3" * 64),
+                )
+            ],
         },
         "critical_failures": [],
         "operator": {
@@ -149,6 +165,81 @@ def _evaluator_result(cell_id: str) -> dict:
     )
     result["result_content_sha256"] = decision.canonical_sha256(result)
     return result
+
+
+def _write_matrix_lock(
+    root: Path, *, source_commit: str = "1" * 40
+) -> tuple[Path, str, str, str]:
+    (root / "runs").mkdir(parents=True)
+    (root / "evaluations").mkdir()
+    environment_lock = root / "FRESH_ROLL_ENVIRONMENT.json"
+    slurm_script = root / "primary.slurm"
+    environment_lock.write_text("{}\n", encoding="utf-8")
+    slurm_script.write_text("#!/bin/bash\n", encoding="utf-8")
+
+    def record(path: Path) -> dict:
+        data = path.read_bytes()
+        return {
+            "absolute_path": str(path),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size_bytes": len(data),
+        }
+
+    document = {
+        "schema_version": decision.PRIMARY_MATRIX_SCHEMA_VERSION,
+        "artifact_type": "roll_head_package_primary_matrix_launch_lock",
+        "matrix_root": str(root),
+        "source_commit": source_commit,
+        "source_branch": decision.EXPECTED_BRANCH,
+        "slurm_script": record(slurm_script),
+        "environment_lock": record(environment_lock),
+        "primary_cell_ids_by_task_index": sorted(decision._expected_cell_ids()),
+        "task_count": 12,
+        "gpu_count_per_task": 1,
+        "max_concurrent_gpu_nodes": 1,
+        "output_layout": {
+            "runs_directory": str(root / "runs"),
+            "evaluations_directory": str(root / "evaluations"),
+            "evaluation_filename_template": "{cell_id}.json",
+        },
+        "submission": {
+            "performed_by_prepare_command": False,
+            "resume_authorized": False,
+            "overwrite_authorized": False,
+        },
+    }
+    document["content_hash_sha256"] = decision.canonical_sha256(document)
+    lock_path = root / decision.PRIMARY_MATRIX_LOCK_NAME
+    lock_path.write_bytes(decision.canonical_json_bytes(document, newline=True))
+    lock_sha = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+    return (
+        lock_path,
+        lock_sha,
+        document["environment_lock"]["sha256"],
+        document["slurm_script"]["sha256"],
+    )
+
+
+def _launch_chain(lock_path: Path) -> dict[str, dict]:
+    document = json.loads(lock_path.read_text(encoding="utf-8"))
+
+    def record(path: Path) -> dict:
+        data = path.read_bytes()
+        return {
+            "absolute_path": str(path),
+            "file_sha256": hashlib.sha256(data).hexdigest(),
+            "size_bytes": len(data),
+        }
+
+    return {
+        "primary_matrix_launch_lock": record(lock_path),
+        "environment_lock": record(
+            Path(document["environment_lock"]["absolute_path"])
+        ),
+        "slurm_job_script": record(
+            Path(document["slurm_script"]["absolute_path"])
+        ),
+    }
 
 
 class RollHeadPackageDecisionTests(unittest.TestCase):
@@ -213,25 +304,296 @@ class RollHeadPackageDecisionTests(unittest.TestCase):
         with self.assertRaisesRegex(decision.PackageDecisionError, "content hash differs"):
             decision.extract_cell_evidence(tampered)
 
-    def test_cli_consumes_exactly_twelve_results_and_writes_exclusively(self) -> None:
-        root = Path(tempfile.mkdtemp(prefix="roll_head_decision_test_"))
+    def test_full_evaluation_config_is_exact_and_fail_closed(self) -> None:
+        result = _evaluator_result("task55_clean__r64__seed42")
+        for mutation in ("omit", "change"):
+            candidate = copy.deepcopy(result)
+            if mutation == "omit":
+                candidate["evaluation_config"].pop("motion_fraction_min")
+            else:
+                candidate["evaluation_config"]["motion_fraction_min"] = 0.2
+            candidate["evaluation_config_sha256"] = decision.canonical_sha256(
+                candidate["evaluation_config"]
+            )
+            candidate.pop("result_content_sha256")
+            candidate["result_content_sha256"] = decision.canonical_sha256(candidate)
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(
+                decision.PackageDecisionError, "frozen evaluation config differs"
+            ):
+                decision.extract_cell_evidence(candidate)
+
+    def test_empty_or_mismatched_provenance_and_false_selection_reject(self) -> None:
+        cell_id = "task80_assisted__r128__seed44"
+        for name, mutate, message in (
+            (
+                "empty committed provenance",
+                lambda value: value["provenance"].update({"committed_files": []}),
+                "committed provenance is empty",
+            ),
+            (
+                "mismatched receipt",
+                lambda value: value["provenance"]["external_files"][3].update(
+                    {"file_sha256": "f" * 64}
+                ),
+                "completed_run_receipt provenance binding differs",
+            ),
+            (
+                "selection false",
+                lambda value: value["checkpoint_authorization"].update(
+                    {"selection_use_authorized": False}
+                ),
+                "fresh selection authorization differs",
+            ),
+        ):
+            candidate = _evaluator_result(cell_id)
+            mutate(candidate)
+            candidate.pop("result_content_sha256")
+            candidate["result_content_sha256"] = decision.canonical_sha256(candidate)
+            with self.subTest(name=name), self.assertRaisesRegex(
+                decision.PackageDecisionError, message
+            ):
+                decision.extract_cell_evidence(candidate)
+
+    def test_live_provenance_is_independently_rehashed(self) -> None:
+        cell_id = "task55_clean__r64__seed42"
+        result = _evaluator_result(cell_id)
+        repo_root = Path(decision.__file__).resolve().parents[1]
+        committed = []
+        for role, relative_path in decision.FRESH_COMMITTED_ROLE_PATHS.items():
+            path = repo_root / relative_path
+            data = path.read_bytes()
+            committed.append({
+                "role": role,
+                "repo_relative_path": relative_path,
+                "absolute_path": str(path),
+                "file_sha256": hashlib.sha256(data).hexdigest(),
+                "git_blob_oid": "0" * 40,
+            })
+        external_root = Path(tempfile.mkdtemp(prefix="decision_live_provenance_"))
+        external = []
+        for role in sorted(decision.FRESH_EXTERNAL_ROLES):
+            path = external_root / role
+            path.write_text(f"{role}\n", encoding="utf-8")
+            data = path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            external.append({
+                "role": role,
+                "absolute_path": str(path),
+                "file_sha256": digest,
+                "size_bytes": len(data),
+            })
+            authorization_key = decision.FRESH_EXTERNAL_HASH_BINDINGS.get(role)
+            if authorization_key is not None:
+                result["checkpoint_authorization"][authorization_key] = digest
+        external_by_role = {record["role"]: record for record in external}
+        launch_chain = {}
+        for role in (
+            "primary_matrix_launch_lock",
+            "environment_lock",
+            "slurm_job_script",
+        ):
+            path = external_root / f"launch_{role}"
+            path.write_text(f"{role}\n", encoding="utf-8")
+            data = path.read_bytes()
+            launch_chain[role] = {
+                "absolute_path": str(path),
+                "file_sha256": hashlib.sha256(data).hexdigest(),
+                "size_bytes": len(data),
+            }
+        receipt_document = {
+            "schema_version": "roll_head_package_completed_run_receipt.v3",
+            "cell_id": cell_id,
+            "source_commit": "1" * 40,
+            "files": {
+                receipt_role: {
+                    "absolute_path": external_by_role[external_role]["absolute_path"],
+                    "sha256": external_by_role[external_role]["file_sha256"],
+                    "size_bytes": external_by_role[external_role]["size_bytes"],
+                }
+                for receipt_role, external_role in (
+                    ("checkpoint", "checkpoint"),
+                    ("config", "checkpoint_config"),
+                    ("history", "checkpoint_metadata"),
+                )
+            },
+            "execution": {
+                "training_completed": True,
+                "selection_use_authorized": True,
+                "test_loader_constructed": False,
+                "runtime_environment": {
+                    role: {
+                        "absolute_path": launch_chain[role]["absolute_path"],
+                        "sha256": launch_chain[role]["file_sha256"],
+                        "size_bytes": launch_chain[role]["size_bytes"],
+                    }
+                    for role in (
+                        "primary_matrix_launch_lock",
+                        "environment_lock",
+                        "slurm_job_script",
+                    )
+                },
+            },
+        }
+        receipt_document["content_hash_sha256"] = decision.canonical_sha256(
+            receipt_document
+        )
+        receipt_path = external_root / "completed_run_receipt"
+        receipt_path.write_bytes(
+            decision.canonical_json_bytes(receipt_document, newline=True)
+        )
+        receipt_data = receipt_path.read_bytes()
+        external_by_role["completed_run_receipt"].update({
+            "file_sha256": hashlib.sha256(receipt_data).hexdigest(),
+            "size_bytes": len(receipt_data),
+        })
+        result["checkpoint_authorization"][
+            "completed_run_receipt_sha256"
+        ] = hashlib.sha256(receipt_data).hexdigest()
+        result["provenance"] = {
+            "schema_version": "representation_evaluation_provenance.v1",
+            "source_commit": "1" * 40,
+            "source_commit_verified": True,
+            "repository_root": str(repo_root),
+            "case_kind": "checkpoint",
+            "fit_from_pairs": False,
+            "committed_files": committed,
+            "external_files": external,
+            "loaded_sources": {
+                role: {
+                    "absolute_path": next(
+                        record["absolute_path"]
+                        for record in committed if record["role"] == role
+                    ),
+                    "sha256": next(
+                        record["file_sha256"]
+                        for record in committed if record["role"] == role
+                    ),
+                }
+                for role in ("array_codec_source", "evaluator_source")
+            },
+            "provenance_loaded_source": {
+                "absolute_path": next(
+                    record["absolute_path"]
+                    for record in committed
+                    if record["role"] == "provenance_source"
+                ),
+                "sha256": next(
+                    record["file_sha256"]
+                    for record in committed
+                    if record["role"] == "provenance_source"
+                ),
+            },
+        }
+        self.assertEqual(decision._validate_live_result_provenance(
+            result, repo_root=repo_root, expected_commit="1" * 40
+        ), launch_chain)
+        checkpoint = external_root / "checkpoint"
+        checkpoint.write_text("tampered\n", encoding="utf-8")
+        with self.assertRaisesRegex(
+            decision.PackageDecisionError,
+            "external role checkpoint live binding differs",
+        ):
+            decision._validate_live_result_provenance(
+                result, repo_root=repo_root, expected_commit="1" * 40
+            )
+
+    def test_direct_decision_rejects_dirty_or_wrong_commit(self) -> None:
+        repo_root = Path("/tmp/fake-repository")
+        with mock.patch.object(
+            decision,
+            "_git",
+            side_effect=["0" * 40],
+        ):
+            with self.assertRaisesRegex(
+                decision.PackageDecisionError, "commit differs"
+            ):
+                decision._validate_decision_source(
+                    repo_root, expected_commit="1" * 40
+                )
+        with mock.patch.object(
+            decision,
+            "_git",
+            side_effect=["1" * 40, decision.EXPECTED_BRANCH, " M changed.py"],
+        ):
+            with self.assertRaisesRegex(
+                decision.PackageDecisionError, "worktree is dirty"
+            ):
+                decision._validate_decision_source(
+                    repo_root, expected_commit="1" * 40
+                )
+
+    def test_shared_result_commit_must_equal_matrix_lock_commit(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="roll_head_commit_bind_test_"))
+        lock_path, _, _, _ = _write_matrix_lock(
+            root, source_commit="0" * 40
+        )
         arguments: list[str] = []
         for recipe in decision.RECIPES:
             for head in decision.HEAD_PACKAGES:
                 for seed in decision.PRIMARY_SEEDS:
                     cell_id = f"{recipe}__r{head}__seed{seed}"
-                    path = root / f"{cell_id}.json"
+                    result_path = root / "evaluations" / f"{cell_id}.json"
+                    result_path.write_text(json.dumps(_evaluator_result(cell_id)))
+                    arguments.extend(["--result", str(result_path)])
+        with self.assertRaisesRegex(
+            decision.PackageDecisionError,
+            "decision inputs differ from the matrix source commit",
+        ):
+            with (
+                mock.patch.object(decision, "_validate_decision_source"),
+                mock.patch.object(
+                    decision,
+                    "_validate_live_result_provenance",
+                    return_value=_launch_chain(lock_path),
+                ),
+            ):
+                decision.main([
+                    *arguments,
+                    "--matrix-lock", str(lock_path),
+                    "--expected-commit", "0" * 40,
+                    "--output", str(root / "decision.json"),
+                ])
+    def test_cli_consumes_exactly_twelve_results_and_writes_exclusively(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="roll_head_decision_test_"))
+        lock_path, _, _, _ = _write_matrix_lock(root)
+        arguments: list[str] = []
+        for recipe in decision.RECIPES:
+            for head in decision.HEAD_PACKAGES:
+                for seed in decision.PRIMARY_SEEDS:
+                    cell_id = f"{recipe}__r{head}__seed{seed}"
+                    path = root / "evaluations" / f"{cell_id}.json"
                     path.write_text(json.dumps(_evaluator_result(cell_id)))
                     arguments.extend(("--result", str(path)))
         output = root / "PRIMARY_PACKAGE_DECISION.json"
-        self.assertEqual(decision.main([*arguments, "--output", str(output)]), 0)
+        fixed = [
+            "--matrix-lock", str(lock_path),
+            "--expected-commit", "1" * 40,
+            "--output", str(output),
+        ]
+        with (
+            mock.patch.object(decision, "_validate_decision_source"),
+            mock.patch.object(
+                decision,
+                "_validate_live_result_provenance",
+                return_value=_launch_chain(lock_path),
+            ),
+        ):
+            self.assertEqual(decision.main([*arguments, *fixed]), 0)
         written = json.loads(output.read_text())
         self.assertEqual(written["decision"], "adopt_128")
         self.assertEqual(len(written["input_files"]), 12)
         with self.assertRaisesRegex(
             decision.PackageDecisionError, "exclusively create"
         ):
-            decision.main([*arguments, "--output", str(output)])
+            with (
+                mock.patch.object(decision, "_validate_decision_source"),
+                mock.patch.object(
+                    decision,
+                    "_validate_live_result_provenance",
+                    return_value=_launch_chain(lock_path),
+                ),
+            ):
+                decision.main([*arguments, *fixed])
 
 
 if __name__ == "__main__":

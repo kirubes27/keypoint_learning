@@ -1726,6 +1726,25 @@ def main():
             runtime_environment=runtime_environment,
         )
         print(f"Completed-run receipt: {receipt_path}")
+    if descriptor_binding is not None:
+        completed_nondeterminism_evidence = (
+            fresh_roll_determinism.finalize_warning_evidence(
+                nondeterminism_evidence,
+                policy=nondeterminism_policy,
+                device_type=device.type,
+            )
+        )
+        receipt_path = descriptor_authorization.write_completed_run_receipt(
+            repo_root,
+            descriptor_binding,
+            device=str(device),
+            optimizer_step_count=optimizer_step_count,
+            determinism=determinism,
+            nondeterminism_evidence=completed_nondeterminism_evidence,
+            full_command=full_command,
+            runtime_environment=runtime_environment,
+        )
+        print(f"Descriptor completed-run receipt: {receipt_path}")
     
     print("-" * 60)
     if val_loader is not None:

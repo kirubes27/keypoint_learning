@@ -9,7 +9,10 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
+
+import torch
 
 from keypoint_net import descriptor_attachment as attachment
 from keypoint_net import descriptor_attachment_authorization as authorization
@@ -171,6 +174,159 @@ def _fixture(*, arm: str = "attachment"):
     return root, receipt, manifest, namespace
 
 
+def _completed_run_fixture():
+    root, weight_receipt, manifest, namespace = _fixture()
+    source = (weight_receipt["source"]["commit"], authorization.EXPECTED_BRANCH)
+    base_config = {"split": {"train": {"pair_count_after_object_filter": 147}}}
+    amendment = {"schema": "planted-amendment"}
+    with mock.patch.object(authorization, "_source_state", return_value=source):
+        binding = authorization.bind_training_namespace(REPO_ROOT, namespace)
+    run_dir = Path(binding.run_directory)
+    run_dir.mkdir(parents=True)
+    provenance_files = []
+    for name in ("matrix.json", "environment.json", "paired.slurm"):
+        path = root / name
+        path.write_text(name)
+        provenance_files.append(authorization._file_record(path, name=name))
+    runtime = {
+        "python_implementation": "CPython",
+        "python_version": "3.11.14",
+        "pytorch_version": "2.5.1+cu121",
+        "torchvision_version": "0.20.1+cu121",
+        "numpy_version": "1.26.4",
+        "pytorch_cuda_version": "12.1",
+        "cudnn_version": 90100,
+        "device_type": "cuda",
+        "gpu_name": "planted generic GPU",
+        "nvidia_driver_version": "570.0",
+        "driver_visible_cuda_version": "12.8",
+        "slurm_job_id": "12345_0",
+        "primary_matrix_launch_lock": provenance_files[0],
+        "environment_lock": provenance_files[1],
+        "slurm_job_script": provenance_files[2],
+    }
+    determinism = {"seed": 42, "planted": True}
+    full_command = ["python", "train.py", "--descriptor_cell_id", namespace.descriptor_cell_id]
+    descriptor_binding = {
+        "cell_id": binding.cell_id,
+        "arm": binding.arm,
+        "loss_spec_sha256": attachment.LOSS_SPEC_SHA256,
+        "experiment_manifest_file_sha256": binding.experiment_manifest_file_sha256,
+        "experiment_manifest_content_sha256": binding.experiment_manifest_content_sha256,
+        "weight_receipt_file_sha256": binding.weight_receipt_file_sha256,
+        "weight_receipt_content_sha256": binding.weight_receipt_content_sha256,
+    }
+    config = {
+        **vars(namespace),
+        "device": "cuda",
+        "source_commit": source[0],
+        "checkpoint_policy": {"selection": "minimum_base_validation_loss"},
+        "index_provenance": {"planted": True},
+        "determinism": determinism,
+        "determinism_amendment": amendment,
+        "full_command": full_command,
+        "runtime_environment": runtime,
+        "cell_id": binding.cell_id,
+        "descriptor_attachment_binding": descriptor_binding,
+    }
+    (run_dir / "config.json").write_text(json.dumps(config))
+    validation_epochs = [1, *range(10, 1001, 10)]
+    history = [
+        {
+            "epoch": epoch,
+            "val_base_loss": 1.0 if epoch == 1 else 1.0 + epoch / 1000.0,
+            "val_attachment_loss": 2.0,
+            "val_train_loss": 1.2,
+        }
+        for epoch in validation_epochs
+    ]
+    (run_dir / "history.json").write_text(json.dumps(history))
+    training = manifest["cells"][0]["training_arguments"]
+    checkpoint_config = {
+        "source_commit": source[0],
+        "cell_id": binding.cell_id,
+        "descriptor_attachment_binding": descriptor_binding,
+        "descriptor_loss_spec_sha256": attachment.LOSS_SPEC_SHA256,
+        "num_keypoints": training["num_keypoints"],
+        "base_channels": training["base_channels"],
+        "heatmap_res": training["heatmap_res"],
+        "temperature": training["temperature"],
+        "padding_mode": training["padding_mode"],
+        "operator_type": training["operator_type"],
+        "lambda_attach": training["lambda_attach"],
+        "seed": training["seed"],
+        "data_root": training["data_root"],
+        "object": training["object"],
+        "train_pairs_index": training["train_pairs_index"],
+        "val_pairs_index": training["val_pairs_index"],
+        "test_pairs_index": training["test_pairs_index"],
+        "dataset_binding_sha256": training["dataset_binding_sha256"],
+        "training_mode": training["indexed_mode"],
+        "effective_epochs": training["epochs"],
+        "checkpoint_policy": config["checkpoint_policy"],
+        "index_provenance": config["index_provenance"],
+        "determinism": determinism,
+        "determinism_amendment": amendment,
+    }
+    torch.save({
+        "epoch": 1,
+        "model_state_dict": {"planted": torch.tensor([1.0])},
+        "optimizer_state_dict": {},
+        "loss": 1.0,
+        "selection_loss_name": "base_validation_loss",
+        "base_validation_loss": 1.0,
+        "attachment_validation_loss": 2.0,
+        "augmented_validation_loss": 1.2,
+        "config": checkpoint_config,
+    }, run_dir / "best_model.pt")
+    patches = (
+        mock.patch.object(authorization, "_source_state", return_value=source),
+        mock.patch.object(
+            authorization.fresh,
+            "resolve_fresh_cell",
+            return_value=SimpleNamespace(expected_config=base_config),
+        ),
+        mock.patch.object(
+            authorization.fresh_roll_determinism,
+            "policy_for_heatmap_resolution",
+            return_value={},
+        ),
+        mock.patch.object(
+            authorization.fresh_roll_determinism,
+            "validate_determinism_record",
+        ),
+        mock.patch.object(
+            authorization.fresh_roll_determinism,
+            "validate_final_warning_evidence",
+        ),
+        mock.patch.object(
+            authorization.fresh_roll_determinism,
+            "amendment_record",
+            return_value=amendment,
+        ),
+    )
+    for patcher in patches:
+        patcher.start()
+    try:
+        receipt_path = authorization.write_completed_run_receipt(
+            REPO_ROOT,
+            binding,
+            device="cuda",
+            optimizer_step_count=10000,
+            determinism=determinism,
+            nondeterminism_evidence={"planted": True},
+            full_command=full_command,
+            runtime_environment=runtime,
+        )
+        capability = authorization.authorize_completed_run(
+            REPO_ROOT, receipt_path, expected_cell_id=binding.cell_id
+        )
+    finally:
+        for patcher in reversed(patches):
+            patcher.stop()
+    return capability, provenance_files[0]["absolute_path"], patches
+
+
 class AuthorizationTests(unittest.TestCase):
     def test_manifest_generator_freezes_exact_paired_twelve_cells(self):
         root, receipt, _, namespace = _fixture()
@@ -259,6 +415,13 @@ class AuthorizationTests(unittest.TestCase):
         baseline.lambda_attach = 0.1
         with self.assertRaises(ValueError):
             authorization.reject_unbound_descriptor_arguments(baseline)
+
+    def test_completed_run_receipt_authorizes_exact_checkpoint_and_launch_chain(self):
+        capability, matrix_path, _ = _completed_run_fixture()
+        self.assertEqual(capability.cell_id, "task55_clean__attachment__seed42")
+        self.assertEqual(Path(capability.checkpoint_absolute_path).name, "best_model.pt")
+        self.assertRegex(capability.receipt_file_sha256, r"^[0-9a-f]{64}$")
+        self.assertTrue(Path(matrix_path).is_file())
 
 
 if __name__ == "__main__":

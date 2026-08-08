@@ -22,6 +22,7 @@ from keypoint_net import model as model_module
 from keypoint_net import representation_array_codec as codec
 from keypoint_net import representation_evaluation_provenance as provenance_contract
 from keypoint_net import representation_fresh_checkpoint_authorization as authorization
+from keypoint_net import descriptor_attachment_authorization as descriptor_authorization
 
 
 class FreshCheckpointRuntimeError(RuntimeError):
@@ -36,6 +37,15 @@ _PENDING_EVALUATOR: ContextVar[Mapping[str, Any] | None] = ContextVar(
 )
 _PENDING_PROVENANCE: ContextVar[Mapping[str, Any] | None] = ContextVar(
     "fresh_pending_provenance", default=None
+)
+_LOADED_DESCRIPTOR_CHECKPOINT: ContextVar[Mapping[str, Any] | None] = ContextVar(
+    "descriptor_loaded_checkpoint", default=None
+)
+_PENDING_DESCRIPTOR_EVALUATOR: ContextVar[Mapping[str, Any] | None] = ContextVar(
+    "descriptor_pending_evaluator", default=None
+)
+_PENDING_DESCRIPTOR_PROVENANCE: ContextVar[Mapping[str, Any] | None] = ContextVar(
+    "descriptor_pending_provenance", default=None
 )
 
 
@@ -192,6 +202,38 @@ def register_fresh_checkpoint_load(
     })
 
 
+def register_descriptor_checkpoint_load(
+    capability: descriptor_authorization.DescriptorCompletedRunCapability,
+    checkpoint_record: Mapping[str, Any],
+    *,
+    model: torch.nn.Module,
+) -> None:
+    checked = descriptor_authorization.require_completed_run_capability(capability)
+    _require(
+        _LOADED_DESCRIPTOR_CHECKPOINT.get() is None
+        and _PENDING_DESCRIPTOR_EVALUATOR.get() is None,
+        "a descriptor checkpoint context is already pending",
+    )
+    expected = {
+        "absolute_path": checked.checkpoint_absolute_path,
+        "file_sha256": checked.checkpoint_sha256,
+        "size_bytes": checked.checkpoint_size_bytes,
+        "same_open_file_descriptor_hash_and_load": True,
+        "weights_only": True,
+    }
+    _require(dict(checkpoint_record) == expected, "descriptor load record differs")
+    _require(isinstance(model, model_module.PhaseAModel),
+             "descriptor load did not construct the expected model")
+    _LOADED_DESCRIPTOR_CHECKPOINT.set({
+        "capability": checked,
+        "load_record": expected,
+        "model": model,
+        "state_sha256": _state_digest(model),
+        "inference_record": None,
+        "built_bundle_sha256": None,
+    })
+
+
 def arm_fresh_checkpoint_evaluator(
     bundle: Mapping[str, Any],
     *,
@@ -219,11 +261,45 @@ def arm_fresh_checkpoint_evaluator(
     _PENDING_EVALUATOR.set({"bundle_content_sha256": claimed_hash, "loaded": loaded})
 
 
+def arm_descriptor_checkpoint_evaluator(
+    bundle: Mapping[str, Any],
+    *,
+    capability: descriptor_authorization.DescriptorCompletedRunCapability,
+    inference_record: Mapping[str, Any],
+) -> None:
+    loaded = _LOADED_DESCRIPTOR_CHECKPOINT.get()
+    _LOADED_DESCRIPTOR_CHECKPOINT.set(None)
+    checked = descriptor_authorization.require_completed_run_capability(capability)
+    _require(isinstance(loaded, Mapping) and loaded.get("capability") is checked,
+             "descriptor evaluator requires the registered checkpoint load")
+    _require(inference_record is loaded.get("inference_record"),
+             "descriptor evaluator requires the actual one-shot inference record")
+    _require(bundle.get("case_kind") == "checkpoint"
+             and bundle.get("checkpoint_authority") == "fresh_run"
+             and bundle.get("case_id") == checked.cell_id,
+             "descriptor bundle identity differs")
+    claimed_hash = bundle.get("bundle_content_sha256")
+    payload = dict(bundle)
+    payload.pop("bundle_content_sha256", None)
+    _require(claimed_hash == evaluator.canonical_sha256(payload)
+             and claimed_hash == loaded.get("built_bundle_sha256"),
+             "descriptor bundle content hash differs")
+    _PENDING_DESCRIPTOR_EVALUATOR.set({
+        "bundle_content_sha256": claimed_hash,
+        "loaded": loaded,
+    })
+
+
 def validate_fresh_checkpoint_evaluator_authorization(
     bundle: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     pending = _PENDING_EVALUATOR.get()
     _PENDING_EVALUATOR.set(None)
+    descriptor_pending = None
+    if pending is None:
+        descriptor_pending = _PENDING_DESCRIPTOR_EVALUATOR.get()
+        _PENDING_DESCRIPTOR_EVALUATOR.set(None)
+        pending = descriptor_pending
     _require(isinstance(pending, Mapping),
              "fresh evaluation requires a live one-shot context")
     claimed_hash = bundle.get("bundle_content_sha256")
@@ -233,12 +309,20 @@ def validate_fresh_checkpoint_evaluator_authorization(
              and claimed_hash == evaluator.canonical_sha256(payload),
              "fresh bundle changed after authorization")
     loaded = pending["loaded"]
-    capability = authorization.require_fresh_checkpoint_capability(
-        loaded["capability"]
-    )
-    _require(_PENDING_PROVENANCE.get() is None,
-             "a fresh provenance receipt is already pending")
-    _PENDING_PROVENANCE.set(loaded)
+    if descriptor_pending is None:
+        capability = authorization.require_fresh_checkpoint_capability(
+            loaded["capability"]
+        )
+        _require(_PENDING_PROVENANCE.get() is None,
+                 "a fresh provenance receipt is already pending")
+        _PENDING_PROVENANCE.set(loaded)
+    else:
+        capability = descriptor_authorization.require_completed_run_capability(
+            loaded["capability"]
+        )
+        _require(_PENDING_DESCRIPTOR_PROVENANCE.get() is None,
+                 "a descriptor provenance receipt is already pending")
+        _PENDING_DESCRIPTOR_PROVENANCE.set(loaded)
     return MappingProxyType({
         "checkpoint_evaluation_authorized": True,
         "source_commit": capability.source_commit,
@@ -255,10 +339,20 @@ def consume_fresh_checkpoint_provenance_load_receipt(
 ) -> Mapping[str, Any]:
     loaded = _PENDING_PROVENANCE.get()
     _PENDING_PROVENANCE.set(None)
+    descriptor_loaded = None
+    if loaded is None:
+        descriptor_loaded = _PENDING_DESCRIPTOR_PROVENANCE.get()
+        _PENDING_DESCRIPTOR_PROVENANCE.set(None)
+        loaded = descriptor_loaded
     _require(isinstance(loaded, Mapping), "fresh provenance lacks a load receipt")
-    capability = authorization.require_fresh_checkpoint_capability(
-        loaded["capability"]
-    )
+    if descriptor_loaded is None:
+        capability = authorization.require_fresh_checkpoint_capability(
+            loaded["capability"]
+        )
+    else:
+        capability = descriptor_authorization.require_completed_run_capability(
+            loaded["capability"]
+        )
     expected = {
         "role": "checkpoint",
         "absolute_path": capability.checkpoint_absolute_path,
@@ -317,6 +411,33 @@ def build_evaluation_provenance(
                      capability.history_sha256, capability.history_size_bytes),
             external("completed_run_receipt", capability.receipt_absolute_path,
                      capability.receipt_file_sha256, capability.receipt_size_bytes),
+        ],
+    }
+
+
+def build_descriptor_evaluation_provenance(
+    repo_root: Path,
+    capability: descriptor_authorization.DescriptorCompletedRunCapability,
+) -> dict[str, Any]:
+    checked = descriptor_authorization.require_completed_run_capability(capability)
+
+    def external(role: str, path: str, digest: str, size: int) -> dict[str, Any]:
+        return {"role": role, "absolute_path": path, "file_sha256": digest,
+                "size_bytes": size}
+
+    return {
+        "schema_version": provenance_contract.PROVENANCE_SCHEMA_VERSION,
+        "source_commit": checked.source_commit,
+        "committed_files": _committed_file_records(repo_root),
+        "external_files": [
+            external("checkpoint", checked.checkpoint_absolute_path,
+                     checked.checkpoint_sha256, checked.checkpoint_size_bytes),
+            external("checkpoint_config", checked.config_absolute_path,
+                     checked.config_sha256, checked.config_size_bytes),
+            external("checkpoint_metadata", checked.history_absolute_path,
+                     checked.history_sha256, checked.history_size_bytes),
+            external("completed_run_receipt", checked.receipt_absolute_path,
+                     checked.receipt_file_sha256, checked.receipt_size_bytes),
         ],
     }
 
@@ -452,6 +573,89 @@ def build_fresh_checkpoint_bundle(
     return bundle
 
 
+def build_descriptor_checkpoint_bundle(
+    repo_root: Path,
+    capability: descriptor_authorization.DescriptorCompletedRunCapability,
+    model: torch.nn.Module,
+    *,
+    points: np.ndarray,
+    logits: np.ndarray,
+    masks: np.ndarray,
+    frame_ids: Sequence[int],
+    physical_states: Sequence[Mapping[str, Any]],
+    pair_rows: Sequence[Mapping[str, Any]],
+    partition: str,
+    full_primary_roll: bool,
+) -> dict[str, Any]:
+    checked = descriptor_authorization.require_completed_run_capability(capability)
+    loaded = _LOADED_DESCRIPTOR_CHECKPOINT.get()
+    _require(
+        isinstance(loaded, Mapping)
+        and loaded.get("capability") is checked
+        and loaded.get("model") is model,
+        "descriptor bundle requires the exact loaded checkpoint model",
+    )
+    inference_record = loaded.get("inference_record")
+    _require(isinstance(inference_record, Mapping),
+             "descriptor bundle requires actual model inference")
+    _require(
+        inference_record.get("points_sha256") == _array_digest(points)
+        and inference_record.get("logits_sha256") == _array_digest(logits)
+        and inference_record.get("model_state_sha256") == _state_digest(model)
+        == loaded.get("state_sha256"),
+        "descriptor bundle arrays/model differ from inference context",
+    )
+    training = checked.expected_training_arguments
+    base_config = checked.expected_base_config
+    A = model.operator.A.detach().cpu().numpy().astype(np.float64)
+    b = model.operator.bias.detach().cpu().numpy().astype(np.float64)
+    bundle: dict[str, Any] = {
+        "schema_version": evaluator.BUNDLE_SCHEMA_VERSION,
+        "case_id": checked.cell_id,
+        "case_kind": "checkpoint",
+        "checkpoint_authority": "fresh_run",
+        "provenance": build_descriptor_evaluation_provenance(repo_root, checked),
+        "evaluation_config": _evaluation_config(full_primary_roll=full_primary_roll),
+        "estimator_metadata": {
+            "input_height": 512, "input_width": 512,
+            "heatmap_height": training["heatmap_res"],
+            "heatmap_width": training["heatmap_res"],
+            "endpoint_grid": True, "temperature": training["temperature"],
+            "logit_dtype": "float32", "softmax_dtype": "float32",
+            "crop": None, "resize": [512, 512], "align_corners": None,
+        },
+        "transform": {
+            **dict(base_config["transform"]),
+            "expected_2d_family": "planar_rotation_about_projected_center",
+            "projected_centre_xy": [0.0, 0.0],
+        },
+        "evaluation": {
+            "object_id": base_config["object"]["name"],
+            "seed": training["seed"],
+            "partition": partition,
+            "frame_ids": list(frame_ids),
+            "points": codec.encode_float32_array(points),
+            "physical_states": [dict(item) for item in physical_states],
+            "bbox_diagonal_image01": _bbox_diagonals(masks),
+            "visibility": codec.encode_bool_packbits_array(
+                np.ones(points.shape[:2], dtype=bool)
+            ),
+            "masks": {
+                "values": codec.encode_bool_packbits_array(masks),
+                "geometry": {"input_height": 512, "input_width": 512,
+                             "crop": None, "resize": [512, 512],
+                             "align_corners": None},
+            },
+            "pair_rows": [dict(item) for item in pair_rows],
+            "logits": codec.encode_float32_array(logits),
+        },
+        "operator": {"mode": "supplied", "A": A.tolist(), "b": b.tolist()},
+    }
+    bundle["bundle_content_sha256"] = evaluator.canonical_sha256(bundle)
+    loaded["built_bundle_sha256"] = bundle["bundle_content_sha256"]
+    return bundle
+
+
 def _load_full_orbit(data_root: Path, repo_root: Path) -> tuple[list[np.ndarray], np.ndarray, list[dict[str, float]]]:
     frame_manifest = json.loads((repo_root / provenance_contract.FRESH_CHECKPOINT_ROLE_PATHS[
         "replay_frame_mask_inventory"
@@ -484,6 +688,8 @@ def _load_full_orbit(data_root: Path, repo_root: Path) -> tuple[list[np.ndarray]
 
 def _infer(model: torch.nn.Module, images: Sequence[np.ndarray], *, heatmap_res: int) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     loaded = _LOADED_CHECKPOINT.get()
+    if loaded is None:
+        loaded = _LOADED_DESCRIPTOR_CHECKPOINT.get()
     _require(
         isinstance(loaded, Mapping)
         and loaded.get("model") is model
@@ -563,10 +769,14 @@ def evaluate_authorized_fresh_run(
 
 __all__ = [
     "FreshCheckpointRuntimeError",
+    "arm_descriptor_checkpoint_evaluator",
+    "build_descriptor_checkpoint_bundle",
+    "build_descriptor_evaluation_provenance",
     "build_evaluation_provenance",
     "build_fresh_checkpoint_bundle",
     "evaluate_authorized_fresh_run",
     "consume_fresh_checkpoint_provenance_load_receipt",
     "load_authorized_fresh_checkpoint",
+    "register_descriptor_checkpoint_load",
     "validate_fresh_checkpoint_evaluator_authorization",
 ]

@@ -35,6 +35,7 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from model import PhaseAModel, compute_losses
+from descriptor_attachment import LOSS_SPEC_SHA256
 from dataset import (
     IndexPairDataset,
     IndexPairManifest,
@@ -43,6 +44,7 @@ from dataset import (
     inspect_index_pair_manifest,
 )
 import representation_fresh_checkpoint_authorization as fresh_authorization
+import descriptor_attachment_authorization as descriptor_authorization
 import representation_corpus_inventory
 import fresh_roll_determinism
 
@@ -324,6 +326,7 @@ def train_epoch(
     loc_bg_threshold: float,
     sigma: float,
     num_keypoints: int,
+    lambda_attach: float = 0.0,
     *,
     nondeterminism_policy: Optional[dict] = None,
     nondeterminism_evidence: Optional[dict] = None,
@@ -332,6 +335,8 @@ def train_epoch(
     model.train()
     
     total_loss = 0.0
+    total_base = 0.0
+    total_attach = 0.0
     total_pred = 0.0
     total_smooth = 0.0
     total_disp = 0.0
@@ -349,7 +354,11 @@ def train_epoch(
         action_labels = batch['action_label'].to(device).long()
 
         # Forward pass
-        outputs = model(x_t, x_t1)
+        outputs = model(
+            x_t,
+            x_t1,
+            return_descriptor_features=lambda_attach > 0.0,
+        )
         losses = compute_losses(
             outputs,
             lambda_smooth=lambda_smooth,
@@ -359,6 +368,7 @@ def train_epoch(
             lambda_loc=lambda_loc,
             lambda_inv=lambda_inv,
             lambda_cycle=lambda_cycle,
+            lambda_attach=lambda_attach,
             sigma=sigma,
             num_keypoints=num_keypoints,
             action_labels=action_labels,
@@ -390,6 +400,8 @@ def train_epoch(
 
         # Accumulate metrics
         total_loss += losses['loss'].item()
+        total_base += losses['base_loss'].item()
+        total_attach += losses['attachment_loss'].item()
         total_pred += losses['l_pred'].item()
         total_smooth += losses['l_smooth'].item()
         total_disp += losses['l_disp'].item()
@@ -403,6 +415,9 @@ def train_epoch(
 
     return {
         'loss': total_loss / n_batches,
+        'train_loss': total_loss / n_batches,
+        'base_loss': total_base / n_batches,
+        'attachment_loss': total_attach / n_batches,
         'l_pred': total_pred / n_batches,
         'l_smooth': total_smooth / n_batches,
         'l_disp': total_disp / n_batches,
@@ -430,11 +445,14 @@ def evaluate(
     loc_bg_threshold: float,
     sigma: float,
     num_keypoints: int,
+    lambda_attach: float = 0.0,
 ) -> dict:
     """Evaluate one explicitly supplied held-out loader."""
     model.eval()
     
     total_loss = 0.0
+    total_base = 0.0
+    total_attach = 0.0
     total_pred = 0.0
     total_act = 0.0
     total_loc = 0.0
@@ -448,7 +466,11 @@ def evaluate(
         x_t1 = batch['x_t1'].to(device)
         action_labels = batch['action_label'].to(device).long()
 
-        outputs = model(x_t, x_t1)
+        outputs = model(
+            x_t,
+            x_t1,
+            return_descriptor_features=lambda_attach > 0.0,
+        )
         losses = compute_losses(
             outputs,
             lambda_smooth=lambda_smooth,
@@ -458,6 +480,7 @@ def evaluate(
             lambda_loc=lambda_loc,
             lambda_inv=lambda_inv,
             lambda_cycle=lambda_cycle,
+            lambda_attach=lambda_attach,
             sigma=sigma,
             num_keypoints=num_keypoints,
             action_labels=action_labels,
@@ -467,6 +490,8 @@ def evaluate(
         )
 
         total_loss += losses['loss'].item()
+        total_base += losses['base_loss'].item()
+        total_attach += losses['attachment_loss'].item()
         total_pred += losses['l_pred'].item()
         total_act += losses['l_act'].item()
         total_loc += losses['l_loc'].item()
@@ -477,6 +502,9 @@ def evaluate(
 
     return {
         'loss': total_loss / n_batches,
+        'train_loss': total_loss / n_batches,
+        'base_loss': total_base / n_batches,
+        'attachment_loss': total_attach / n_batches,
         'l_pred': total_pred / n_batches,
         'l_act': total_act / n_batches,
         'l_loc': total_loc / n_batches,
@@ -489,6 +517,16 @@ def evaluate(
 def _validate_positive_int(value: int, name: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
+
+
+def base_validation_improves(candidate: float, incumbent: float) -> bool:
+    """The sole development checkpoint selector; attachment never tie-breaks."""
+
+    if not np.isfinite(candidate):
+        raise ValueError("base validation candidate must be finite")
+    if not (np.isfinite(incumbent) or incumbent == float("inf")):
+        raise ValueError("base validation incumbent must be finite or +inf")
+    return candidate < incumbent
 
 
 def _validate_training_arguments(args: argparse.Namespace) -> None:
@@ -525,10 +563,24 @@ def _validate_training_arguments(args: argparse.Namespace) -> None:
         "lambda_loc",
         "lambda_inv",
         "lambda_cycle",
+        "lambda_attach",
     ):
-        value = getattr(args, name)
+        value = getattr(args, name, 0.0 if name == "lambda_attach" else None)
         if not np.isfinite(value) or value < 0:
             raise ValueError(f"--{name} must be finite and non-negative")
+    if getattr(args, "lambda_attach", 0.0) > 0.0:
+        descriptor_requirements = {
+            "img_size": 512,
+            "heatmap_res": 64,
+            "base_channels": 32,
+            "num_keypoints": 10,
+        }
+        for name, expected in descriptor_requirements.items():
+            if getattr(args, name) != expected:
+                raise ValueError(
+                    "positive --lambda_attach requires the exact retained "
+                    f"configuration: --{name}={expected}"
+                )
     if (
         not np.isfinite(args.loc_bg_threshold)
         or not 0 <= args.loc_bg_threshold <= 255
@@ -842,7 +894,11 @@ def _prepare_training_data(
             )
             checkpoint_policy = {
                 "mode": "development",
-                "selection": "minimum_total_validation_loss",
+                "selection": (
+                    "minimum_base_validation_loss"
+                    if getattr(args, "descriptor_cell_id", None) is not None
+                    else "minimum_total_validation_loss"
+                ),
                 "authoritative_checkpoint": "best_model.pt",
                 "best_model_written": True,
                 "validation_loader": True,
@@ -1014,6 +1070,21 @@ def main():
             "all scientific arguments must match the committed cell."
         ),
     )
+    parser.add_argument(
+        "--descriptor_cell_id",
+        type=str,
+        default=None,
+        help="Exact control/attachment cell from a hash-bound experiment manifest.",
+    )
+    parser.add_argument("--descriptor_experiment_manifest", type=str, default=None)
+    parser.add_argument(
+        "--descriptor_experiment_manifest_sha256",
+        type=str,
+        default=None,
+    )
+    parser.add_argument("--descriptor_weight_receipt", type=str, default=None)
+    parser.add_argument("--descriptor_weight_receipt_sha256", type=str, default=None)
+    parser.add_argument("--descriptor_loss_spec_sha256", type=str, default=None)
     parser.add_argument("--object", type=str, default=None, help="Single object name (e.g., coffeemug)")
     parser.add_argument("--pairs_index", type=str, default=None,
                         help="Deprecated alias for --train_pairs_index. It is "
@@ -1098,6 +1169,12 @@ def main():
     parser.add_argument("--lambda_loc", type=float, default=0.0, help="λ_l for L_loc localization loss")
     parser.add_argument("--lambda_inv", type=float, default=0.0, help="λ_i for inverse prediction W- K_{t+1} ~= K_t")
     parser.add_argument("--lambda_cycle", type=float, default=0.0, help="λ_c for one-step W- W+ and W+ W- cycle consistency")
+    parser.add_argument(
+        "--lambda_attach",
+        type=float,
+        default=0.0,
+        help="Exact descriptor-attachment weight; positive values require a bound experiment cell.",
+    )
     parser.add_argument("--sigma", type=float, default=0.1, help="σ for L_disp length scale")
     parser.add_argument("--loc_bg_threshold", type=float, default=30.0,
                         help="Background subtraction threshold for L_loc (0-255 scale)")
@@ -1144,6 +1221,14 @@ def main():
     # before device selection and before any output directory is created.
     repo_root = Path(__file__).resolve().parent.parent
     fresh_binding = None
+    descriptor_binding = None
+    if args.descriptor_cell_id is not None:
+        descriptor_binding = descriptor_authorization.bind_training_namespace(
+            repo_root,
+            args,
+        )
+    else:
+        descriptor_authorization.reject_unbound_descriptor_arguments(args)
     if args.fresh_cell_id is not None:
         fresh_binding = fresh_authorization.bind_training_namespace(
             repo_root,
@@ -1174,7 +1259,7 @@ def main():
     
     # Resolve the executable amendment before claiming an output directory or
     # allowing any CUDA query to initialize a device context.
-    if fresh_binding is not None:
+    if fresh_binding is not None or descriptor_binding is not None:
         nondeterminism_policy = (
             fresh_roll_determinism.policy_for_heatmap_resolution(
                 repo_root,
@@ -1195,13 +1280,18 @@ def main():
         nondeterminism_evidence = None
 
     # Claim the fresh cell atomically after every source/data/policy preflight.
-    if fresh_binding is not None:
-        run_dir = Path(fresh_binding.run_directory)
+    if fresh_binding is not None or descriptor_binding is not None:
+        bound_run_directory = (
+            fresh_binding.run_directory
+            if fresh_binding is not None
+            else descriptor_binding.run_directory
+        )
+        run_dir = Path(bound_run_directory)
         run_dir.parent.mkdir(parents=True, exist_ok=True)
         run_dir.mkdir(exist_ok=False)
 
     # Reproducibility. Preserve legacy behavior outside the dedicated path.
-    if fresh_binding is not None:
+    if fresh_binding is not None or descriptor_binding is not None:
         determinism = _configure_determinism(
             args.seed,
             policy=nondeterminism_policy,
@@ -1221,16 +1311,20 @@ def main():
     if determinism is not None:
         determinism["data_loader_workers"] = n_workers
     runtime_environment = (
-        _runtime_environment(device) if fresh_binding is not None else None
+        _runtime_environment(device)
+        if fresh_binding is not None or descriptor_binding is not None
+        else None
     )
     full_command = (
-        [sys.executable, *sys.argv] if fresh_binding is not None else None
+        [sys.executable, *sys.argv]
+        if fresh_binding is not None or descriptor_binding is not None
+        else None
     )
     
     # Create output directory
     # Include pid (and microseconds) to avoid collisions when launching
     # multiple runs in parallel.
-    if fresh_binding is None:
+    if fresh_binding is None and descriptor_binding is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         obj_name = args.object or "all"
         run_name = f"phase_a_{obj_name}_{timestamp}_seed{args.seed}_pid{os.getpid()}"
@@ -1257,6 +1351,29 @@ def main():
             'file_sha256': fresh_binding.cell.manifest_file_sha256,
             'content_hash_sha256': (
                 fresh_authorization.EXPERIMENT_MANIFEST_CONTENT_SHA256
+            ),
+        }
+    if descriptor_binding is not None:
+        config['determinism'] = determinism
+        config['determinism_amendment'] = determinism_amendment
+        config['full_command'] = full_command
+        config['runtime_environment'] = runtime_environment
+        config['cell_id'] = descriptor_binding.cell_id
+        config['descriptor_attachment_binding'] = {
+            'cell_id': descriptor_binding.cell_id,
+            'arm': descriptor_binding.arm,
+            'loss_spec_sha256': LOSS_SPEC_SHA256,
+            'experiment_manifest_file_sha256': (
+                descriptor_binding.experiment_manifest_file_sha256
+            ),
+            'experiment_manifest_content_sha256': (
+                descriptor_binding.experiment_manifest_content_sha256
+            ),
+            'weight_receipt_file_sha256': (
+                descriptor_binding.weight_receipt_file_sha256
+            ),
+            'weight_receipt_content_sha256': (
+                descriptor_binding.weight_receipt_content_sha256
             ),
         }
     with open(run_dir / "config.json", "w") as f:
@@ -1330,6 +1447,10 @@ def main():
         'lambda_loc': args.lambda_loc,
         'lambda_inv': args.lambda_inv,
         'lambda_cycle': args.lambda_cycle,
+        'lambda_attach': args.lambda_attach,
+        'descriptor_loss_spec_sha256': (
+            LOSS_SPEC_SHA256 if descriptor_binding is not None else None
+        ),
         'num_action_classes': model_num_action_classes,
         'sigma': args.sigma,
         'loc_bg_threshold': args.loc_bg_threshold,
@@ -1363,6 +1484,13 @@ def main():
         )
         ckpt_config['determinism'] = determinism
         ckpt_config['determinism_amendment'] = determinism_amendment
+    if descriptor_binding is not None:
+        ckpt_config['cell_id'] = descriptor_binding.cell_id
+        ckpt_config['descriptor_attachment_binding'] = dict(
+            config['descriptor_attachment_binding']
+        )
+        ckpt_config['determinism'] = determinism
+        ckpt_config['determinism_amendment'] = determinism_amendment
     
     print(f"\nStarting training for {args.epochs} epochs...")
     print(f"Training mode: {data_plan.mode}")
@@ -1370,7 +1498,8 @@ def main():
     print(f"Operator: {args.operator_type} (learn_inverse_operator={learn_inverse_operator})")
     print(f"Loss weights: lambda_smooth={args.lambda_smooth}, lambda_disp={args.lambda_disp}, "
           f"lambda_ent={args.lambda_ent}, lambda_act={args.lambda_act}, lambda_loc={args.lambda_loc}, "
-          f"lambda_inv={args.lambda_inv}, lambda_cycle={args.lambda_cycle}, sigma={args.sigma}")
+          f"lambda_inv={args.lambda_inv}, lambda_cycle={args.lambda_cycle}, "
+          f"lambda_attach={args.lambda_attach}, sigma={args.sigma}")
     if isinstance(train_dataset, IndexPairDataset):
         print(
             "Indexed transform (no inferred geometry): "
@@ -1391,11 +1520,16 @@ def main():
         diag_x_t = diag_batch['x_t'].to(device)
         diag_x_t1 = diag_batch['x_t1'].to(device)
         diag_action_labels = diag_batch['action_label'].to(device).long()
-        diag_out = model(diag_x_t, diag_x_t1)
+        diag_out = model(
+            diag_x_t,
+            diag_x_t1,
+            return_descriptor_features=args.lambda_attach > 0.0,
+        )
         diag_losses = compute_losses(
             diag_out, lambda_smooth=args.lambda_smooth, lambda_disp=args.lambda_disp,
             lambda_ent=args.lambda_ent, lambda_act=args.lambda_act, lambda_loc=args.lambda_loc,
             lambda_inv=args.lambda_inv, lambda_cycle=args.lambda_cycle,
+            lambda_attach=args.lambda_attach,
             sigma=args.sigma, num_keypoints=args.num_keypoints, action_labels=diag_action_labels,
             x_t=diag_x_t, x_t1=diag_x_t1, loc_bg_threshold=args.loc_bg_threshold,
         )
@@ -1409,6 +1543,8 @@ def main():
         print(f"  l_loc:   {diag_losses['l_loc'].item():.6f}")
         print(f"  l_inv:   {diag_losses['l_inv'].item():.6f}")
         print(f"  l_cycle: {diag_losses['l_cycle'].item():.6f}")
+        print(f"  l_attach:{diag_losses['attachment_loss'].item():.6f}")
+        print(f"  base:    {diag_losses['base_loss'].item():.6f}")
         print(f"  act_acc: {diag_losses['act_acc'].item():.4f}")
         print(f"  total:   {diag_losses['loss'].item():.6f}")
         print("-" * 70)
@@ -1420,6 +1556,7 @@ def main():
             args.lambda_smooth, args.lambda_disp, args.lambda_ent, args.lambda_act,
             args.lambda_loc, args.lambda_inv, args.lambda_cycle,
             args.loc_bg_threshold, args.sigma, args.num_keypoints,
+            lambda_attach=args.lambda_attach,
             nondeterminism_policy=nondeterminism_policy,
             nondeterminism_evidence=nondeterminism_evidence,
         )
@@ -1441,11 +1578,15 @@ def main():
                 f"L_loc: {train_metrics['l_loc']:.5f} | "
                 f"L_inv: {train_metrics['l_inv']:.5f} | "
                 f"L_cycle: {train_metrics['l_cycle']:.5f} | "
+                f"L_attach: {train_metrics['attachment_loss']:.5f} | "
+                f"Base: {train_metrics['base_loss']:.5f} | "
                 f"ActAcc: {train_metrics['act_acc']:.3f}"
             )
             history_entry = {
                 'epoch': epoch,
                 'train_loss': train_metrics['loss'],
+                'train_base_loss': train_metrics['base_loss'],
+                'train_attachment_loss': train_metrics['attachment_loss'],
                 'train_pred': train_metrics['l_pred'],
                 'train_smooth': train_metrics['l_smooth'],
                 'train_disp': train_metrics['l_disp'],
@@ -1464,11 +1605,19 @@ def main():
                     args.lambda_smooth, args.lambda_disp, args.lambda_ent,
                     args.lambda_act, args.lambda_loc, args.lambda_inv,
                     args.lambda_cycle, args.loc_bg_threshold, args.sigma,
-                    args.num_keypoints
+                    args.num_keypoints,
+                    lambda_attach=args.lambda_attach,
                 )
-                log_line += f" | Val: {val_metrics['loss']:.5f}"
+                log_line += (
+                    f" | ValTrain: {val_metrics['loss']:.5f}"
+                    f" | ValBase: {val_metrics['base_loss']:.5f}"
+                    f" | ValAttach: {val_metrics['attachment_loss']:.5f}"
+                )
                 history_entry.update({
                     'val_loss': val_metrics['loss'],
+                    'val_train_loss': val_metrics['train_loss'],
+                    'val_base_loss': val_metrics['base_loss'],
+                    'val_attachment_loss': val_metrics['attachment_loss'],
                     'val_pred': val_metrics['l_pred'],
                     'val_act': val_metrics['l_act'],
                     'val_loc': val_metrics['l_loc'],
@@ -1478,13 +1627,17 @@ def main():
                 })
 
                 # Development/legacy only: validation selects best_model.pt.
-                if val_metrics['loss'] < best_loss:
-                    best_loss = val_metrics['loss']
+                if base_validation_improves(val_metrics['base_loss'], best_loss):
+                    best_loss = val_metrics['base_loss']
                     torch.save({
                         'epoch': epoch,
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'loss': best_loss,
+                        'selection_loss_name': 'base_validation_loss',
+                        'base_validation_loss': val_metrics['base_loss'],
+                        'attachment_validation_loss': val_metrics['attachment_loss'],
+                        'augmented_validation_loss': val_metrics['train_loss'],
                         'config': ckpt_config,
                     }, run_dir / "best_model.pt")
 
@@ -1498,6 +1651,8 @@ def main():
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': train_metrics['loss'],
+                'base_training_loss': train_metrics['base_loss'],
+                'attachment_training_loss': train_metrics['attachment_loss'],
                 'config': ckpt_config,
             }, run_dir / f"checkpoint_{epoch:05d}.pt")
     
@@ -1509,6 +1664,8 @@ def main():
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'loss': train_metrics['loss'],
+        'base_training_loss': train_metrics['base_loss'],
+        'attachment_training_loss': train_metrics['attachment_loss'],
         'config': ckpt_config,
     }, final_model_path)
 
@@ -1532,6 +1689,7 @@ def main():
             args.lambda_act, args.lambda_loc, args.lambda_inv,
             args.lambda_cycle, args.loc_bg_threshold, args.sigma,
             args.num_keypoints,
+            lambda_attach=args.lambda_attach,
         )
         fixed_final_test_report = {
             "schema_version": 1,

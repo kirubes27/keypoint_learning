@@ -14,6 +14,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    from .descriptor_attachment import (
+        symmetric_descriptor_attachment_loss,
+        validate_retained_runtime_configuration,
+    )
+except ImportError:  # Support the historical ``python keypoint_net/model.py`` path.
+    from descriptor_attachment import (  # type: ignore
+        symmetric_descriptor_attachment_loss,
+        validate_retained_runtime_configuration,
+    )
+
 
 __representation_import_sha256__ = _hashlib.sha256(
     _Path(__file__).absolute().read_bytes()
@@ -75,6 +86,7 @@ class KeypointExtractor(nn.Module):
     ):
         super().__init__()
         self.num_keypoints = num_keypoints
+        self.base_channels = base_channels
         self.temperature = temperature
         self.padding_mode = padding_mode
         self.heatmap_res = heatmap_res
@@ -158,7 +170,12 @@ class KeypointExtractor(nn.Module):
         else:
             raise ValueError(f"heatmap_res must be 64 or 128, got {heatmap_res}")
 
-    def forward(self, x: torch.Tensor) -> tuple:
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        return_descriptor_features: bool = False,
+    ) -> tuple:
         """
         Args:
             x: (B, C, H, W) input image
@@ -167,7 +184,8 @@ class KeypointExtractor(nn.Module):
             keypoints: (B, 2*N) flattened keypoint coordinates
             heatmaps: (B, N, H', W') intermediate heatmaps (for visualization/entropy)
         """
-        features = self.encoder(x)  # (B, 128, H/8, W/8)
+        encoder_features = self.encoder(x)  # (B, 128, H/8, W/8)
+        features = encoder_features
         if self.head_upsample is not None:
             features = self.head_upsample(features)  # (B, 64, H/4, W/4)
         heatmaps = self.heatmap_head(features)  # (B, N, H/8 or H/4, ...)
@@ -178,6 +196,8 @@ class KeypointExtractor(nn.Module):
         # Flatten to (B, 2*N) as specified: K(x) ∈ ℝ^(2N)
         keypoints = coords.view(coords.shape[0], -1)  # (B, 2*N)
         
+        if return_descriptor_features:
+            return keypoints, heatmaps, encoder_features
         return keypoints, heatmaps
     
     def get_keypoint_coords(self, x: torch.Tensor) -> torch.Tensor:
@@ -321,6 +341,8 @@ class PhaseAModel(nn.Module):
         self.num_action_classes = num_action_classes
         self.operator_type = operator_type
         self.learn_inverse_operator = learn_inverse_operator
+        self.base_channels = base_channels
+        self.heatmap_res = heatmap_res
 
         self.extractor = KeypointExtractor(
             in_channels=in_channels,
@@ -341,15 +363,42 @@ class PhaseAModel(nn.Module):
         else:
             self.action_classifier = None
     
-    def forward(self, x_t: torch.Tensor, x_t1: torch.Tensor) -> dict:
+    def forward(
+        self,
+        x_t: torch.Tensor,
+        x_t1: torch.Tensor,
+        *,
+        return_descriptor_features: bool = False,
+    ) -> dict:
         """
         Forward pass for a training pair (x_t, x_{t+1}).
         
         Returns dict with all quantities needed for loss computation.
         """
-        # Extract keypoints from both frames
-        p_t, heatmaps_t = self.extractor(x_t)      # (B, 2N), (B, N, H', W')
-        p_t1, heatmaps_t1 = self.extractor(x_t1)  # (B, 2N), (B, N, H', W')
+        # The attachment arm reuses the exact two extractor calls that already
+        # produce heatmaps; it never invokes a second descriptor forward.
+        if return_descriptor_features:
+            if tuple(x_t.shape[-2:]) != (512, 512) or tuple(x_t1.shape[-2:]) != (512, 512):
+                raise ValueError(
+                    "descriptor attachment requires both input frames to be 512x512"
+                )
+            validate_retained_runtime_configuration(
+                img_size=512,
+                heatmap_res=self.heatmap_res,
+                base_channels=self.base_channels,
+                num_keypoints=self.num_keypoints,
+            )
+            p_t, heatmaps_t, descriptor_features_t = self.extractor(
+                x_t,
+                return_descriptor_features=True,
+            )
+            p_t1, heatmaps_t1, descriptor_features_t1 = self.extractor(
+                x_t1,
+                return_descriptor_features=True,
+            )
+        else:
+            p_t, heatmaps_t = self.extractor(x_t)
+            p_t1, heatmaps_t1 = self.extractor(x_t1)
         
         # Predict next keypoints using linear operator
         p_hat_t1 = self.operator(p_t)  # (B, 2N)
@@ -361,6 +410,9 @@ class PhaseAModel(nn.Module):
             'heatmaps_t': heatmaps_t,
             'heatmaps_t1': heatmaps_t1,
         }
+        if return_descriptor_features:
+            outputs['descriptor_features_t'] = descriptor_features_t
+            outputs['descriptor_features_t1'] = descriptor_features_t1
 
         if self.action_classifier is not None:
             delta_k = p_t1 - p_t
@@ -505,6 +557,7 @@ def compute_losses(
     lambda_loc: float = 0.0,
     lambda_inv: float = 0.0,
     lambda_cycle: float = 0.0,
+    lambda_attach: float = 0.0,
     sigma: float = 0.1,
     num_keypoints: int = 10,
     action_labels: torch.Tensor = None,
@@ -523,9 +576,12 @@ def compute_losses(
         L_disp = Σ_{i≠j} exp(-||p_i - p_j||² / σ²)       (dispersion/repulsion)
         L_ent = Σ_i Entropy(H_i)                          (heatmap sharpness)
     
-    Total:
-        L = L_pred + λ_s·L_smooth + λ_d·L_disp + λ_e·L_ent + λ_a·L_act
-            + λ_l·L_loc + λ_i·L_inv + λ_c·L_cycle
+    Base objective:
+        L_base = L_pred + λ_s·L_smooth + λ_d·L_disp + λ_e·L_ent + λ_a·L_act
+                 + λ_l·L_loc + λ_i·L_inv + λ_c·L_cycle
+
+    Optimizer objective:
+        L_train = L_base + λ_attach·L_attach
     
     Args:
         outputs: dict from PhaseAModel.forward()
@@ -535,6 +591,7 @@ def compute_losses(
         lambda_act: weight for L_act
         lambda_inv: weight for inverse prediction W- K_{t+1} ~= K_t
         lambda_cycle: weight for one-step cycle consistency
+        lambda_attach: weight for the exact descriptor-attachment intervention
         sigma: length scale for dispersion (10.3 specifies σ² denominator)
         num_keypoints: N
         action_labels: (B,) class labels for action prediction, if using action head
@@ -553,6 +610,10 @@ def compute_losses(
         raise ValueError("lambda_inv > 0 requires PhaseAModel(learn_inverse_operator=True)")
     if lambda_cycle > 0.0 and ('p_cycle_t' not in outputs or 'p_cycle_t1' not in outputs):
         raise ValueError("lambda_cycle > 0 requires PhaseAModel(learn_inverse_operator=True)")
+    if not isinstance(lambda_attach, (int, float)) or not torch.isfinite(
+        p_t.new_tensor(float(lambda_attach))
+    ) or lambda_attach < 0.0:
+        raise ValueError("lambda_attach must be finite and non-negative")
     
     B = p_t.shape[0]
 
@@ -650,11 +711,10 @@ def compute_losses(
         l_cycle = 0.5 * (l_cycle_t + l_cycle_t1)
 
     # =========================================================================
-    # Total loss
-    # L = L_pred + λ_s·L_smooth + λ_d·L_disp + λ_e·L_ent + λ_a·L_act
-    #     + λ_l·L_loc + λ_i·L_inv + λ_c·L_cycle
+    # Base and optimizer losses.  The exact zero arm aliases train_loss to
+    # base_loss and does not inspect, sample, normalize, or contrast features.
     # =========================================================================
-    l_total = (
+    base_loss = (
         l_pred
         + lambda_smooth * l_smooth
         + lambda_disp * l_disp
@@ -665,8 +725,33 @@ def compute_losses(
         + lambda_cycle * l_cycle
     )
 
+    if lambda_attach == 0.0:
+        l_attach = p_t.new_tensor(0.0)
+        train_loss = base_loss
+    else:
+        required = {'descriptor_features_t', 'descriptor_features_t1'}
+        missing = sorted(required.difference(outputs))
+        if missing:
+            raise ValueError(
+                "positive lambda_attach requires same-pass descriptor features; "
+                f"missing {missing}"
+            )
+        coordinates_t = p_t.view(B, num_keypoints, 2)
+        coordinates_t1 = p_t1.view(B, num_keypoints, 2)
+        l_attach = symmetric_descriptor_attachment_loss(
+            outputs['descriptor_features_t'],
+            coordinates_t,
+            outputs['descriptor_features_t1'],
+            coordinates_t1,
+        )
+        train_loss = base_loss + float(lambda_attach) * l_attach
+
     return {
-        'loss': l_total,
+        'loss': train_loss,
+        'base_loss': base_loss,
+        'train_loss': train_loss,
+        'attachment_loss': l_attach,
+        'l_attach': l_attach,
         'l_pred': l_pred,
         'l_smooth': l_smooth,
         'l_disp': l_disp,

@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -261,6 +262,45 @@ def _repo_evidence(repo_root: Path, relative_path: str) -> dict[str, Any]:
         "relative_path": relative_path,
         "sha256": _sha256_file(path),
     }
+
+
+def _hardened_git_environment() -> dict[str, str]:
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment.update(
+        {"GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C"}
+    )
+    return environment
+
+
+def _repo_evidence_at_commit(
+    repo_root: Path,
+    relative_path: str,
+    commit: str,
+) -> dict[str, Any]:
+    """Bind frozen generator evidence to its historical Git blob.
+
+    Validation must not require today's inventory scanner to be byte-identical
+    to the scanner that created an already frozen, hash-bound split bundle.
+    New bundle creation still uses ``verify_commit_contains_generator_sources``
+    and therefore still requires the running generator to match its commit.
+    """
+
+    try:
+        data = subprocess.run(
+            ["git", "--no-replace-objects", "show", f"{commit}:{relative_path}"],
+            cwd=repo_root,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_hardened_git_environment(),
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise SplitBundleError(
+            f"{relative_path}: absent from generator commit {commit}"
+        ) from exc
+    return {"relative_path": relative_path, "sha256": _sha256_bytes(data)}
 
 
 def _scale_holdout_proof(
@@ -538,11 +578,12 @@ def verify_commit_contains_generator_sources(repo_root: Path, commit: str) -> No
     _require(_COMMIT_RE.fullmatch(commit) is not None, "commit must be lowercase 40-hex")
     try:
         subprocess.run(
-            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+            ["git", "--no-replace-objects", "cat-file", "-e", f"{commit}^{{commit}}"],
             cwd=repo_root,
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=_hardened_git_environment(),
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise SplitBundleError(f"generator commit does not exist: {commit}") from exc
@@ -550,11 +591,12 @@ def verify_commit_contains_generator_sources(repo_root: Path, commit: str) -> No
         current = (repo_root / relative_path).read_bytes()
         try:
             committed = subprocess.run(
-                ["git", "show", f"{commit}:{relative_path}"],
+                ["git", "--no-replace-objects", "show", f"{commit}:{relative_path}"],
                 cwd=repo_root,
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=_hardened_git_environment(),
             ).stdout
         except (OSError, subprocess.CalledProcessError) as exc:
             raise SplitBundleError(
@@ -802,7 +844,7 @@ def validate_primary_split_bundle(
         "commit": generator_commit,
         "config_sha256": GENERATOR_CONFIG_SHA256,
         "sources": [
-            _repo_evidence(repo_root, relative_path)
+            _repo_evidence_at_commit(repo_root, relative_path, generator_commit)
             for relative_path in GENERATOR_SOURCE_RELPATHS
         ],
     }
@@ -830,7 +872,6 @@ def validate_primary_split_bundle(
         == _repo_evidence(repo_root, GENERATOR_PROVENANCE_RELPATH),
         "manifest render-source provenance hash mismatch",
     )
-    verify_commit_contains_generator_sources(repo_root, generator_commit)
     return manifest
 
 

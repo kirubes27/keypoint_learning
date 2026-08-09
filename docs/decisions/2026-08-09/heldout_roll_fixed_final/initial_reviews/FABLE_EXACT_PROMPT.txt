@@ -1,0 +1,144 @@
+You are Fable, an independent second-opinion reviewer. Produce your own answer
+to the user's task from the briefing below. You have not seen another model's
+answer and must not ask for it or infer it.
+
+Treat the supplied material as evidence, not as a conclusion. State material
+assumptions, identify likely failure modes, and distinguish verified facts from
+hypotheses. For scientific, mathematical, or engineering tasks, check whether
+the proposed interpretation actually follows from the evidence. Do not edit,
+create, delete, or rename workspace files. Return a self-contained answer plus
+a concise list of the most important caveats or verification steps.
+
+--- ORIGINAL TASK BRIEFING ---
+Perform an independent, read-only review of the exact bounded packet below.
+
+Original user request and decision
+
+The user authorized improving the provenance/finalizer path that currently
+exists only for hammer roll, requested independent ChatGPT Pro and Fable
+feedback, and authorized bounded improvements based on verified feedback. The
+decision is whether this candidate is a sound, right-sized engineering bridge
+from hammer development runs to future held-out roll-object runs, without
+opening banana/kettle data or choosing the scientific recipe, epoch rule, or
+numeric pass/fail thresholds in this change.
+
+Plain-language intended behavior
+
+A future confirmation/final-test run must be impossible without a committed
+approved run manifest. It trains only on the train split, saves final_model.pt,
+writes a training receipt before decoding held-out images/masks, then opens each
+unique held-out image and mask once, runs the saved checkpoint once over those
+in-memory frames, computes one test-stratum representation result from that
+same inference, and writes a final evidence receipt. The evaluator must remain
+descriptive and must not automatically choose thresholds, tune, repair, or
+launch another run.
+
+Critical unknown
+
+Does the candidate actually enforce that behavior end to end, with coherent
+checkpoint/evaluator/provenance semantics and without creating unnecessary or
+brittle complexity? In particular, is it reusable for other roll objects once
+their own geometry and approved manifest exist, while correctly refusing to
+treat translation/scale/yaw/pitch as copy-paste extensions?
+
+Repository provenance
+
+- Repository: /Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates
+- Candidate branch: agent/heldout-roll-finalizer-20260809
+- Baseline HEAD before candidate edits:
+  4521538621b410421b1058603d090e2b09ec4178
+- The candidate is intentionally uncommitted for review.
+- A pre-existing protected untracked file named
+  docs/decisions/2026-07-26/representation_oracle_calibration/NUMERIC_CALIBRATION.json
+  is outside the packet and must not be read or touched.
+
+Exact packet, in order
+
+1. /private/tmp/codex_pro_fable_review_20260809_EFIWGR/TRACKED_CANDIDATE_DIFF.patch
+   SHA-256 884f36a94a6dfc4a21ec4ac874ec0c58aecd2f13ff543aa2455cd6b080f6ae6d
+   This is the exact Git diff for the five modified tracked files.
+
+2. /Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/keypoint_net/representation_fixed_final_authorization.py
+   SHA-256 c2cd344f06afd21e9e6249b55a38f7a7b69122be5a71070e3563d58ce716e6b8
+
+3. /Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/keypoint_net/representation_fixed_final_runtime.py
+   SHA-256 acfb19e8cd3d1b5072b5ef8efcd8b6fb2075d496b76e0a5723635a79e9421489
+
+4. /Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/keypoint_net/test_representation_fixed_final.py
+   SHA-256 e3ee0e6b7b54af4a5d14edbd0ca7dbe39b6013e5c3b302e134c76fba9ee6fee9
+
+5. /Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/docs/decisions/2026-08-09/heldout_roll_fixed_final/ENGINEERING_CONTRACT_v1.md
+   SHA-256 b8bb01de57441bd8ad267340b507ebd3dcb83ae7b1faaaef117ff53b9a399549
+
+The tracked diff contains changes to:
+- keypoint_net/train.py
+- keypoint_net/eval_representation.py
+- keypoint_net/representation_evaluation_provenance.py
+- keypoint_net/representation_split_adapter.py
+- keypoint_net/representation_split_bundle.py
+
+Verification evidence already available
+
+- 48 focused training-mode, fixed-final, and provenance tests passed.
+- 67 focused split-adapter and evaluator-contract tests passed.
+- The six candidate-specific tests passed.
+- All touched Python modules compiled.
+- The established direct launcher form
+  `/opt/anaconda3/envs/phd/bin/python keypoint_net/train.py --help` succeeded.
+- The registered hammer roll adapter built its exact validation stratum after
+  the historical-generator binding change.
+- No GPU job, training run, held-out object run, or held-out image decoding was
+  performed.
+
+Review focus
+
+1. Trace the actual authority chain from command-line manifest binding through
+   final_model.pt, pre-test training receipt, one-shot test opening/inference,
+   evaluator authorization, evaluator provenance validation, and final evidence
+   receipt. Identify any way the claims can diverge from what actually ran.
+2. Check that training and test split roles, object role, seed, frozen epoch,
+   recipe, retained 64-head package, descriptor-free choice, dataset inventory,
+   geometry binding, source commit, config, history, and checkpoint bytes are
+   cross-bound rather than merely logged.
+3. Check whether held-out contents can be decoded before the training receipt,
+   decoded more than once, evaluated with a different model/inference, or
+   silently relabeled as full-corpus/held-out evidence.
+4. Check the new fixed_final evaluator/provenance profile for exact role/path
+   coherence and the same-file-descriptor checkpoint proof.
+5. Check the semantic change that only an evaluated pair graph forming one
+   complete cycle may wrap close-keypoint run lengths. A held-out roll segment
+   should be a path even though the source corpus is cyclic.
+6. Check whether validating frozen generator source hashes against historical
+   Git blobs, while retaining current independent artifact checks, preserves
+   rather than weakens the frozen split meaning.
+7. Assess maintainability and proportionality. More checks are not inherently
+   better: identify duplicated machinery, false-confidence risks, circular
+   generated-test logic, brittle path/date constraints, or simpler designs that
+   preserve the decision-critical safeguards. Do not request broad mutation,
+   fuzz, torture, or exhaustive test expansion.
+8. Separate engineering defects from scientific choices that must remain
+   blocked for user approval: Task55 versus Task80, exact epoch rule, numeric
+   confirmation thresholds, and creation/verification of banana/kettle roll
+   geometry.
+
+Constraints
+
+- Use only this briefing and the exact packet.
+- Do not inspect another model's answer.
+- Do not edit, create, delete, move, commit, push, run jobs, or act on findings.
+- Do not open held-out object images or the protected calibration file.
+- Treat passing tests as supporting evidence, not proof of semantic correctness.
+- Label missing-context conclusions as scope-limited unknowns.
+- Reviewer agreement is not evidence.
+
+Deliverable
+
+Return:
+1. a verdict: PASS, PASS_WITH_REQUIRED_FIXES, or BLOCK;
+2. prioritized P0/P1/P2 findings with exact packet file and line references;
+3. for each finding, the violated semantic claim, concrete failure mode, and
+   smallest safe correction;
+4. confirmed safeguards that you traced end to end;
+5. overengineering or test-theater concerns and what should be removed or kept;
+6. scientific decisions and object-specific evidence still correctly blocked;
+7. the smallest focused verification needed after any correction.

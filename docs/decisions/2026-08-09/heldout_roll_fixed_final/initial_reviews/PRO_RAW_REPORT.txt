@@ -1,0 +1,515 @@
+Verdict: BLOCK
+
+The candidate has the right overall shape and several genuinely strong safeguards, but it does not yet enforce the stated authority chain end to end. Three P0 gaps allow a final evidence claim to diverge from the approved run or from what the finalizer actually executed:
+
+“Approval” is currently only a set of committed file references, not a semantically validated approval of this manifest and implementation.
+
+The runtime can evaluate a different strict test manifest while provenance names the approved test-pair artifact.
+
+The final evidence receipt can be minted without consuming the one-shot evaluator path, and the one-opening guarantee is only process-local.
+
+These are bounded engineering defects. They do not require reopening Task55 versus Task80, choosing an epoch rule, setting scientific thresholds, or inspecting banana/kettle data.
+
+Prioritized findings
+P0-1 — The approval chain is committed and hash-valid, but not semantically authoritative
+
+Files and lines
+
+representation_fixed_final_authorization.py:322–355
+
+representation_fixed_final_authorization.py:471–493
+
+representation_fixed_final_authorization.py:248–278
+
+ENGINEERING_CONTRACT_v1.md:30–41
+
+The manifest has exact keys and a content hash, but its decision specification, Pro review, Fable review, and user approval are each validated only as a committed file under the dated directory with a matching SHA-256. Their contents are never parsed, their artifact types are not checked, the four paths need not be distinct, and the “approval” file need not actually state approval. 
+
+representation_fixed_final_auth… +2
+
+The current source commit is captured from the clean working tree at execution time, but the manifest has no approved implementation/source-lock field. Thus a previously approved manifest and approval record can be reused on a later clean commit containing materially changed finalizer code. The resulting receipt would accurately log the new commit, but that commit would not be the implementation the user approved. The contract requires a reviewed, approved manifest and exact source provenance, not merely contemporaneous logging. 
+
+ENGINEERING_CONTRACT_v1
+
+Violated semantic claim
+
+A run is possible only under a committed manifest that was explicitly approved together with the implementation and decision records governing that run.
+
+Concrete failure mode
+
+A clean later commit could retain the same manifest and approval references. Alternatively, the same unrelated committed JSON or Markdown file could be referenced as the decision, both reviews, and approval. The validator would accept the file identities without establishing that:
+
+the user approved the run;
+
+the approval concerns this exact manifest;
+
+the reviews concern this exact decision;
+
+the approval covers the currently executing implementation.
+
+Smallest safe correction
+
+Introduce strict, minimal schemas for the four authority records:
+
+Require distinct paths and explicit artifact types.
+
+Require the decision and reviews to bind the exact run_id and manifest content hash.
+
+Require the user record to contain an explicit affirmative authorization and bind the manifest hash, decision hash, both review hashes, object/role, and an approved implementation lock.
+
+Make the implementation lock a committed JSON record containing hashes of the decision-critical source files. This avoids a circular “approval must be inside the same commit it approves” problem while still allowing runtime comparison of current source bytes with approved bytes.
+
+The existing clean-tree and current-commit receipt fields should remain; they solve a separate provenance problem.
+
+P0-2 — The test manifest used by the finalizer is not bound to the approved test-pair artifact
+
+Files and lines
+
+representation_fixed_final_authorization.py:281–319
+
+representation_fixed_final_authorization.py:399–425
+
+representation_fixed_final_authorization.py:497–548
+
+representation_fixed_final_runtime.py:268–337
+
+TRACKED_CANDIDATE_DIFF.patch:321–425
+
+TRACKED_CANDIDATE_DIFF.patch:572–598
+
+Manifest validation initially checks the approved train and test pair files, including their file hashes, content hashes, split labels, object role, object presence, and roll semantics. That part is good. 
+
+representation_fixed_final_auth… +1
+
+But the resulting FixedFinalRunBinding retains only the train/test repository-relative paths, not their approved file and content hashes. train.py then compares only the resolved paths of the prepared split artifacts. 
+
+representation_fixed_final_auth…
+
+ 
+
+TRACKED_CANDIDATE_DIFF
+
+Most importantly, finalize_fixed_final_roll() accepts a test_manifest object supplied by its caller. _open_test_frames_once() sends that object to build_index_manifest_adapter_rows() but never requires its:
+
+index_path,
+
+index_sha256,
+
+content_hash_sha256
+
+to equal the approved test artifact. The adapter validates that the supplied object is a strict test manifest with the expected object role, dataset binding, and geometry, but it does not know the approved pair-artifact identity. 
+
+representation_fixed_final_runt…
+
+ 
+
+TRACKED_CANDIDATE_DIFF
+
+Meanwhile, evaluation provenance names the approved test-pair path stored in the binding, regardless of which manifest object produced the actual frames and rows. 
+
+representation_fixed_final_runt…
+
+Violated semantic claim
+
+The reported test-stratum evidence was computed from the exact committed, approved test pair index—and provenance identifies the artifact that actually supplied the rows.
+
+Concrete failure mode
+
+A caller can provide a different strict test manifest that has the same object, role, dataset binding, and roll family but different selected rows. The finalizer will decode and evaluate those rows, while the provenance bundle still reports the approved evaluation_pair_artifact.
+
+That is a direct route to evaluating a different segment—or potentially a broader set of rows—while claiming the approved test artifact.
+
+Smallest safe correction
+
+Carry the train/test file_sha256 and content_hash_sha256 into FixedFinalRunBinding. Before the adapter is called and before any dataset byte is read, require:
+
+test_manifest.index_path.resolve() == approved_test_path
+test_manifest.index_sha256 == approved_test_file_sha256
+test_manifest.content_hash_sha256 == approved_test_content_sha256
+test_manifest.dataset_binding_sha256 == approved_dataset_binding
+
+Apply the corresponding file/content-hash comparison to the prepared train manifest as well; the current path-only checks should not be the final authority.
+
+Also include the actual adapter pair_index_binding in the evaluator bundle, and require it to match the provenance role evaluation_pair_artifact. That makes the artifact used by inference and the artifact named by provenance the same object rather than parallel claims.
+
+P0-3 — A final evidence receipt can be written without successful one-shot evaluation, and the opening gate is not durable across processes
+
+Files and lines
+
+representation_fixed_final_authorization.py:713–756
+
+representation_fixed_final_runtime.py:552–630
+
+representation_fixed_final_runtime.py:648–698
+
+The supported finalize_fixed_final_roll() sequence is strong: it loads the authorized checkpoint, opens frames, performs inference, builds a bound bundle, arms the evaluator, evaluates, checks that the result is test evidence rather than an automatic scientific decision, writes bundle/result files, and finally requests the evidence receipt. 
+
+representation_fixed_final_runt…
+
+However, write_evidence_receipt() itself requires only a valid checkpoint capability, two paths inside the run directory, and an arbitrary opening_ledger. It does not require or consume:
+
+the live inference record;
+
+the evaluator authorization token;
+
+proof that evaluator provenance validation was consumed;
+
+the expected bundle hash;
+
+a checked result schema, run_id, test partition, or descriptive status.
+
+It is also publicly exported. 
+
+representation_fixed_final_auth…
+
+There is a second cross-binding defect here: the function re-reads the training receipt for the final receipt but does not require the newly read hash and size to equal the training receipt that originally authorized the checkpoint capability. The final receipt can therefore bind a changed training receipt while the checkpoint capability came from the earlier receipt.
+
+The opening guard is similarly process-local. _LOADED, _PENDING_EVALUATOR, and _PENDING_PROVENANCE are ContextVar state. A process crash or restart after some held-out files have been opened resets all three. There is no durable exclusive marker written before the first held-out byte is read. 
+
+representation_fixed_final_runt…
+
+Violated semantic claim
+
+A final evidence receipt exists only if the exact authorized finalizer completed one held-out opening phase, one inference, and one provenance-validated descriptive evaluation.
+
+Concrete failure modes
+
+After obtaining a valid checkpoint capability, a caller can place arbitrary JSON files at the bundle/result paths and call write_evidence_receipt() with a fabricated ledger. No held-out opening, inference, or evaluator call is required.
+
+The training receipt can be modified after checkpoint authorization; the final receipt then binds the modified receipt rather than the receipt that authorized the model.
+
+If a process fails after opening some held-out files but before completing the ledger, a restarted process can open them again.
+
+Smallest safe correction
+
+Use one durable marker and one post-evaluation capability:
+
+Immediately before the first held-out file read, atomically create an O_EXCL marker such as FIXED_FINAL_TEST_OPEN_STARTED.json, binding the run, training receipt hash, and checkpoint hash. Never delete it. If it already exists, refuse to reopen the test content. A failed finalization then permanently fails closed, which is the correct behavior for a strict final test.
+
+Mint a FixedFinalEvidenceCapability only after evaluate_bundle() returns, the test/descriptive result checks pass, and the provenance load receipt has been consumed.
+
+Bind into that capability the exact bundle hash, result hash, opening marker, opening ledger, checkpoint hash, and original training-receipt hash.
+
+Make the raw receipt writer private and require the evidence capability. Re-read the checkpoint and training receipt before writing and require exact equality with the capability records.
+
+This is substantially simpler and more trustworthy than adding more free-standing boolean claims to the receipt.
+
+P1-1 — Recipe identity, config.json, checkpoint configuration, and history are recorded but not fully cross-validated
+
+Files and lines
+
+representation_fixed_final_authorization.py:352–355
+
+representation_fixed_final_authorization.py:431–453
+
+representation_fixed_final_authorization.py:575–700
+
+representation_fixed_final_runtime.py:126–160
+
+representation_fixed_final_runtime.py:605–630
+
+The manifest binds every listed training argument to the CLI, which is a meaningful safeguard. It also constrains the retained architectural package and descriptor-free choice. 
+
+representation_fixed_final_auth…
+
+But recipe.id is only checked to be one of two strings. There is no committed Task55 or Task80 recipe specification whose contents are compared with training_arguments. Later, the provenance load receipt converts the label directly to task ID 55 or 80. 
+
+representation_fixed_final_auth…
+
+ 
+
+representation_fixed_final_runt…
+
+Likewise, the training receipt hashes config.json and history.json, but authorization does not parse them. Checkpoint loading validates only the embedded fixed_final_contract, training_mode, and effective_epochs; it does not compare the complete checkpoint configuration with all approved training arguments. 
+
+representation_fixed_final_auth… +1
+
+ 
+
+representation_fixed_final_runt…
+
+Violated semantic claim
+
+The exact recipe, configuration, epoch history, and checkpoint semantics are mutually consistent—not merely individually hashed.
+
+Concrete failure mode
+
+A checkpoint can contain the expected fixed-final contract while other configuration fields disagree with the approved loss weights or optimizer settings. config.json can report different values, and history.json can be truncated or malformed. The receipts would faithfully bind those bytes without detecting the semantic inconsistency. A mislabeled argument profile can also be reported as Task55 or Task80 solely because of its recipe string.
+
+Smallest safe correction
+
+Either bind recipe.id to a committed recipe-spec file and require exact equality between its argument profile and training_arguments, or make the manifest argument map the sole authority and stop translating a free recipe label into a task ID.
+
+Strictly parse config.json, checkpoint config, and history.json during checkpoint authorization.
+
+Require all approved training arguments and split/dataset bindings to agree across manifest, external config, and checkpoint config.
+
+Require history to contain the expected number of completed epochs and to end at the frozen epoch. Do not require whole-file equality where runtime/environment metadata is expected to differ.
+
+This validation should occur before the held-out opening marker is claimed.
+
+P1-2 — “Each unique file opened once” is asserted rather than derived
+
+Files and lines
+
+representation_fixed_final_runtime.py:268–330
+
+test_representation_fixed_final.py:192–255
+
+The runtime loops over adapter frames and opens one image and one mask for each frame. It then sets:
+
+unique_test_image_open_count = len(images);
+
+unique_test_mask_open_count = len(masks);
+
+both “each unique … opened once” flags to True.
+
+There is no explicit uniqueness check for frame IDs, image paths, or mask paths. If two frame records point to the same image or mask, that file will be opened twice while the ledger still claims uniqueness. The ledger is assigned only after the entire loop succeeds. 
+
+representation_fixed_final_runt…
+
+The focused test uses one frame, mocks all inventory reads, and checks only that a second complete call fails after the first call succeeds. It does not cover duplicate paths or a failure midway through opening. 
+
+test_representation_fixed_final
+
+Violated semantic claim
+
+The per-file opening ledger is an observed account of unique file openings.
+
+Concrete failure mode
+
+Duplicate adapter frame/path records produce multiple physical reads with a ledger that still says each unique image and mask was opened once.
+
+Smallest safe correction
+
+Before creating the durable opening marker:
+
+require unique frame IDs;
+
+require exactly one image and mask path per frame;
+
+require unique image paths and unique mask paths, unless documented aliasing is scientifically intended;
+
+initialize per-path counters before reading;
+
+derive all ledger counts and booleans from those counters.
+
+Add one duplicate-path negative test and one partial-open failure test. No fuzzing is needed.
+
+P2-1 — Complete-cycle detection ignores the ordering of frame_ids
+
+Files and lines
+
+TRACKED_CANDIDATE_DIFF.patch:34–73
+
+test_representation_fixed_final.py:96–110
+
+The semantic change is correct: a cyclic source corpus does not make a held-out segment cyclic. The helper appropriately requires one incoming edge, one outgoing edge, and one connected cycle before allowing close-run wrapping. 
+
+TRACKED_CANDIDATE_DIFF
+
+But it proves only that the pair graph forms a cycle. It does not prove that the order of frame_ids—the order used by trajectory metrics—follows that cycle. A scrambled cycle can return True even though adjacent arrays in the evaluator are not the graph’s adjacent frames.
+
+The test covers a path and one correctly ordered cycle, but not a scrambled cycle. 
+
+test_representation_fixed_final
+
+Violated semantic claim
+
+Wrapping is enabled only when the evaluated sequence itself is one complete ordered cycle.
+
+Smallest safe correction
+
+Require the pair edge set to equal:
+
+Python
+Run
+{
+    (frame_ids[i], frame_ids[(i + 1) % len(frame_ids)])
+    for i in range(len(frame_ids))
+}
+
+Also require at least two distinct frames. Add one negative test in which the graph is a complete cycle but its edge order disagrees with frame_ids.
+
+P2-2 — Historical generator-blob validation is the right semantic change, but its Git invocation should use the existing hardened pattern
+
+File and lines
+
+TRACKED_CANDIDATE_DIFF.patch:446–491
+
+Validating frozen generator source records against the historical generator commit is the correct approach. Requiring today’s scanner source to remain byte-identical to the old generator would weaken maintainability without strengthening the meaning of an already frozen split bundle. The patch also retains a current independent provenance-file check in the visible validation path. 
+
+TRACKED_CANDIDATE_DIFF
+
+The new helper invokes plain git show, whereas the authorization module already clears GIT_* variables, disables system configuration and replacement objects, and fixes locale. 
+
+representation_fixed_final_auth…
+
+Smallest safe correction
+
+Reuse the hardened Git helper pattern and include --no-replace-objects. Do not restore the removed requirement that current generator source bytes equal the historical generator source.
+
+Whether all new-bundle creation call paths still invoke verify_commit_contains_generator_sources() is a scope-limited unknown because the packet contains only the tracked diff, not the full unchanged split-bundle module.
+
+Safeguards confirmed end to end
+
+Subject to the P0 gaps above, the following mechanisms are real rather than decorative:
+
+Manifest and launch binding. Fixed-final mode requires a manifest, a clean tracked tree, exact CLI equality for every listed training argument, the approved object, dataset binding, and exact train/test paths. Development and descriptor authorities cannot be combined with this mode. 
+
+representation_fixed_final_auth…
+
+Roll-specific refusal. The manifest must describe the exact forward world-Z roll stratum, and the runtime accepts only a roll/test adapter. Translation, scale, yaw, and pitch cannot enter by changing a label. 
+
+representation_fixed_final_auth…
+
+ 
+
+representation_fixed_final_runt…
+
+Object-specific geometry. The new adapter selects only the requested object’s test rows and calls the existing registered-geometry authorization and geometry loader with object, family, dataset binding, semantic lock, and required frame IDs. The geometry content hash must match its registry record. 
+
+TRACKED_CANDIDATE_DIFF
+
+Training-before-test order in the supported train.py entry point. final_model.pt and complete history are written first; the exclusive training receipt is then created; only afterward is the finalizer invoked. The old fixed-final test loader and ordinary evaluate() call were removed. 
+
+TRACKED_CANDIDATE_DIFF
+
+Checkpoint byte identity. The authorized checkpoint is size-checked, hashed, rewound, and deserialized through the same open file descriptor with weights_only=True. Its epoch, embedded fixed-final contract, architecture keys, tensor shapes, dtypes, and finiteness are checked before use. 
+
+representation_fixed_final_runt… +1
+
+Inventory-bound decoding. Each dataset file used by the normal finalizer is read as a regular file, constrained below the dataset root, and checked against the committed inventory’s size and SHA-256 before PIL decoding. 
+
+representation_fixed_final_runt…
+
+One inference record. The runtime requires the exact loaded model object, checks its state before and after inference, disables gradients, and hashes both points and logits. Bundle construction rechecks those arrays and the model state against the inference record. 
+
+representation_fixed_final_runt… +1
+
+Evaluator and provenance coherence. The fixed-final evaluator profile requires exact committed/external roles, forbids fit_from_pairs, binds case_id to run_id, and requires the same checkpoint path/hash/size used by the same-file-descriptor load. 
+
+TRACKED_CANDIDATE_DIFF
+
+ 
+
+representation_fixed_final_runt…
+
+Descriptive result boundary. The runtime refuses a result that is not partition test or that does not report scientific_threshold_status == "not_defined_by_evaluator". The finalizer itself contains no tuning, repair, threshold decision, or next-run launch. 
+
+representation_fixed_final_runt…
+
+Scope-limited unknowns
+
+These should be verified, but the packet does not support declaring them defects:
+
+The unchanged internals of _prepare_training_data() are not present. Therefore, I cannot independently prove from this packet that constructing data_plan.test_manifest never decodes an image or mask before the training receipt. The visible candidate path performs actual image decoding only in the post-receipt finalizer, but the pre-existing loader behavior is outside the packet.
+
+The contract says train and test frame endpoints are disjoint. Manifest authorization checks the two committed artifacts and their split labels, but the explicit endpoint-disjointness implementation is not visible in the supplied diff.
+
+The runtime supplies descriptive numerical definitions such as close-distance and persistence fractions. The provenance profile includes the numeric registry, but the unchanged evaluator code establishing exact equality with that registry is not visible here. These values must remain metric definitions, not scientific confirmation pass/fail thresholds.
+
+Overengineering and test-theater assessment
+Keep
+
+The committed manifest and exact argument binding.
+
+Exclusive output creation.
+
+Same-file-descriptor checkpoint hash/load.
+
+The single inventory-bound in-memory inference.
+
+The dynamic evaluator authorization and exact fixed-final provenance role profile.
+
+The graph-based distinction between a cyclic corpus and a path-like evaluated segment.
+
+Historical Git-blob validation for already frozen generator sources.
+
+These checks address distinct, decision-critical failure modes.
+
+Simplify or consolidate
+
+Replace boolean temporal claims with one durable marker. A single exclusive TEST_OPEN_STARTED artifact is more meaningful than several booleans asserting that content was not previously opened.
+
+Avoid parallel source-role lists. SOURCE_PATHS in authorization and FIXED_FINAL_CHECKPOINT_ROLE_PATHS in provenance overlap but are independently maintained. Derive both from one canonical fixed-final role map to prevent silent drift.
+
+Replace date-coded protocol roots with a versioned stable root. Hard-coding docs/decisions/2026-08-09/... throughout authorization and provenance works for this candidate but makes future held-out roll objects look artificially tied to one calendar date. A stable heldout_roll_fixed_final/v1/ root would preserve strictness without copy-paste changes. 
+
+representation_fixed_final_auth…
+
+Treat Python capability tokens as accidental-misuse guards, not security proofs. The tests directly construct objects using the private capability token and manually seed context variables. That is acceptable for unit testing, but it demonstrates that the mechanism is not an adversarial trust boundary. Claims should be scoped to the committed supported entry point. 
+
+test_representation_fixed_final
+
+Current test-theater risk
+
+Several candidate-specific tests primarily show that mocked components agree:
+
+The evaluator-routing test replaces both runtime authorization functions with lambdas.
+
+The provenance-load test manually creates the capability and pending context.
+
+The one-opening test mocks the adapter, inventory, and file reader.
+
+The geometry test mocks both geometry authorization and loading.
+
+Those are useful unit tests, but they do not establish the authority chain. 
+
+test_representation_fixed_final
+
+The solution is not a large test expansion. One small synthetic end-to-end test will provide more evidence than many additional mocked cases.
+
+Scientific decisions and object-specific evidence correctly blocked
+
+The implementation correctly leaves the following outside engineering authority:
+
+choosing Task55 versus Task80;
+
+choosing the exact frozen epoch rule or epoch count;
+
+choosing the run seed and object role for an actual run;
+
+defining numerical confirmation/final-test pass/fail thresholds;
+
+authorizing any GPU launch;
+
+creating or accepting banana, kettle, or final-test roll geometry;
+
+opening any held-out object content;
+
+progressing automatically to another object;
+
+treating translation, scale, yaw, or pitch as copy-paste variants of roll.
+
+The contract states these boundaries explicitly, and the authorization/runtime code is hard-locked to the roll family rather than claiming operator generality. 
+
+ENGINEERING_CONTRACT_v1 +2
+
+Smallest focused verification after correction
+
+One table-driven authority test: reject an approval record that is negative, unrelated, duplicated across roles, bound to another manifest, or bound to another implementation source lock.
+
+One split-substitution test: provide a strict test manifest with the correct object/dataset/role but a different file or content hash. Assert rejection before _read_bound_dataset_file() or Image.open() is reached.
+
+One receipt-consistency test: independently mutate one training argument in config.json, one in checkpoint config, and truncate history. Each mutation should fail before the durable test-opening marker is created.
+
+One synthetic happy path: use two or three generated 512×512 images and masks—not any held-out object—and a tiny deterministic checkpoint. Assert:
+
+training receipt exists before the first content read;
+
+the durable marker is created once;
+
+every path has exactly one read;
+
+checkpoint hash/load uses one descriptor;
+
+one inference record supplies the bundle;
+
+evaluator provenance consumes the runtime load receipt;
+
+bundle, result, and final receipt hashes agree.
+
+Three tiny semantic regressions: ordered path → non-cyclic; ordered full cycle → cyclic; scrambled full cycle → non-cyclic. Separately, verify that historical generator blobs validate even when current generator source differs, while a wrong historical digest fails.
+
+After those corrections and focused checks, the existing design should be reassessed as the same bounded roll finalizer—not redesigned into a general experiment orchestration system.

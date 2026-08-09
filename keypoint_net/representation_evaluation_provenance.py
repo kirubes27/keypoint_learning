@@ -182,6 +182,27 @@ ROLE_PATH_PREFIXES = MappingProxyType(
         "geometry_manifest": (
             "docs/decisions/2026-07-26/representation_oracle_geometry/bindings/"
         ),
+        "training_pair_artifact": (
+            "docs/decisions/2026-07-26/representation_oracle_splits/pairs/"
+        ),
+        "fixed_final_manifest": (
+            "docs/decisions/heldout_roll_fixed_final/v1/manifests/"
+        ),
+        "implementation_lock": (
+            "docs/decisions/heldout_roll_fixed_final/v1/implementation_locks/"
+        ),
+        "decision_spec": (
+            "docs/decisions/heldout_roll_fixed_final/v1/decisions/"
+        ),
+        "pro_review": (
+            "docs/decisions/heldout_roll_fixed_final/v1/reviews/"
+        ),
+        "fable_review": (
+            "docs/decisions/heldout_roll_fixed_final/v1/reviews/"
+        ),
+        "user_approval": (
+            "docs/decisions/heldout_roll_fixed_final/v1/approvals/"
+        ),
     }
 )
 
@@ -237,6 +258,8 @@ FRESH_CHECKPOINT_ROLE_PATHS = MappingProxyType(
         "evaluator_source": "keypoint_net/eval_representation.py",
         "array_codec_source": "keypoint_net/representation_array_codec.py",
         "split_adapter_source": "keypoint_net/representation_split_adapter.py",
+        "split_bundle_source": "keypoint_net/representation_split_bundle.py",
+        "corpus_inventory_source": "keypoint_net/representation_corpus_inventory.py",
         "numeric_registry": (
             "docs/decisions/2026-07-26/representation_oracle_calibration/"
             "NUMERIC_CALIBRATION_v1_1.json"
@@ -248,6 +271,10 @@ FRESH_CHECKPOINT_ROLE_PATHS = MappingProxyType(
             "keypoint_net/representation_fresh_checkpoint_runtime.py"
         ),
         "model_source": "keypoint_net/model.py",
+        "recipe_spec": (
+            "docs/decisions/2026-07-29/roll_head_package_training/"
+            "EXPERIMENT_MANIFEST_v1.json"
+        ),
         "experiment_manifest": (
             "docs/decisions/2026-07-29/roll_head_package_training/"
             "EXPERIMENT_MANIFEST_v1.json"
@@ -277,6 +304,59 @@ FRESH_CHECKPOINT_ROLE_PATHS = MappingProxyType(
 FRESH_CHECKPOINT_EXTERNAL_ROLES = frozenset(
     {"checkpoint", "checkpoint_config", "checkpoint_metadata", "completed_run_receipt"}
 )
+FIXED_FINAL_CHECKPOINT_ROLE_PATHS = MappingProxyType(
+    {
+        "provenance_source": "keypoint_net/representation_evaluation_provenance.py",
+        "evaluator_source": "keypoint_net/eval_representation.py",
+        "array_codec_source": "keypoint_net/representation_array_codec.py",
+        "split_adapter_source": "keypoint_net/representation_split_adapter.py",
+        "numeric_registry": (
+            "docs/decisions/2026-07-26/representation_oracle_calibration/"
+            "NUMERIC_CALIBRATION_v1_1.json"
+        ),
+        "fixed_final_authorization_source": (
+            "keypoint_net/representation_fixed_final_authorization.py"
+        ),
+        "fixed_final_runtime_source": (
+            "keypoint_net/representation_fixed_final_runtime.py"
+        ),
+        "train_source": "keypoint_net/train.py",
+        "dataset_source": "keypoint_net/dataset.py",
+        "model_source": "keypoint_net/model.py",
+        "split_manifest": (
+            "docs/decisions/2026-07-26/representation_oracle_splits/"
+            "SPLIT_MANIFEST.json"
+        ),
+        "split_verifier_report": (
+            "docs/decisions/2026-07-26/representation_oracle_splits/"
+            "SPLIT_VERIFIER_REPORT.json"
+        ),
+        "geometry_registry": (
+            "docs/decisions/2026-07-26/representation_oracle_geometry/"
+            "GEOMETRY_BINDING_REGISTRY_v1.json"
+        ),
+        "fixed_final_engineering_contract": (
+            "docs/decisions/2026-08-09/heldout_roll_fixed_final/"
+            "ENGINEERING_CONTRACT_v1.md"
+        ),
+    }
+)
+FIXED_FINAL_CHECKPOINT_COMMITTED_ROLES = frozenset(
+    set(FIXED_FINAL_CHECKPOINT_ROLE_PATHS)
+    | {
+        "fixed_final_manifest",
+        "implementation_lock",
+        "training_pair_artifact",
+        "evaluation_pair_artifact",
+        "corpus_inventory",
+        "geometry_manifest",
+        "decision_spec",
+        "pro_review",
+        "fable_review",
+        "user_approval",
+    }
+)
+FIXED_FINAL_CHECKPOINT_EXTERNAL_ROLES = FRESH_CHECKPOINT_EXTERNAL_ROLES
 _CHECKPOINT_PROVENANCE_LOAD_RECEIPT_FIELDS = frozenset(
     {
         "role",
@@ -388,7 +468,7 @@ def required_role_profile(
         "fit_from_pairs must be a boolean",
     )
     _require(
-        checkpoint_profile in {"fixture", "fresh_run"},
+        checkpoint_profile in {"fixture", "fresh_run", "fixed_final"},
         f"unsupported checkpoint profile: {checkpoint_profile!r}",
     )
     if case_kind == "checkpoint" and checkpoint_profile == "fresh_run":
@@ -397,9 +477,15 @@ def required_role_profile(
             frozenset(FRESH_CHECKPOINT_ROLE_PATHS),
             FRESH_CHECKPOINT_EXTERNAL_ROLES,
         )
+    if case_kind == "checkpoint" and checkpoint_profile == "fixed_final":
+        _require(not fit_from_pairs, "fixed-final roll forbids fit_from_pairs")
+        return (
+            FIXED_FINAL_CHECKPOINT_COMMITTED_ROLES,
+            FIXED_FINAL_CHECKPOINT_EXTERNAL_ROLES,
+        )
     _require(
         checkpoint_profile == "fixture",
-        "fresh_run checkpoint profile requires case_kind=checkpoint",
+        "non-fixture checkpoint profile requires case_kind=checkpoint",
     )
     committed = set(CORE_ROLE_PATHS)
     external: set[str] = set()
@@ -1121,9 +1207,14 @@ def _validate_evaluation_provenance_for_repo(
         if role in {"oracle_harness_source", "oracle_case_manifest"}:
             expected_path = planted_profile_paths[role]
         else:
+            checkpoint_profile_paths: Mapping[str, str] = {}
+            if checkpoint_profile == "fresh_run":
+                checkpoint_profile_paths = FRESH_CHECKPOINT_ROLE_PATHS
+            elif checkpoint_profile == "fixed_final":
+                checkpoint_profile_paths = FIXED_FINAL_CHECKPOINT_ROLE_PATHS
             expected_path = CORE_ROLE_PATHS.get(role) or FIXED_ROLE_PATHS.get(
                 role
-            ) or FRESH_CHECKPOINT_ROLE_PATHS.get(role)
+            ) or checkpoint_profile_paths.get(role)
         if expected_path is not None:
             _require(
                 relative_path == expected_path,
@@ -1347,6 +1438,9 @@ __all__ = [
     "CORE_ROLE_PATHS",
     "FRESH_CHECKPOINT_EXTERNAL_ROLES",
     "FRESH_CHECKPOINT_ROLE_PATHS",
+    "FIXED_FINAL_CHECKPOINT_COMMITTED_ROLES",
+    "FIXED_FINAL_CHECKPOINT_EXTERNAL_ROLES",
+    "FIXED_FINAL_CHECKPOINT_ROLE_PATHS",
     "LOADED_SOURCE_ROLES",
     "PLANTED_PROFILE_PATHS",
     "PROVENANCE_SCHEMA_VERSION",

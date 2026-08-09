@@ -111,6 +111,24 @@ FRESH_CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS = {
     "training_or_weight_update_authorized",
     "selection_use_authorized",
 }
+FIXED_FINAL_CHECKPOINT_AUTHORIZATION_MODULE = (
+    "keypoint_net.representation_fixed_final_runtime"
+)
+FIXED_FINAL_CHECKPOINT_AUTHORIZATION_VALIDATOR = (
+    "validate_fixed_final_checkpoint_evaluator_authorization"
+)
+FIXED_FINAL_CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER = (
+    "consume_fixed_final_checkpoint_provenance_load_receipt"
+)
+FIXED_FINAL_CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS = {
+    "checkpoint_evaluation_authorized",
+    "source_commit",
+    "run_id",
+    "checkpoint_sha256",
+    "completed_run_receipt_sha256",
+    "training_or_weight_update_authorized",
+    "selection_use_authorized",
+}
 
 
 class EvaluationContractError(ValueError):
@@ -2981,6 +2999,37 @@ def _validate_pair_rows(
     return normalized
 
 
+def _evaluation_frame_sequence_is_cyclic(
+    pair_rows: Sequence[Mapping[str, Any]],
+    frame_ids: Sequence[Any],
+    *,
+    transform_cyclic: bool,
+    protocol: str,
+) -> bool:
+    """Return true only when the ordered evaluated sequence is proven cyclic.
+
+    A corpus can be cyclic while a held-out subset is only a path.  Treating
+    the first and last held-out frames as adjacent would inflate close-run
+    durations.  The full-primary-roll validator separately proves that ordered
+    frames 0..179 cover the complete orbit even though its stride-3 pair graph
+    is three cycles.  Other protocols must explicitly contain the ordered
+    closing edge sequence used by the trajectory metric.
+    """
+
+    if not transform_cyclic or len(frame_ids) < 2:
+        return False
+    if protocol == "full_primary_roll":
+        return True
+    expected_edges = {
+        (frame_ids[index], frame_ids[(index + 1) % len(frame_ids)])
+        for index in range(len(frame_ids))
+    }
+    actual_edges = {
+        (row["source_frame"], row["target_frame"]) for row in pair_rows
+    }
+    return len(pair_rows) == len(frame_ids) and actual_edges == expected_edges
+
+
 def _resolve_operator(
     operator: Mapping[str, Any],
     *,
@@ -3056,8 +3105,16 @@ def _require_checkpoint_evaluator_authorization(
     """
 
     profile = bundle.get("checkpoint_authority", "fixture")
-    _require(profile in {"fixture", "fresh_run"}, "invalid checkpoint authority")
-    if profile == "fresh_run":
+    _require(
+        profile in {"fixture", "fresh_run", "fixed_final"},
+        "invalid checkpoint authority",
+    )
+    if profile == "fixed_final":
+        module_name = FIXED_FINAL_CHECKPOINT_AUTHORIZATION_MODULE
+        validator_name = FIXED_FINAL_CHECKPOINT_AUTHORIZATION_VALIDATOR
+        consumer_name = FIXED_FINAL_CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER
+        receipt_fields = FIXED_FINAL_CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS
+    elif profile == "fresh_run":
         module_name = FRESH_CHECKPOINT_AUTHORIZATION_MODULE
         validator_name = FRESH_CHECKPOINT_AUTHORIZATION_VALIDATOR
         consumer_name = FRESH_CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER
@@ -3163,12 +3220,18 @@ def _require_checkpoint_evaluator_authorization(
         receipt["training_or_weight_update_authorized"] is False,
         "checkpoint authorization receipt must forbid training and weight updates",
     )
-    expected_selection = profile == "fresh_run"
+    expected_selection = profile in {"fresh_run", "fixed_final"}
     _require(
         receipt["selection_use_authorized"] is expected_selection,
         "checkpoint selection-use authority differs",
     )
-    if profile == "fresh_run":
+    if profile == "fixed_final":
+        _require(
+            receipt["run_id"] == bundle.get("case_id"),
+            "fixed-final run_id differs from case_id",
+        )
+        hash_fields = ("checkpoint_sha256", "completed_run_receipt_sha256")
+    elif profile == "fresh_run":
         _require(
             receipt["cell_id"] == bundle.get("case_id"),
             "fresh checkpoint cell_id differs from case_id",
@@ -3367,7 +3430,7 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     _require_exact_keys(
         evaluation_record,
         required=evaluation_required,
-        optional={"logits"},
+        optional={"logits", "pair_index_binding"},
         name="evaluation",
     )
     _require(
@@ -3438,6 +3501,42 @@ def validate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
         config=config,
         pair_rows=evaluation_pairs,
     )
+    if bundle["case_kind"] == "checkpoint" and checkpoint_profile == "fixed_final":
+        pair_binding = evaluation_record.get("pair_index_binding")
+        _require(
+            isinstance(pair_binding, Mapping),
+            "fixed-final evaluation lacks the actual pair-index binding",
+        )
+        _require_exact_keys(
+            pair_binding,
+            required={
+                "absolute_path",
+                "file_sha256",
+                "content_hash_sha256",
+                "dataset_binding_sha256",
+            },
+            name="fixed-final pair_index_binding",
+        )
+        evaluation_artifacts = [
+            record
+            for record in validated_provenance["committed_files"]
+            if record.get("role") == "evaluation_pair_artifact"
+        ]
+        _require(
+            len(evaluation_artifacts) == 1
+            and pair_binding["absolute_path"]
+            == evaluation_artifacts[0]["absolute_path"]
+            and pair_binding["file_sha256"]
+            == evaluation_artifacts[0]["file_sha256"]
+            and _is_sha256(pair_binding["content_hash_sha256"])
+            and _is_sha256(pair_binding["dataset_binding_sha256"]),
+            "fixed-final evaluated rows differ from the provenance pair artifact",
+        )
+    else:
+        _require(
+            "pair_index_binding" not in evaluation_record,
+            "pair_index_binding is reserved for fixed-final checkpoint evidence",
+        )
 
     masks_record = evaluation_record["masks"]
     _require(
@@ -3775,6 +3874,12 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     ]
     evaluation_state_A = normalized["evaluation_state_A"]
     evaluation_state_b = normalized["evaluation_state_b"]
+    representation_sequence_cyclic = _evaluation_frame_sequence_is_cyclic(
+        normalized["evaluation_pair_index"],
+        evaluation_frame_ids,
+        transform_cyclic=bool(bundle["transform"]["cyclic"]),
+        protocol=str(config["protocol"]),
+    )
 
     health = _channel_health(
         evaluation_points,
@@ -3793,7 +3898,7 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
         evaluation_visibility,
         evaluation_frame_ids,
         all_indices,
-        cyclic=bool(bundle["transform"]["cyclic"]),
+        cyclic=representation_sequence_cyclic,
         thresholds=thresholds,
     )
     _require(all_channel is not None, "all-channel representation metric is void")
@@ -3807,7 +3912,7 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
             evaluation_visibility,
             evaluation_frame_ids,
             eligible_indices,
-            cyclic=bool(bundle["transform"]["cyclic"]),
+            cyclic=representation_sequence_cyclic,
             thresholds=thresholds,
         )
         if len(eligible_indices) >= minimum_eligible
@@ -3830,7 +3935,7 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
             evaluation_visibility,
             evaluation_frame_ids,
             channels_not_confirmed_flat_dead_indices,
-            cyclic=bool(bundle["transform"]["cyclic"]),
+            cyclic=representation_sequence_cyclic,
             thresholds=thresholds,
         )
         if len(channels_not_confirmed_flat_dead_indices) >= minimum_eligible
@@ -3919,6 +4024,7 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
         **canonical_or_residual,
         "channel_health": health,
         "trajectory_separation": {
+            "evaluation_frame_sequence_cyclic": representation_sequence_cyclic,
             "total_channel_count": evaluation_points.shape[1],
             "eligible_channel_count": len(eligible_indices),
             "minimum_eligible_channel_count": minimum_eligible,

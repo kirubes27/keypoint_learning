@@ -1,0 +1,47 @@
+{
+  "artifact_type": "heldout_roll_fixed_final_initial_implementation_review_ledger",
+  "reviewed_branch": "agent/heldout-roll-finalizer-20260809",
+  "baseline_commit": "4521538621b410421b1058603d090e2b09ec4178",
+  "reviewed_state": "uncommitted_initial_candidate_before_review_fixes",
+  "packet": [
+    {
+      "name": "TRACKED_CANDIDATE_DIFF.patch",
+      "sha256": "884f36a94a6dfc4a21ec4ac874ec0c58aecd2f13ff543aa2455cd6b080f6ae6d"
+    },
+    {
+      "name": "representation_fixed_final_authorization.py",
+      "sha256": "c2cd344f06afd21e9e6249b55a38f7a7b69122be5a71070e3563d58ce716e6b8"
+    },
+    {
+      "name": "representation_fixed_final_runtime.py",
+      "sha256": "acfb19e8cd3d1b5072b5ef8efcd8b6fb2075d496b76e0a5723635a79e9421489"
+    },
+    {
+      "name": "test_representation_fixed_final.py",
+      "sha256": "e3ee0e6b7b54af4a5d14edbd0ca7dbe39b6013e5c3b302e134c76fba9ee6fee9"
+    },
+    {
+      "name": "ENGINEERING_CONTRACT_v1.md",
+      "sha256": "b8bb01de57441bd8ad267340b507ebd3dcb83ae7b1faaaef117ff53b9a399549"
+    }
+  ],
+  "shared_review_briefing_sha256": "c34b2a39c7760e67b8b91416d0e08281cc3c5e43c31199d5124431dca9237ea5",
+  "fable": {
+    "exact_prompt_sha256": "b10efa7a71825297dc553cd7f35d050d5e979b5debc5ed45e2c7804bebab4b05",
+    "raw_report_sha256": "4a3c9cce324a88bbb819fef76ed97e87b35de2f274eb87b64f5d0e35d9caf0d1",
+    "verdict": "PASS_WITH_REQUIRED_FIXES",
+    "model_identity": "not_exposed_by_the_fable_helper_output",
+    "independence": "reviewed_before_receiving_the_chatgpt_pro_report"
+  },
+  "chatgpt_pro": {
+    "surface": "Chat",
+    "model": "GPT-5.6 Sol",
+    "effort": "Pro",
+    "chat_url": "https://chatgpt.com/c/6a782c73-5d1c-83eb-ad60-d235df72c634",
+    "prompt_sha256": "c34b2a39c7760e67b8b91416d0e08281cc3c5e43c31199d5124431dca9237ea5",
+    "raw_report_sha256": "c3bca1c6e28f64586be55d69d4e17dc00dd91857fcb7b68f018ef21d532d42bb",
+    "verdict": "BLOCK",
+    "independence": "reviewed_without_receiving_the_fable_report"
+  },
+  "interpretation": "The reports are advisory reviews of the initial candidate. Their agreement is not proof, and neither report is a user approval record for a held-out run."
+}

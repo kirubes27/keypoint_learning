@@ -1,0 +1,780 @@
+diff --git a/keypoint_net/eval_representation.py b/keypoint_net/eval_representation.py
+index 159f6a4..28e7862 100644
+--- a/keypoint_net/eval_representation.py
++++ b/keypoint_net/eval_representation.py
+@@ -111,6 +111,24 @@ FRESH_CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS = {
+     "training_or_weight_update_authorized",
+     "selection_use_authorized",
+ }
++FIXED_FINAL_CHECKPOINT_AUTHORIZATION_MODULE = (
++    "keypoint_net.representation_fixed_final_runtime"
++)
++FIXED_FINAL_CHECKPOINT_AUTHORIZATION_VALIDATOR = (
++    "validate_fixed_final_checkpoint_evaluator_authorization"
++)
++FIXED_FINAL_CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER = (
++    "consume_fixed_final_checkpoint_provenance_load_receipt"
++)
++FIXED_FINAL_CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS = {
++    "checkpoint_evaluation_authorized",
++    "source_commit",
++    "run_id",
++    "checkpoint_sha256",
++    "completed_run_receipt_sha256",
++    "training_or_weight_update_authorized",
++    "selection_use_authorized",
++}
+ 
+ 
+ class EvaluationContractError(ValueError):
+@@ -2981,6 +2999,48 @@ def _validate_pair_rows(
+     return normalized
+ 
+ 
++def _pair_graph_is_one_complete_cycle(
++    pair_rows: Sequence[Mapping[str, Any]],
++    frame_ids: Sequence[Any],
++) -> bool:
++    """Return true only when the evaluated frames themselves form one cycle.
++
++    A corpus can be cyclic while a held-out subset is only a path.  Treating
++    the first and last held-out frames as adjacent would inflate close-run
++    durations and is therefore forbidden unless every evaluated frame has
++    exactly one incoming and one outgoing edge in one connected cycle.
++    """
++
++    frame_set = set(frame_ids)
++    if len(pair_rows) != len(frame_ids) or not frame_ids:
++        return False
++    source_to_target: dict[Any, Any] = {}
++    targets: set[Any] = set()
++    for row in pair_rows:
++        source = row["source_frame"]
++        target = row["target_frame"]
++        if (
++            source not in frame_set
++            or target not in frame_set
++            or source in source_to_target
++            or target in targets
++        ):
++            return False
++        source_to_target[source] = target
++        targets.add(target)
++    if set(source_to_target) != frame_set or targets != frame_set:
++        return False
++    start = frame_ids[0]
++    current = start
++    visited: set[Any] = set()
++    for _ in range(len(frame_ids)):
++        if current in visited:
++            return False
++        visited.add(current)
++        current = source_to_target[current]
++    return current == start and visited == frame_set
++
++
+ def _resolve_operator(
+     operator: Mapping[str, Any],
+     *,
+@@ -3056,8 +3116,16 @@ def _require_checkpoint_evaluator_authorization(
+     """
+ 
+     profile = bundle.get("checkpoint_authority", "fixture")
+-    _require(profile in {"fixture", "fresh_run"}, "invalid checkpoint authority")
+-    if profile == "fresh_run":
++    _require(
++        profile in {"fixture", "fresh_run", "fixed_final"},
++        "invalid checkpoint authority",
++    )
++    if profile == "fixed_final":
++        module_name = FIXED_FINAL_CHECKPOINT_AUTHORIZATION_MODULE
++        validator_name = FIXED_FINAL_CHECKPOINT_AUTHORIZATION_VALIDATOR
++        consumer_name = FIXED_FINAL_CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER
++        receipt_fields = FIXED_FINAL_CHECKPOINT_AUTHORIZATION_RECEIPT_FIELDS
++    elif profile == "fresh_run":
+         module_name = FRESH_CHECKPOINT_AUTHORIZATION_MODULE
+         validator_name = FRESH_CHECKPOINT_AUTHORIZATION_VALIDATOR
+         consumer_name = FRESH_CHECKPOINT_PROVENANCE_RECEIPT_CONSUMER
+@@ -3163,12 +3231,18 @@ def _require_checkpoint_evaluator_authorization(
+         receipt["training_or_weight_update_authorized"] is False,
+         "checkpoint authorization receipt must forbid training and weight updates",
+     )
+-    expected_selection = profile == "fresh_run"
++    expected_selection = profile in {"fresh_run", "fixed_final"}
+     _require(
+         receipt["selection_use_authorized"] is expected_selection,
+         "checkpoint selection-use authority differs",
+     )
+-    if profile == "fresh_run":
++    if profile == "fixed_final":
++        _require(
++            receipt["run_id"] == bundle.get("case_id"),
++            "fixed-final run_id differs from case_id",
++        )
++        hash_fields = ("checkpoint_sha256", "completed_run_receipt_sha256")
++    elif profile == "fresh_run":
+         _require(
+             receipt["cell_id"] == bundle.get("case_id"),
+             "fresh checkpoint cell_id differs from case_id",
+@@ -3775,6 +3849,9 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
+     ]
+     evaluation_state_A = normalized["evaluation_state_A"]
+     evaluation_state_b = normalized["evaluation_state_b"]
++    representation_sequence_cyclic = _pair_graph_is_one_complete_cycle(
++        normalized["evaluation_pair_index"], evaluation_frame_ids
++    )
+ 
+     health = _channel_health(
+         evaluation_points,
+@@ -3793,7 +3870,7 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
+         evaluation_visibility,
+         evaluation_frame_ids,
+         all_indices,
+-        cyclic=bool(bundle["transform"]["cyclic"]),
++        cyclic=representation_sequence_cyclic,
+         thresholds=thresholds,
+     )
+     _require(all_channel is not None, "all-channel representation metric is void")
+@@ -3807,7 +3884,7 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
+             evaluation_visibility,
+             evaluation_frame_ids,
+             eligible_indices,
+-            cyclic=bool(bundle["transform"]["cyclic"]),
++            cyclic=representation_sequence_cyclic,
+             thresholds=thresholds,
+         )
+         if len(eligible_indices) >= minimum_eligible
+@@ -3830,7 +3907,7 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
+             evaluation_visibility,
+             evaluation_frame_ids,
+             channels_not_confirmed_flat_dead_indices,
+-            cyclic=bool(bundle["transform"]["cyclic"]),
++            cyclic=representation_sequence_cyclic,
+             thresholds=thresholds,
+         )
+         if len(channels_not_confirmed_flat_dead_indices) >= minimum_eligible
+@@ -3919,6 +3996,7 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
+         **canonical_or_residual,
+         "channel_health": health,
+         "trajectory_separation": {
++            "evaluation_frame_sequence_cyclic": representation_sequence_cyclic,
+             "total_channel_count": evaluation_points.shape[1],
+             "eligible_channel_count": len(eligible_indices),
+             "minimum_eligible_channel_count": minimum_eligible,
+diff --git a/keypoint_net/representation_evaluation_provenance.py b/keypoint_net/representation_evaluation_provenance.py
+index 63078cc..ee4c9a7 100644
+--- a/keypoint_net/representation_evaluation_provenance.py
++++ b/keypoint_net/representation_evaluation_provenance.py
+@@ -182,6 +182,24 @@ ROLE_PATH_PREFIXES = MappingProxyType(
+         "geometry_manifest": (
+             "docs/decisions/2026-07-26/representation_oracle_geometry/bindings/"
+         ),
++        "training_pair_artifact": (
++            "docs/decisions/2026-07-26/representation_oracle_splits/pairs/"
++        ),
++        "fixed_final_manifest": (
++            "docs/decisions/2026-08-09/heldout_roll_fixed_final/manifests/"
++        ),
++        "decision_spec": (
++            "docs/decisions/2026-08-09/heldout_roll_fixed_final/"
++        ),
++        "pro_review": (
++            "docs/decisions/2026-08-09/heldout_roll_fixed_final/"
++        ),
++        "fable_review": (
++            "docs/decisions/2026-08-09/heldout_roll_fixed_final/"
++        ),
++        "user_approval": (
++            "docs/decisions/2026-08-09/heldout_roll_fixed_final/"
++        ),
+     }
+ )
+ 
+@@ -277,6 +295,58 @@ FRESH_CHECKPOINT_ROLE_PATHS = MappingProxyType(
+ FRESH_CHECKPOINT_EXTERNAL_ROLES = frozenset(
+     {"checkpoint", "checkpoint_config", "checkpoint_metadata", "completed_run_receipt"}
+ )
++FIXED_FINAL_CHECKPOINT_ROLE_PATHS = MappingProxyType(
++    {
++        "provenance_source": "keypoint_net/representation_evaluation_provenance.py",
++        "evaluator_source": "keypoint_net/eval_representation.py",
++        "array_codec_source": "keypoint_net/representation_array_codec.py",
++        "split_adapter_source": "keypoint_net/representation_split_adapter.py",
++        "numeric_registry": (
++            "docs/decisions/2026-07-26/representation_oracle_calibration/"
++            "NUMERIC_CALIBRATION_v1_1.json"
++        ),
++        "fixed_final_authorization_source": (
++            "keypoint_net/representation_fixed_final_authorization.py"
++        ),
++        "fixed_final_runtime_source": (
++            "keypoint_net/representation_fixed_final_runtime.py"
++        ),
++        "train_source": "keypoint_net/train.py",
++        "dataset_source": "keypoint_net/dataset.py",
++        "model_source": "keypoint_net/model.py",
++        "split_manifest": (
++            "docs/decisions/2026-07-26/representation_oracle_splits/"
++            "SPLIT_MANIFEST.json"
++        ),
++        "split_verifier_report": (
++            "docs/decisions/2026-07-26/representation_oracle_splits/"
++            "SPLIT_VERIFIER_REPORT.json"
++        ),
++        "geometry_registry": (
++            "docs/decisions/2026-07-26/representation_oracle_geometry/"
++            "GEOMETRY_BINDING_REGISTRY_v1.json"
++        ),
++        "fixed_final_engineering_contract": (
++            "docs/decisions/2026-08-09/heldout_roll_fixed_final/"
++            "ENGINEERING_CONTRACT_v1.md"
++        ),
++    }
++)
++FIXED_FINAL_CHECKPOINT_COMMITTED_ROLES = frozenset(
++    set(FIXED_FINAL_CHECKPOINT_ROLE_PATHS)
++    | {
++        "fixed_final_manifest",
++        "training_pair_artifact",
++        "evaluation_pair_artifact",
++        "corpus_inventory",
++        "geometry_manifest",
++        "decision_spec",
++        "pro_review",
++        "fable_review",
++        "user_approval",
++    }
++)
++FIXED_FINAL_CHECKPOINT_EXTERNAL_ROLES = FRESH_CHECKPOINT_EXTERNAL_ROLES
+ _CHECKPOINT_PROVENANCE_LOAD_RECEIPT_FIELDS = frozenset(
+     {
+         "role",
+@@ -388,7 +458,7 @@ def required_role_profile(
+         "fit_from_pairs must be a boolean",
+     )
+     _require(
+-        checkpoint_profile in {"fixture", "fresh_run"},
++        checkpoint_profile in {"fixture", "fresh_run", "fixed_final"},
+         f"unsupported checkpoint profile: {checkpoint_profile!r}",
+     )
+     if case_kind == "checkpoint" and checkpoint_profile == "fresh_run":
+@@ -397,9 +467,15 @@ def required_role_profile(
+             frozenset(FRESH_CHECKPOINT_ROLE_PATHS),
+             FRESH_CHECKPOINT_EXTERNAL_ROLES,
+         )
++    if case_kind == "checkpoint" and checkpoint_profile == "fixed_final":
++        _require(not fit_from_pairs, "fixed-final roll forbids fit_from_pairs")
++        return (
++            FIXED_FINAL_CHECKPOINT_COMMITTED_ROLES,
++            FIXED_FINAL_CHECKPOINT_EXTERNAL_ROLES,
++        )
+     _require(
+         checkpoint_profile == "fixture",
+-        "fresh_run checkpoint profile requires case_kind=checkpoint",
++        "non-fixture checkpoint profile requires case_kind=checkpoint",
+     )
+     committed = set(CORE_ROLE_PATHS)
+     external: set[str] = set()
+@@ -1121,9 +1197,14 @@ def _validate_evaluation_provenance_for_repo(
+         if role in {"oracle_harness_source", "oracle_case_manifest"}:
+             expected_path = planted_profile_paths[role]
+         else:
++            checkpoint_profile_paths: Mapping[str, str] = {}
++            if checkpoint_profile == "fresh_run":
++                checkpoint_profile_paths = FRESH_CHECKPOINT_ROLE_PATHS
++            elif checkpoint_profile == "fixed_final":
++                checkpoint_profile_paths = FIXED_FINAL_CHECKPOINT_ROLE_PATHS
+             expected_path = CORE_ROLE_PATHS.get(role) or FIXED_ROLE_PATHS.get(
+                 role
+-            ) or FRESH_CHECKPOINT_ROLE_PATHS.get(role)
++            ) or checkpoint_profile_paths.get(role)
+         if expected_path is not None:
+             _require(
+                 relative_path == expected_path,
+@@ -1347,6 +1428,9 @@ __all__ = [
+     "CORE_ROLE_PATHS",
+     "FRESH_CHECKPOINT_EXTERNAL_ROLES",
+     "FRESH_CHECKPOINT_ROLE_PATHS",
++    "FIXED_FINAL_CHECKPOINT_COMMITTED_ROLES",
++    "FIXED_FINAL_CHECKPOINT_EXTERNAL_ROLES",
++    "FIXED_FINAL_CHECKPOINT_ROLE_PATHS",
+     "LOADED_SOURCE_ROLES",
+     "PLANTED_PROFILE_PATHS",
+     "PROVENANCE_SCHEMA_VERSION",
+diff --git a/keypoint_net/representation_split_adapter.py b/keypoint_net/representation_split_adapter.py
+index a25450a..d7eedf1 100644
+--- a/keypoint_net/representation_split_adapter.py
++++ b/keypoint_net/representation_split_adapter.py
+@@ -901,6 +901,113 @@ def _derive_evaluator_transform(
+     return evaluator_transform, transform_derivations
+ 
+ 
++def build_index_manifest_adapter_rows(
++    *,
++    manifest: Any,
++    object_id: str,
++    geometry_binding_path: str | Path,
++) -> dict[str, Any]:
++    """Adapt one already strict ``IndexPairManifest`` without reopening it.
++
++    This is the fixed-final seam used after training.  The training entry point
++    has already validated the exact pair-index bytes, corpus binding, object
++    role, and train/test endpoint separation.  This function independently
++    binds the object-specific geometry and converts only the held-out rows into
++    evaluator vocabulary.  It deliberately supports no fit section.
++    """
++
++    _require(isinstance(object_id, str) and object_id, "object_id is empty")
++    _require(getattr(manifest, "strict_metadata", False) is True,
++             "fixed-final adapter requires a strict pair manifest")
++    _require(getattr(manifest, "split", None) == "test",
++             "fixed-final adapter requires split=test")
++    metadata = getattr(manifest, "metadata", None)
++    rows = getattr(manifest, "pairs", None)
++    _require(isinstance(metadata, Mapping), "pair manifest metadata is invalid")
++    _require(isinstance(rows, tuple) and bool(rows), "pair manifest rows are empty")
++    transform = metadata.get("transform")
++    _require(isinstance(transform, Mapping), "pair manifest transform is invalid")
++    family = transform.get("family")
++    _require(family in _FAMILY_TO_INVENTORY, "pair manifest family is invalid")
++    _require(
++        metadata.get("dataset_binding_sha256")
++        == getattr(manifest, "dataset_binding_sha256", None),
++        "pair manifest dataset binding is internally inconsistent",
++    )
++    object_roles = metadata.get("object_roles")
++    _require(isinstance(object_roles, Mapping) and object_id in object_roles,
++             "object is absent from the frozen role lock")
++    selected_rows = [dict(row) for row in rows if row.get("model_name") == object_id]
++    _require(bool(selected_rows), "pair manifest contains no selected object rows")
++    _require(all(row.get("split") == "test" for row in selected_rows),
++             "pair manifest mixes evaluation partitions")
++    _require(all(row.get("object_role") == object_roles[object_id]
++                 for row in selected_rows),
++             "pair rows disagree with the frozen object role")
++
++    required_frame_ids = {
++        int(row[key])
++        for row in selected_rows
++        for key in ("src_frame_index", "dst_frame_index")
++    }
++    geometry_record = _authorize_registered_dataset_geometry(
++        geometry_binding_path=geometry_binding_path,
++        family=str(family),
++        object_id=object_id,
++        inventory_content_hash=str(metadata["dataset_binding_sha256"]),
++    )
++    geometry = _load_geometry(
++        geometry_binding_path,
++        family=str(family),
++        object_id=object_id,
++        inventory_content_hash=str(metadata["dataset_binding_sha256"]),
++        dataset_semantic_lock_hash=str(metadata["dataset_semantic_lock_sha256"]),
++        required_frame_ids=required_frame_ids,
++    )
++    _require(
++        geometry["content_hash_sha256"] == geometry_record["content_hash_sha256"],
++        "registered geometry binding content hash mismatch",
++    )
++    frames, evaluator_rows = _frame_records(
++        selected_rows,
++        family=str(family),
++        geometry=geometry,
++    )
++    evaluator_transform, derivations = _derive_evaluator_transform(
++        transform=transform,
++        family=str(family),
++        geometry=geometry,
++        evaluation_frames=frames,
++        evaluation_rows=evaluator_rows,
++    )
++    result = {
++        "schema_version": ADAPTER_SCHEMA_VERSION,
++        "stratum": {
++            "object_id": object_id,
++            "object_role": object_roles[object_id],
++            "transform_family": family,
++            "physical_axis": transform["physical_axis"],
++            "direction": transform["direction"],
++            "stride": transform["stride"],
++            "evaluation_partition": "test",
++        },
++        "pair_index_binding": {
++            "absolute_path": str(getattr(manifest, "index_path")),
++            "file_sha256": getattr(manifest, "index_sha256"),
++            "content_hash_sha256": getattr(manifest, "content_hash_sha256"),
++            "dataset_binding_sha256": getattr(manifest, "dataset_binding_sha256"),
++        },
++        "evaluator_transform": evaluator_transform,
++        "transform_derivations": derivations,
++        "evaluation": {"partition": "test", "frames": frames, "rows": evaluator_rows},
++        "geometry_binding": geometry,
++    }
++    result["adapter_content_sha256"] = hashlib.sha256(
++        canonical_json_bytes(result)
++    ).hexdigest()
++    return result
++
++
+ def build_split_adapter_rows(
+     *,
+     split_bundle_root: str | Path,
+@@ -1140,5 +1247,6 @@ __all__ = [
+     "FROZEN_GENERATOR_COMMIT",
+     "GEOMETRY_SCHEMA_VERSION",
+     "SplitAdapterError",
++    "build_index_manifest_adapter_rows",
+     "build_split_adapter_rows",
+ ]
+diff --git a/keypoint_net/representation_split_bundle.py b/keypoint_net/representation_split_bundle.py
+index 0f741ca..8e163ec 100644
+--- a/keypoint_net/representation_split_bundle.py
++++ b/keypoint_net/representation_split_bundle.py
+@@ -263,6 +263,34 @@ def _repo_evidence(repo_root: Path, relative_path: str) -> dict[str, Any]:
+     }
+ 
+ 
++def _repo_evidence_at_commit(
++    repo_root: Path,
++    relative_path: str,
++    commit: str,
++) -> dict[str, Any]:
++    """Bind frozen generator evidence to its historical Git blob.
++
++    Validation must not require today's inventory scanner to be byte-identical
++    to the scanner that created an already frozen, hash-bound split bundle.
++    New bundle creation still uses ``verify_commit_contains_generator_sources``
++    and therefore still requires the running generator to match its commit.
++    """
++
++    try:
++        data = subprocess.run(
++            ["git", "show", f"{commit}:{relative_path}"],
++            cwd=repo_root,
++            check=True,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++        ).stdout
++    except (OSError, subprocess.CalledProcessError) as exc:
++        raise SplitBundleError(
++            f"{relative_path}: absent from generator commit {commit}"
++        ) from exc
++    return {"relative_path": relative_path, "sha256": _sha256_bytes(data)}
++
++
+ def _scale_holdout_proof(
+     scale_inventory: Mapping[str, Any],
+     pair_artifacts: Mapping[str, bytes],
+@@ -802,7 +830,7 @@ def validate_primary_split_bundle(
+         "commit": generator_commit,
+         "config_sha256": GENERATOR_CONFIG_SHA256,
+         "sources": [
+-            _repo_evidence(repo_root, relative_path)
++            _repo_evidence_at_commit(repo_root, relative_path, generator_commit)
+             for relative_path in GENERATOR_SOURCE_RELPATHS
+         ],
+     }
+@@ -830,7 +858,6 @@ def validate_primary_split_bundle(
+         == _repo_evidence(repo_root, GENERATOR_PROVENANCE_RELPATH),
+         "manifest render-source provenance hash mismatch",
+     )
+-    verify_commit_contains_generator_sources(repo_root, generator_commit)
+     return manifest
+ 
+ 
+diff --git a/keypoint_net/train.py b/keypoint_net/train.py
+index bc0b4b6..8b8db3c 100644
+--- a/keypoint_net/train.py
++++ b/keypoint_net/train.py
+@@ -34,6 +34,14 @@ from torch.utils.data import DataLoader, Dataset
+ from torch.optim import Adam
+ from torch.optim.lr_scheduler import CosineAnnealingLR
+ 
++# The established launchers execute this file by absolute path.  Add the
++# repository root so the fixed-final runtime has one canonical package module;
++# otherwise the evaluator would import a second module with an empty one-shot
++# authorization context.
++_REPOSITORY_IMPORT_ROOT = Path(__file__).resolve().parents[1]
++if str(_REPOSITORY_IMPORT_ROOT) not in sys.path:
++    sys.path.insert(0, str(_REPOSITORY_IMPORT_ROOT))
++
+ from model import PhaseAModel, compute_losses
+ from descriptor_attachment import LOSS_SPEC_SHA256
+ from dataset import (
+@@ -45,6 +53,10 @@ from dataset import (
+ )
+ import representation_fresh_checkpoint_authorization as fresh_authorization
+ import descriptor_attachment_authorization as descriptor_authorization
++from keypoint_net import (
++    representation_fixed_final_authorization as fixed_final_authorization,
++)
++from keypoint_net import representation_fixed_final_runtime as fixed_final_runtime
+ import representation_corpus_inventory
+ import fresh_roll_determinism
+ 
+@@ -614,6 +626,7 @@ def _resolve_index_argument_policy(args: argparse.Namespace) -> dict:
+         args.test_pairs_index,
+         args.dataset_binding_sha256,
+         args.frozen_epochs,
++        getattr(args, "fixed_final_manifest", None),
+     )
+     if not any(value is not None for value in indexed_values):
+         return {"mode": "legacy"}
+@@ -922,7 +935,10 @@ def _prepare_training_data(
+             "authoritative_checkpoint": "final_model.pt",
+             "best_model_written": False,
+             "validation_loader": False,
+-            "test_loader": "constructed_after_final_model",
++            "test_loader": False,
++            "test_content_finalizer": (
++                "one_unique_frame_open_phase_after_training_receipt"
++            ),
+             "post_training_test_evaluations": 1,
+             "epochs": policy["effective_epochs"],
+             "epochs_source": "--frozen_epochs",
+@@ -1119,6 +1135,15 @@ def main():
+         default=None,
+         help="Strict one-shot test pair-index JSON for fixed-final mode.",
+     )
++    parser.add_argument(
++        "--fixed_final_manifest",
++        type=str,
++        default=None,
++        help=(
++            "Committed, reviewed, user-approved held-out roll manifest. "
++            "Required for every production fixed-final run."
++        ),
++    )
+     parser.add_argument(
+         "--dataset_binding_sha256",
+         type=str,
+@@ -1222,6 +1247,7 @@ def main():
+     repo_root = Path(__file__).resolve().parent.parent
+     fresh_binding = None
+     descriptor_binding = None
++    fixed_final_binding = None
+     if args.descriptor_cell_id is not None:
+         descriptor_binding = descriptor_authorization.bind_training_namespace(
+             repo_root,
+@@ -1234,6 +1260,15 @@ def main():
+             repo_root,
+             args,
+         )
++    if args.indexed_mode == "fixed-final":
++        fixed_final_binding = fixed_final_authorization.bind_training_namespace(
++            repo_root,
++            args,
++        )
++    elif args.fixed_final_manifest is not None:
++        raise ValueError(
++            "--fixed_final_manifest is valid only with --indexed_mode fixed-final"
++        )
+     _validate_training_arguments(args)
+     include_backward = args.lambda_act > 0.0
+     data_plan = _prepare_training_data(
+@@ -1246,6 +1281,17 @@ def main():
+             fresh_binding,
+             data_root=args.data_root,
+         )
++    if fixed_final_binding is not None:
++        if data_plan.mode != "fixed-final" or data_plan.test_manifest is None:
++            raise ValueError("fixed-final manifest did not produce a held-out data plan")
++        if data_plan.index_provenance["train"]["resolved_path"] != str(
++            (repo_root / fixed_final_binding.train_pair_repo_relative_path).resolve()
++        ):
++            raise ValueError("prepared train split differs from fixed-final manifest")
++        if data_plan.index_provenance["test"]["resolved_path"] != str(
++            (repo_root / fixed_final_binding.test_pair_repo_relative_path).resolve()
++        ):
++            raise ValueError("prepared test split differs from fixed-final manifest")
+     train_dataset = data_plan.train_dataset
+     val_dataset = data_plan.val_dataset
+     args.epochs = data_plan.effective_epochs
+@@ -1259,7 +1305,11 @@ def main():
+     
+     # Resolve the executable amendment before claiming an output directory or
+     # allowing any CUDA query to initialize a device context.
+-    if fresh_binding is not None or descriptor_binding is not None:
++    if (
++        fresh_binding is not None
++        or descriptor_binding is not None
++        or fixed_final_binding is not None
++    ):
+         nondeterminism_policy = (
+             fresh_roll_determinism.policy_for_heatmap_resolution(
+                 repo_root,
+@@ -1280,18 +1330,30 @@ def main():
+         nondeterminism_evidence = None
+ 
+     # Claim the fresh cell atomically after every source/data/policy preflight.
+-    if fresh_binding is not None or descriptor_binding is not None:
++    if (
++        fresh_binding is not None
++        or descriptor_binding is not None
++        or fixed_final_binding is not None
++    ):
+         bound_run_directory = (
+             fresh_binding.run_directory
+             if fresh_binding is not None
+-            else descriptor_binding.run_directory
++            else (
++                descriptor_binding.run_directory
++                if descriptor_binding is not None
++                else fixed_final_binding.run_directory
++            )
+         )
+         run_dir = Path(bound_run_directory)
+         run_dir.parent.mkdir(parents=True, exist_ok=True)
+         run_dir.mkdir(exist_ok=False)
+ 
+     # Reproducibility. Preserve legacy behavior outside the dedicated path.
+-    if fresh_binding is not None or descriptor_binding is not None:
++    if (
++        fresh_binding is not None
++        or descriptor_binding is not None
++        or fixed_final_binding is not None
++    ):
+         determinism = _configure_determinism(
+             args.seed,
+             policy=nondeterminism_policy,
+@@ -1312,19 +1374,31 @@ def main():
+         determinism["data_loader_workers"] = n_workers
+     runtime_environment = (
+         _runtime_environment(device)
+-        if fresh_binding is not None or descriptor_binding is not None
++        if (
++            fresh_binding is not None
++            or descriptor_binding is not None
++            or fixed_final_binding is not None
++        )
+         else None
+     )
+     full_command = (
+         [sys.executable, *sys.argv]
+-        if fresh_binding is not None or descriptor_binding is not None
++        if (
++            fresh_binding is not None
++            or descriptor_binding is not None
++            or fixed_final_binding is not None
++        )
+         else None
+     )
+     
+     # Create output directory
+     # Include pid (and microseconds) to avoid collisions when launching
+     # multiple runs in parallel.
+-    if fresh_binding is None and descriptor_binding is None:
++    if (
++        fresh_binding is None
++        and descriptor_binding is None
++        and fixed_final_binding is None
++    ):
+         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+         obj_name = args.object or "all"
+         run_name = f"phase_a_{obj_name}_{timestamp}_seed{args.seed}_pid{os.getpid()}"
+@@ -1376,6 +1450,17 @@ def main():
+                 descriptor_binding.weight_receipt_content_sha256
+             ),
+         }
++    if fixed_final_binding is not None:
++        config['fixed_final_contract'] = {
++            'run_id': fixed_final_binding.run_id,
++            'recipe_id': fixed_final_binding.recipe_id,
++            'manifest_file_sha256': fixed_final_binding.manifest_file_sha256,
++            'manifest_content_sha256': fixed_final_binding.manifest_content_sha256,
++            'object_id': fixed_final_binding.object_id,
++            'object_role': fixed_final_binding.object_role,
++            'seed': fixed_final_binding.seed,
++            'frozen_epochs': fixed_final_binding.frozen_epochs,
++        }
+     with open(run_dir / "config.json", "w") as f:
+         json.dump(config, f, indent=2)
+     print(f"Output directory: {run_dir}")
+@@ -1491,6 +1576,10 @@ def main():
+         )
+         ckpt_config['determinism'] = determinism
+         ckpt_config['determinism_amendment'] = determinism_amendment
++    if fixed_final_binding is not None:
++        ckpt_config['fixed_final_contract'] = dict(config['fixed_final_contract'])
++        ckpt_config['determinism'] = determinism
++        ckpt_config['determinism_amendment'] = determinism_amendment
+     
+     print(f"\nStarting training for {args.epochs} epochs...")
+     print(f"Training mode: {data_plan.mode}")
+@@ -1669,43 +1758,36 @@ def main():
+         'config': ckpt_config,
+     }, final_model_path)
+ 
++    # The pre-test training receipt must bind a complete history.  No held-out
++    # image or mask has been opened at this point.
++    with open(run_dir / "history.json", "w") as f:
++        json.dump(history, f, indent=2)
++
+     fixed_final_test_report = None
+     if data_plan.mode == "fixed-final":
++        if fixed_final_binding is None or data_plan.test_manifest is None:
++            raise RuntimeError(
++                "Fixed-final execution lacks its approved manifest binding"
++            )
+         if not final_model_path.is_file():
+             raise RuntimeError(
+                 "Authoritative final_model.pt is missing; refusing to open test data"
+             )
+-        test_loader = _build_fixed_final_test_loader(
+-            data_plan,
+-            args,
+-            final_model_path=final_model_path,
+-            use_cuda=use_cuda,
+-            n_workers=n_workers,
++        training_receipt = fixed_final_authorization.write_training_receipt(
++            repo_root,
++            fixed_final_binding,
+         )
+-        # This is the only test evaluate() call in the training entry point.
+-        test_metrics = evaluate(
+-            model, test_loader, device,
+-            args.lambda_smooth, args.lambda_disp, args.lambda_ent,
+-            args.lambda_act, args.lambda_loc, args.lambda_inv,
+-            args.lambda_cycle, args.loc_bg_threshold, args.sigma,
+-            args.num_keypoints,
+-            lambda_attach=args.lambda_attach,
++        # The finalizer reloads the hash-bound final_model.pt, opens every
++        # unique held-out image and mask exactly once, and derives all metrics
++        # from that single in-memory inference.  It makes no pass/fail decision.
++        fixed_final_test_report = fixed_final_runtime.finalize_fixed_final_roll(
++            repo_root,
++            fixed_final_binding,
++            training_receipt,
++            data_root=args.data_root,
++            test_manifest=data_plan.test_manifest,
++            device=device,
+         )
+-        fixed_final_test_report = {
+-            "schema_version": 1,
+-            "training_mode": "fixed-final",
+-            "evaluation_count": 1,
+-            "authoritative_checkpoint": str(final_model_path.resolve()),
+-            "authoritative_checkpoint_sha256": _sha256_file(final_model_path),
+-            "test_index": data_plan.index_provenance["test"],
+-            "metrics": test_metrics,
+-        }
+-        with open(run_dir / "fixed_final_test_metrics.json", "w") as f:
+-            json.dump(fixed_final_test_report, f, indent=2)
+-    
+-    # Save history
+-    with open(run_dir / "history.json", "w") as f:
+-        json.dump(history, f, indent=2)
+ 
+     if fresh_binding is not None:
+         completed_nondeterminism_evidence = (
+@@ -1752,8 +1834,8 @@ def main():
+     else:
+         print(
+             "Training complete! Fixed-final policy used final_model.pt; "
+-            f"one post-training test loss: "
+-            f"{fixed_final_test_report['metrics']['loss']:.6f}"
++            "one held-out representation result was emitted without an "
++            "automatic scientific pass/fail decision."
+         )
+     print(f"Outputs saved to: {run_dir}")
+ 

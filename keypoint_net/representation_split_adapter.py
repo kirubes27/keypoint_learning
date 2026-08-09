@@ -901,6 +901,113 @@ def _derive_evaluator_transform(
     return evaluator_transform, transform_derivations
 
 
+def build_index_manifest_adapter_rows(
+    *,
+    manifest: Any,
+    object_id: str,
+    geometry_binding_path: str | Path,
+) -> dict[str, Any]:
+    """Adapt one already strict ``IndexPairManifest`` without reopening it.
+
+    This is the fixed-final seam used after training.  The training entry point
+    has already validated the exact pair-index bytes, corpus binding, object
+    role, and train/test endpoint separation.  This function independently
+    binds the object-specific geometry and converts only the held-out rows into
+    evaluator vocabulary.  It deliberately supports no fit section.
+    """
+
+    _require(isinstance(object_id, str) and object_id, "object_id is empty")
+    _require(getattr(manifest, "strict_metadata", False) is True,
+             "fixed-final adapter requires a strict pair manifest")
+    _require(getattr(manifest, "split", None) == "test",
+             "fixed-final adapter requires split=test")
+    metadata = getattr(manifest, "metadata", None)
+    rows = getattr(manifest, "pairs", None)
+    _require(isinstance(metadata, Mapping), "pair manifest metadata is invalid")
+    _require(isinstance(rows, tuple) and bool(rows), "pair manifest rows are empty")
+    transform = metadata.get("transform")
+    _require(isinstance(transform, Mapping), "pair manifest transform is invalid")
+    family = transform.get("family")
+    _require(family in _FAMILY_TO_INVENTORY, "pair manifest family is invalid")
+    _require(
+        metadata.get("dataset_binding_sha256")
+        == getattr(manifest, "dataset_binding_sha256", None),
+        "pair manifest dataset binding is internally inconsistent",
+    )
+    object_roles = metadata.get("object_roles")
+    _require(isinstance(object_roles, Mapping) and object_id in object_roles,
+             "object is absent from the frozen role lock")
+    selected_rows = [dict(row) for row in rows if row.get("model_name") == object_id]
+    _require(bool(selected_rows), "pair manifest contains no selected object rows")
+    _require(all(row.get("split") == "test" for row in selected_rows),
+             "pair manifest mixes evaluation partitions")
+    _require(all(row.get("object_role") == object_roles[object_id]
+                 for row in selected_rows),
+             "pair rows disagree with the frozen object role")
+
+    required_frame_ids = {
+        int(row[key])
+        for row in selected_rows
+        for key in ("src_frame_index", "dst_frame_index")
+    }
+    geometry_record = _authorize_registered_dataset_geometry(
+        geometry_binding_path=geometry_binding_path,
+        family=str(family),
+        object_id=object_id,
+        inventory_content_hash=str(metadata["dataset_binding_sha256"]),
+    )
+    geometry = _load_geometry(
+        geometry_binding_path,
+        family=str(family),
+        object_id=object_id,
+        inventory_content_hash=str(metadata["dataset_binding_sha256"]),
+        dataset_semantic_lock_hash=str(metadata["dataset_semantic_lock_sha256"]),
+        required_frame_ids=required_frame_ids,
+    )
+    _require(
+        geometry["content_hash_sha256"] == geometry_record["content_hash_sha256"],
+        "registered geometry binding content hash mismatch",
+    )
+    frames, evaluator_rows = _frame_records(
+        selected_rows,
+        family=str(family),
+        geometry=geometry,
+    )
+    evaluator_transform, derivations = _derive_evaluator_transform(
+        transform=transform,
+        family=str(family),
+        geometry=geometry,
+        evaluation_frames=frames,
+        evaluation_rows=evaluator_rows,
+    )
+    result = {
+        "schema_version": ADAPTER_SCHEMA_VERSION,
+        "stratum": {
+            "object_id": object_id,
+            "object_role": object_roles[object_id],
+            "transform_family": family,
+            "physical_axis": transform["physical_axis"],
+            "direction": transform["direction"],
+            "stride": transform["stride"],
+            "evaluation_partition": "test",
+        },
+        "pair_index_binding": {
+            "absolute_path": str(getattr(manifest, "index_path")),
+            "file_sha256": getattr(manifest, "index_sha256"),
+            "content_hash_sha256": getattr(manifest, "content_hash_sha256"),
+            "dataset_binding_sha256": getattr(manifest, "dataset_binding_sha256"),
+        },
+        "evaluator_transform": evaluator_transform,
+        "transform_derivations": derivations,
+        "evaluation": {"partition": "test", "frames": frames, "rows": evaluator_rows},
+        "geometry_binding": geometry,
+    }
+    result["adapter_content_sha256"] = hashlib.sha256(
+        canonical_json_bytes(result)
+    ).hexdigest()
+    return result
+
+
 def build_split_adapter_rows(
     *,
     split_bundle_root: str | Path,
@@ -1140,5 +1247,6 @@ __all__ = [
     "FROZEN_GENERATOR_COMMIT",
     "GEOMETRY_SCHEMA_VERSION",
     "SplitAdapterError",
+    "build_index_manifest_adapter_rows",
     "build_split_adapter_rows",
 ]

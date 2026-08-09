@@ -34,6 +34,14 @@ from torch.utils.data import DataLoader, Dataset
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
+# The established launchers execute this file by absolute path.  Add the
+# repository root so the fixed-final runtime has one canonical package module;
+# otherwise the evaluator would import a second module with an empty one-shot
+# authorization context.
+_REPOSITORY_IMPORT_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPOSITORY_IMPORT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_IMPORT_ROOT))
+
 from model import PhaseAModel, compute_losses
 from descriptor_attachment import LOSS_SPEC_SHA256
 from dataset import (
@@ -45,6 +53,10 @@ from dataset import (
 )
 import representation_fresh_checkpoint_authorization as fresh_authorization
 import descriptor_attachment_authorization as descriptor_authorization
+from keypoint_net import (
+    representation_fixed_final_authorization as fixed_final_authorization,
+)
+from keypoint_net import representation_fixed_final_runtime as fixed_final_runtime
 import representation_corpus_inventory
 import fresh_roll_determinism
 
@@ -614,6 +626,7 @@ def _resolve_index_argument_policy(args: argparse.Namespace) -> dict:
         args.test_pairs_index,
         args.dataset_binding_sha256,
         args.frozen_epochs,
+        getattr(args, "fixed_final_manifest", None),
     )
     if not any(value is not None for value in indexed_values):
         return {"mode": "legacy"}
@@ -922,7 +935,10 @@ def _prepare_training_data(
             "authoritative_checkpoint": "final_model.pt",
             "best_model_written": False,
             "validation_loader": False,
-            "test_loader": "constructed_after_final_model",
+            "test_loader": False,
+            "test_content_finalizer": (
+                "one_unique_frame_open_phase_after_training_receipt"
+            ),
             "post_training_test_evaluations": 1,
             "epochs": policy["effective_epochs"],
             "epochs_source": "--frozen_epochs",
@@ -1014,48 +1030,6 @@ def _prepare_training_data(
     )
 
 
-def _build_fixed_final_test_loader(
-    plan: TrainingDataPlan,
-    args: argparse.Namespace,
-    *,
-    final_model_path: Path,
-    use_cuda: bool,
-    n_workers: int,
-) -> DataLoader:
-    """Construct the still-hashed test Dataset only after final_model exists."""
-    if plan.mode != "fixed-final" or plan.test_manifest is None:
-        raise ValueError("Fixed-final test loader requested for a non-final plan")
-    if not final_model_path.is_file():
-        raise RuntimeError(
-            "Authoritative final_model.pt must exist before test Dataset creation"
-        )
-    manifest = plan.test_manifest
-    test_dataset = IndexPairDataset(
-        data_root=args.data_root,
-        index_path=str(manifest.index_path),
-        img_size=args.img_size,
-        center_crop=args.center_crop,
-        include_backward=args.lambda_act > 0.0,
-        object_name=args.object,
-        strict_metadata=True,
-        expected_split="test",
-        expected_index_sha256=manifest.index_sha256,
-        expected_dataset_binding_sha256=args.dataset_binding_sha256,
-    )
-    overlap = plan.train_dataset.endpoint_ids & test_dataset.endpoint_ids
-    if overlap:
-        raise ValueError(
-            "Test endpoints changed after preflight and now overlap training"
-        )
-    return DataLoader(
-        test_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=n_workers,
-        pin_memory=use_cuda,
-    )
-
-
 def main():
     parser = argparse.ArgumentParser(description="Phase A Training")
     
@@ -1118,6 +1092,15 @@ def main():
         type=str,
         default=None,
         help="Strict one-shot test pair-index JSON for fixed-final mode.",
+    )
+    parser.add_argument(
+        "--fixed_final_manifest",
+        type=str,
+        default=None,
+        help=(
+            "Committed, reviewed, user-approved held-out roll manifest. "
+            "Required for every production fixed-final run."
+        ),
     )
     parser.add_argument(
         "--dataset_binding_sha256",
@@ -1222,6 +1205,7 @@ def main():
     repo_root = Path(__file__).resolve().parent.parent
     fresh_binding = None
     descriptor_binding = None
+    fixed_final_binding = None
     if args.descriptor_cell_id is not None:
         descriptor_binding = descriptor_authorization.bind_training_namespace(
             repo_root,
@@ -1233,6 +1217,15 @@ def main():
         fresh_binding = fresh_authorization.bind_training_namespace(
             repo_root,
             args,
+        )
+    if args.indexed_mode == "fixed-final":
+        fixed_final_binding = fixed_final_authorization.bind_training_namespace(
+            repo_root,
+            args,
+        )
+    elif args.fixed_final_manifest is not None:
+        raise ValueError(
+            "--fixed_final_manifest is valid only with --indexed_mode fixed-final"
         )
     _validate_training_arguments(args)
     include_backward = args.lambda_act > 0.0
@@ -1246,6 +1239,31 @@ def main():
             fresh_binding,
             data_root=args.data_root,
         )
+    if fixed_final_binding is not None:
+        if data_plan.mode != "fixed-final" or data_plan.test_manifest is None:
+            raise ValueError("fixed-final manifest did not produce a held-out data plan")
+        if data_plan.index_provenance["train"]["resolved_path"] != str(
+            (repo_root / fixed_final_binding.train_pair_repo_relative_path).resolve()
+        ):
+            raise ValueError("prepared train split differs from fixed-final manifest")
+        if data_plan.index_provenance["test"]["resolved_path"] != str(
+            (repo_root / fixed_final_binding.test_pair_repo_relative_path).resolve()
+        ):
+            raise ValueError("prepared test split differs from fixed-final manifest")
+        if (
+            data_plan.index_provenance["train"]["file_sha256"]
+            != fixed_final_binding.train_pair_file_sha256
+            or data_plan.index_provenance["train"]["content_hash_sha256"]
+            != fixed_final_binding.train_pair_content_sha256
+        ):
+            raise ValueError("prepared train split hash differs from fixed-final manifest")
+        if (
+            data_plan.index_provenance["test"]["file_sha256"]
+            != fixed_final_binding.test_pair_file_sha256
+            or data_plan.index_provenance["test"]["content_hash_sha256"]
+            != fixed_final_binding.test_pair_content_sha256
+        ):
+            raise ValueError("prepared test split hash differs from fixed-final manifest")
     train_dataset = data_plan.train_dataset
     val_dataset = data_plan.val_dataset
     args.epochs = data_plan.effective_epochs
@@ -1259,7 +1277,11 @@ def main():
     
     # Resolve the executable amendment before claiming an output directory or
     # allowing any CUDA query to initialize a device context.
-    if fresh_binding is not None or descriptor_binding is not None:
+    if (
+        fresh_binding is not None
+        or descriptor_binding is not None
+        or fixed_final_binding is not None
+    ):
         nondeterminism_policy = (
             fresh_roll_determinism.policy_for_heatmap_resolution(
                 repo_root,
@@ -1280,18 +1302,30 @@ def main():
         nondeterminism_evidence = None
 
     # Claim the fresh cell atomically after every source/data/policy preflight.
-    if fresh_binding is not None or descriptor_binding is not None:
+    if (
+        fresh_binding is not None
+        or descriptor_binding is not None
+        or fixed_final_binding is not None
+    ):
         bound_run_directory = (
             fresh_binding.run_directory
             if fresh_binding is not None
-            else descriptor_binding.run_directory
+            else (
+                descriptor_binding.run_directory
+                if descriptor_binding is not None
+                else fixed_final_binding.run_directory
+            )
         )
         run_dir = Path(bound_run_directory)
         run_dir.parent.mkdir(parents=True, exist_ok=True)
         run_dir.mkdir(exist_ok=False)
 
     # Reproducibility. Preserve legacy behavior outside the dedicated path.
-    if fresh_binding is not None or descriptor_binding is not None:
+    if (
+        fresh_binding is not None
+        or descriptor_binding is not None
+        or fixed_final_binding is not None
+    ):
         determinism = _configure_determinism(
             args.seed,
             policy=nondeterminism_policy,
@@ -1312,19 +1346,31 @@ def main():
         determinism["data_loader_workers"] = n_workers
     runtime_environment = (
         _runtime_environment(device)
-        if fresh_binding is not None or descriptor_binding is not None
+        if (
+            fresh_binding is not None
+            or descriptor_binding is not None
+            or fixed_final_binding is not None
+        )
         else None
     )
     full_command = (
         [sys.executable, *sys.argv]
-        if fresh_binding is not None or descriptor_binding is not None
+        if (
+            fresh_binding is not None
+            or descriptor_binding is not None
+            or fixed_final_binding is not None
+        )
         else None
     )
     
     # Create output directory
     # Include pid (and microseconds) to avoid collisions when launching
     # multiple runs in parallel.
-    if fresh_binding is None and descriptor_binding is None:
+    if (
+        fresh_binding is None
+        and descriptor_binding is None
+        and fixed_final_binding is None
+    ):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         obj_name = args.object or "all"
         run_name = f"phase_a_{obj_name}_{timestamp}_seed{args.seed}_pid{os.getpid()}"
@@ -1375,6 +1421,17 @@ def main():
             'weight_receipt_content_sha256': (
                 descriptor_binding.weight_receipt_content_sha256
             ),
+        }
+    if fixed_final_binding is not None:
+        config['fixed_final_contract'] = {
+            'run_id': fixed_final_binding.run_id,
+            'recipe_id': fixed_final_binding.recipe_id,
+            'manifest_file_sha256': fixed_final_binding.manifest_file_sha256,
+            'manifest_content_sha256': fixed_final_binding.manifest_content_sha256,
+            'object_id': fixed_final_binding.object_id,
+            'object_role': fixed_final_binding.object_role,
+            'seed': fixed_final_binding.seed,
+            'frozen_epochs': fixed_final_binding.frozen_epochs,
         }
     with open(run_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
@@ -1457,6 +1514,11 @@ def main():
         'img_size': args.img_size,
         'center_crop': args.center_crop,
         'seed': args.seed,
+        'epochs': args.epochs,
+        'batch_size': args.batch_size,
+        'lr': args.lr,
+        'weight_decay': args.weight_decay,
+        'save_every': args.save_every,
         'data_root': args.data_root,
         'resolved_data_root': str(Path(args.data_root).expanduser().resolve()),
         'object': args.object,
@@ -1489,6 +1551,10 @@ def main():
         ckpt_config['descriptor_attachment_binding'] = dict(
             config['descriptor_attachment_binding']
         )
+        ckpt_config['determinism'] = determinism
+        ckpt_config['determinism_amendment'] = determinism_amendment
+    if fixed_final_binding is not None:
+        ckpt_config['fixed_final_contract'] = dict(config['fixed_final_contract'])
         ckpt_config['determinism'] = determinism
         ckpt_config['determinism_amendment'] = determinism_amendment
     
@@ -1566,7 +1632,7 @@ def main():
         scheduler.step()
         
         # Log
-        if epoch % args.log_every == 0 or epoch == 1:
+        if epoch % args.log_every == 0 or epoch == 1 or epoch == args.epochs:
             log_line = (
                 f"Epoch {epoch:4d} | "
                 f"Loss: {train_metrics['loss']:.5f} | "
@@ -1669,43 +1735,36 @@ def main():
         'config': ckpt_config,
     }, final_model_path)
 
+    # The pre-test training receipt must bind a complete history.  No held-out
+    # image or mask has been opened at this point.
+    with open(run_dir / "history.json", "w") as f:
+        json.dump(history, f, indent=2)
+
     fixed_final_test_report = None
     if data_plan.mode == "fixed-final":
+        if fixed_final_binding is None or data_plan.test_manifest is None:
+            raise RuntimeError(
+                "Fixed-final execution lacks its approved manifest binding"
+            )
         if not final_model_path.is_file():
             raise RuntimeError(
                 "Authoritative final_model.pt is missing; refusing to open test data"
             )
-        test_loader = _build_fixed_final_test_loader(
-            data_plan,
-            args,
-            final_model_path=final_model_path,
-            use_cuda=use_cuda,
-            n_workers=n_workers,
+        training_receipt = fixed_final_authorization.write_training_receipt(
+            repo_root,
+            fixed_final_binding,
         )
-        # This is the only test evaluate() call in the training entry point.
-        test_metrics = evaluate(
-            model, test_loader, device,
-            args.lambda_smooth, args.lambda_disp, args.lambda_ent,
-            args.lambda_act, args.lambda_loc, args.lambda_inv,
-            args.lambda_cycle, args.loc_bg_threshold, args.sigma,
-            args.num_keypoints,
-            lambda_attach=args.lambda_attach,
+        # The finalizer reloads the hash-bound final_model.pt, opens every
+        # unique held-out image and mask exactly once, and derives all metrics
+        # from that single in-memory inference.  It makes no pass/fail decision.
+        fixed_final_test_report = fixed_final_runtime.finalize_fixed_final_roll(
+            repo_root,
+            fixed_final_binding,
+            training_receipt,
+            data_root=args.data_root,
+            test_manifest=data_plan.test_manifest,
+            device=device,
         )
-        fixed_final_test_report = {
-            "schema_version": 1,
-            "training_mode": "fixed-final",
-            "evaluation_count": 1,
-            "authoritative_checkpoint": str(final_model_path.resolve()),
-            "authoritative_checkpoint_sha256": _sha256_file(final_model_path),
-            "test_index": data_plan.index_provenance["test"],
-            "metrics": test_metrics,
-        }
-        with open(run_dir / "fixed_final_test_metrics.json", "w") as f:
-            json.dump(fixed_final_test_report, f, indent=2)
-    
-    # Save history
-    with open(run_dir / "history.json", "w") as f:
-        json.dump(history, f, indent=2)
 
     if fresh_binding is not None:
         completed_nondeterminism_evidence = (
@@ -1752,8 +1811,8 @@ def main():
     else:
         print(
             "Training complete! Fixed-final policy used final_model.pt; "
-            f"one post-training test loss: "
-            f"{fixed_final_test_report['metrics']['loss']:.6f}"
+            "one held-out representation result was emitted without an "
+            "automatic scientific pass/fail decision."
         )
     print(f"Outputs saved to: {run_dir}")
 

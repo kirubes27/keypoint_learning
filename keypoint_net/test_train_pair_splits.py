@@ -441,28 +441,7 @@ class TrainingModePlanTests(unittest.TestCase):
         self.assertFalse(plan.checkpoint_policy["best_model_written"])
         self.assertEqual(plan.checkpoint_policy["post_training_test_evaluations"], 1)
 
-        final_model_path = root / "run" / "final_model.pt"
-        with self.assertRaisesRegex(RuntimeError, "must exist"):
-            train._build_fixed_final_test_loader(
-                plan,
-                args,
-                final_model_path=final_model_path,
-                use_cuda=False,
-                n_workers=0,
-            )
-        final_model_path.parent.mkdir()
-        final_model_path.write_bytes(b"checkpoint fixture")
-        loader = train._build_fixed_final_test_loader(
-            plan,
-            args,
-            final_model_path=final_model_path,
-            use_cuda=False,
-            n_workers=0,
-        )
-        self.assertEqual(loader.dataset.split_role, "test")
-        self.assertFalse(
-            plan.train_dataset.endpoint_ids & loader.dataset.endpoint_ids
-        )
+        self.assertFalse(hasattr(train, "_build_fixed_final_test_loader"))
 
     def test_source_row_tampering_fails_before_output_directory_exists(self) -> None:
         root, binding = _new_corpus("development")

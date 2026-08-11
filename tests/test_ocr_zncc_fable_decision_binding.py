@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import sys
 import unittest
 from pathlib import Path
@@ -20,6 +21,8 @@ from keypoint_net import ocr_zncc_training_decision as training_decision
 
 _COMMIT = "1" * 40
 _HASH = "a" * 64
+_ACCESS_LINE = f"{fable_review.ACCESS_PROOF_PREFIX}{'7' * 64}"
+_ACCESS_HASH = hashlib.sha256((_ACCESS_LINE + "\n").encode("ascii")).hexdigest()
 
 
 def _evidence_record(logical_name: str, *, digest: str = _HASH) -> dict:
@@ -74,6 +77,12 @@ def _briefing() -> tuple[dict, dict[str, dict]]:
         ],
         "protected_path": fable_review.PROTECTED_PATH,
         "enumerated_files_only": True,
+        "access_challenge": {
+            "logical_name": "fable_access_challenge",
+            "review_path": "/original/mac/review/FABLE_ACCESS_PROOF.txt",
+            "sha256": _ACCESS_HASH,
+            "size_bytes": len(_ACCESS_LINE) + 1,
+        },
         "adversarial_checklist": list(fable_review.ADVERSARIAL_CHECKLIST),
         "committed_run_sources": source_records,
         "primary_evidence": {
@@ -156,6 +165,32 @@ class FableBriefingBindingTests(unittest.TestCase):
             "Fable independence contract differs",
         ):
             self._validate(document, primary)
+
+    def test_access_denial_cannot_masquerade_as_substantive_review(self) -> None:
+        path = mock.Mock(spec=Path)
+        path.is_file.return_value = True
+        path.is_symlink.return_value = False
+        path.stat.return_value.st_size = 5000
+        path.read_text.return_value = (
+            f"{_ACCESS_LINE}\n{fable_review.ACCESS_STATUS_VERIFIED}\n"
+            f"{fable_review.ACCESS_COUNT_VERIFIED}\n"
+            + "I could not open any of the 36 evidence files. " * 100
+        )
+        self.assertFalse(
+            fable_review._substantive_raw(  # noqa: SLF001
+                path, access_challenge_sha256=_ACCESS_HASH
+            )
+        )
+        path.read_text.return_value = (
+            f"{_ACCESS_LINE}\n{fable_review.ACCESS_STATUS_VERIFIED}\n"
+            f"{fable_review.ACCESS_COUNT_VERIFIED}\n"
+            + "Line-anchored independent review evidence. " * 100
+        )
+        self.assertTrue(
+            fable_review._substantive_raw(  # noqa: SLF001
+                path, access_challenge_sha256=_ACCESS_HASH
+            )
+        )
 
     def test_deep_decision_accepts_only_complete_clean_checkout_receipt(self) -> None:
         checkout = {

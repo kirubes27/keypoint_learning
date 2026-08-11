@@ -16,6 +16,8 @@ import hashlib
 import json
 import math
 import os
+import re
+import secrets
 import subprocess
 import time
 from pathlib import Path
@@ -24,8 +26,8 @@ from typing import Any, Mapping, Sequence
 from keypoint_net import ocr_zncc_training_authorization as authorization
 
 
-BRIEFING_SCHEMA_VERSION = "ocr_zncc_fable_high_briefing.v1"
-RECEIPT_SCHEMA_VERSION = "ocr_zncc_fable_high_invocation_receipt.v1"
+BRIEFING_SCHEMA_VERSION = "ocr_zncc_fable_high_briefing.v2"
+RECEIPT_SCHEMA_VERSION = "ocr_zncc_fable_high_invocation_receipt.v2"
 FABLE_HELPER_SHA256 = (
     "5a77df5262cb45375b0239c2b788d47397ccc569cbda2e31a3a478213193c339"
 )
@@ -45,6 +47,22 @@ FABLE_PROMPT_PREFIX = (
     "a concise list of the most important caveats or verification steps.\n\n"
     "--- ORIGINAL TASK BRIEFING ---\n"
 ).encode("utf-8")
+ACCESS_PROOF_PREFIX = "OCR_ZNCC_FABLE_ACCESS_PROOF="
+ACCESS_STATUS_VERIFIED = "PACKET_ACCESS: VERIFIED"
+ACCESS_COUNT_VERIFIED = "PACKET_FILES_OPENED: 37/37"
+_ACCESS_PROOF_PATTERN = re.compile(
+    rf"(?m)^{re.escape(ACCESS_PROOF_PREFIX)}[0-9a-f]{{64}}\s*$"
+)
+_ACCESS_DENIAL_PATTERNS = tuple(
+    re.compile(pattern, flags=re.IGNORECASE | re.DOTALL)
+    for pattern in (
+        r"\b(?:could not|couldn't|cannot|can't|unable to)\s+(?:open|read|access)\b.{0,120}\b(?:evidence|files?|packet|sources?|artifacts?)\b",
+        r"\b(?:zero|no)\s+(?:enumerated\s+)?(?:evidence\s+)?files?\s+(?:were|was)\s+(?:read|opened|accessible)\b",
+        r"\bno evidence (?:could|can) be (?:read|opened|accessed)\b",
+        r"\baccess failure\b",
+        r"\breview not executable\b",
+    )
+)
 
 ADVERSARIAL_CHECKLIST = [
     "Trace the actual train-time runtime path from manifest binding through loss construction, gradient routing, validation aggregation, checkpoint selection, and completion receipts.",
@@ -153,19 +171,9 @@ def _json_record(
     }
 
 
-def _write_exclusive(path: Path | str, document: Mapping[str, Any]) -> dict[str, Any]:
+def _write_bytes_exclusive(path: Path | str, data: bytes) -> dict[str, Any]:
     absolute = Path(path).expanduser().absolute()
     absolute.parent.mkdir(parents=True, exist_ok=True)
-    data = (
-        json.dumps(
-            document,
-            indent=2,
-            sort_keys=True,
-            ensure_ascii=False,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
     try:
         descriptor = os.open(absolute, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
     except OSError as exc:
@@ -184,6 +192,53 @@ def _write_exclusive(path: Path | str, document: Mapping[str, Any]) -> dict[str,
         "size_bytes": len(data),
         "write_mode": "exclusive_create_no_overwrite",
     }
+
+
+def _write_exclusive(path: Path | str, document: Mapping[str, Any]) -> dict[str, Any]:
+    data = (
+        json.dumps(
+            document,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    return _write_bytes_exclusive(path, data)
+
+
+def _packet_record(
+    source: Path | str,
+    destination: Path | str,
+    *,
+    logical_name: str,
+    relative_path: str | None = None,
+    content_hash_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Exclusively copy one enumerated file and prove byte identity."""
+
+    source_path = Path(source).expanduser().absolute()
+    _require(str(source_path) != PROTECTED_PATH, "protected file cannot enter Fable packet")
+    source_record = _record(
+        source_path,
+        logical_name=logical_name,
+        relative_path=relative_path,
+    )
+    data = source_path.read_bytes()
+    written = _write_bytes_exclusive(destination, data)
+    _require(
+        written["sha256"] == source_record["sha256"]
+        and written["size_bytes"] == source_record["size_bytes"],
+        f"Fable packet copy differs: {logical_name}",
+    )
+    result = {
+        **source_record,
+        "review_path": written["absolute_path"],
+    }
+    if content_hash_sha256 is not None:
+        result["content_hash_sha256"] = content_hash_sha256
+    return result
 
 
 def _source_records(repo_root: Path) -> list[dict[str, Any]]:
@@ -225,12 +280,16 @@ def build_briefing(
     pro_preflight_spec_path: Path | str,
     pro_preflight_raw_path: Path | str,
     pro_preflight_receipt_path: Path | str,
+    packet_dir_path: Path | str,
     output_path: Path | str,
 ) -> dict[str, Any]:
     """Create the only briefing permitted for the final Fable call."""
 
     root = Path(repo_root).expanduser().resolve(strict=True)
+    packet_root = Path(packet_dir_path).expanduser().absolute()
+    _require(not packet_root.exists(), "refusing to reuse a Fable packet directory")
     commit, branch = authorization._source_state(root)  # noqa: SLF001
+    source_records = _source_records(root)
     provenance, provenance_record = _json_record(
         stage0_provenance_path, logical_name="stage0_provenance"
     )
@@ -258,6 +317,7 @@ def build_briefing(
         "exactly six Stage0 direction-cell artifacts are required",
     )
     direction_records: list[dict[str, Any]] = []
+    direction_inputs: list[tuple[Path | str, str, dict[str, Any]]] = []
     direction_ids: set[str] = set()
     for path in direction_cell_paths:
         cell, cell_record = _json_record(path, logical_name="temporary_direction_cell")
@@ -267,6 +327,7 @@ def build_briefing(
         direction_ids.add(str(cell_id))
         cell_record["logical_name"] = f"stage0_direction_cell:{cell_id}"
         direction_records.append(cell_record)
+        direction_inputs.append((path, str(cell_id), cell_record))
     _require(direction_ids == EXPECTED_DIRECTION_CELL_IDS, "direction-cell set differs")
     summary_claims = direction_summary.get("direction_cell_artifacts")
     _require(
@@ -294,6 +355,70 @@ def build_briefing(
     for record in calibration_records:
         _check_calibration_record(record)
 
+    # Materialize one sealed, enumerated read scope.  Fable is deliberately run
+    # with this directory as its workdir, so no project-wide permission is needed.
+    packet_root.mkdir(parents=True, exist_ok=False)
+    source_records = [
+        _packet_record(
+            root / relative,
+            packet_root / "committed_sources" / relative,
+            logical_name=f"committed_source:{relative}",
+            relative_path=relative,
+        )
+        for relative in authorization.RUN_SOURCE_PATHS
+    ]
+    provenance_record = _packet_record(
+        stage0_provenance_path,
+        packet_root / "primary_evidence" / "STAGE0_PROVENANCE.json",
+        logical_name="stage0_provenance",
+        content_hash_sha256=str(provenance_record["content_hash_sha256"]),
+    )
+    summary_record = _packet_record(
+        direction_summary_path,
+        packet_root / "primary_evidence" / "DIRECTION_SUMMARY.json",
+        logical_name="stage0_direction_summary",
+        content_hash_sha256=str(summary_record["content_hash_sha256"]),
+    )
+    exact_record = _packet_record(
+        exact_gradient_path,
+        packet_root / "primary_evidence" / "EXACT_GRADIENT.json",
+        logical_name="exact_gradient_audit",
+        content_hash_sha256=str(exact_record["content_hash_sha256"]),
+    )
+    minibatch_record = _packet_record(
+        minibatch_gradient_path,
+        packet_root / "primary_evidence" / "MINIBATCH_GRADIENT.json",
+        logical_name="minibatch_gradient_audit",
+        content_hash_sha256=str(minibatch_record["content_hash_sha256"]),
+    )
+    direction_records = [
+        _packet_record(
+            path,
+            packet_root / "primary_evidence" / f"DIRECTION__{cell_id}.json",
+            logical_name=f"stage0_direction_cell:{cell_id}",
+            content_hash_sha256=str(record["content_hash_sha256"]),
+        )
+        for path, cell_id, record in direction_inputs
+    ]
+    calibration_records = [
+        _packet_record(
+            path,
+            packet_root / "reviewer_calibration" / logical_name,
+            logical_name=logical_name,
+        )
+        for logical_name, path in calibration_inputs
+    ]
+    access_proof = f"{ACCESS_PROOF_PREFIX}{secrets.token_hex(32)}\n".encode("ascii")
+    challenge_write = _write_bytes_exclusive(
+        packet_root / "FABLE_ACCESS_PROOF.txt", access_proof
+    )
+    challenge_record = {
+        "logical_name": "fable_access_challenge",
+        "review_path": challenge_write["absolute_path"],
+        "sha256": challenge_write["sha256"],
+        "size_bytes": challenge_write["size_bytes"],
+    }
+
     document: dict[str, Any] = {
         "schema_version": BRIEFING_SCHEMA_VERSION,
         "artifact_type": "independent_fable_high_ocr_zncc_review_briefing",
@@ -313,6 +438,13 @@ def build_briefing(
         "constraints": [
             "Read only; do not edit, create, delete, move, submit, or train.",
             "Use only the files enumerated in this briefing.",
+            (
+                "Open access_challenge first and reproduce its exact sole line in "
+                "your report as line 1, followed by PACKET_ACCESS: VERIFIED as line "
+                "2 and PACKET_FILES_OPENED: 37/37 as line 3, only after you have "
+                "opened all enumerated packet files. If any cannot be opened, write "
+                "PACKET_ACCESS: FAILED and stop the substantive assessment."
+            ),
             "Treat all prior reviewer reports as advisory and stale until verified directly.",
             "Do not treat reviewer agreement as evidence.",
             "Do not infer Task80, another object, another operator, or a training outcome.",
@@ -320,8 +452,9 @@ def build_briefing(
         ],
         "protected_path": PROTECTED_PATH,
         "enumerated_files_only": True,
+        "access_challenge": challenge_record,
         "adversarial_checklist": list(ADVERSARIAL_CHECKLIST),
-        "committed_run_sources": _source_records(root),
+        "committed_run_sources": source_records,
         "primary_evidence": {
             "artifacts": [
                 provenance_record,
@@ -345,6 +478,10 @@ def build_briefing(
             "authority": "none",
         },
         "requested_deliverable": [
+            (
+                "Begin with exactly three plain-text lines: the access-proof line, "
+                "PACKET_ACCESS: VERIFIED, and PACKET_FILES_OPENED: 37/37."
+            ),
             "Trace the exact runtime and evidence lineage.",
             "List confirmed blockers with exact line anchors.",
             "List rejected suspected blockers and why they are rejected.",
@@ -377,9 +514,9 @@ def validate_briefing_document(
     expected_keys = {
         "schema_version", "artifact_type", "source_commit", "source_branch",
         "original_task", "decision_question", "constraints", "protected_path",
-        "enumerated_files_only", "adversarial_checklist", "committed_run_sources",
-        "primary_evidence", "reviewer_calibration_examples", "requested_deliverable",
-        "independence", "content_hash_sha256",
+        "enumerated_files_only", "access_challenge", "adversarial_checklist",
+        "committed_run_sources", "primary_evidence", "reviewer_calibration_examples",
+        "requested_deliverable", "independence", "content_hash_sha256",
     }
     _require(set(document) == expected_keys, "Fable briefing field set differs")
     authorization._validate_content_hash(document, name="Fable briefing")  # noqa: SLF001
@@ -401,6 +538,18 @@ def validate_briefing_document(
         and document.get("enumerated_files_only") is True
         and any(PROTECTED_PATH in str(item) for item in document.get("constraints", [])),
         "Fable briefing protected-file boundary differs",
+    )
+    challenge = document.get("access_challenge")
+    _require(
+        isinstance(challenge, Mapping)
+        and set(challenge) == {"logical_name", "review_path", "sha256", "size_bytes"}
+        and challenge.get("logical_name") == "fable_access_challenge"
+        and isinstance(challenge.get("review_path"), str)
+        and isinstance(challenge.get("sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", str(challenge.get("sha256"))) is not None
+        and isinstance(challenge.get("size_bytes"), int)
+        and int(challenge["size_bytes"]) == len(ACCESS_PROOF_PREFIX) + 64 + 1,
+        "Fable access-challenge record differs",
     )
     _require(
         document.get("adversarial_checklist") == ADVERSARIAL_CHECKLIST,
@@ -513,6 +662,66 @@ def validate_briefing_document(
     }
 
 
+def _review_records(document: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    primary = document["primary_evidence"]
+    examples = document["reviewer_calibration_examples"]
+    return [
+        document["access_challenge"],
+        *document["committed_run_sources"],
+        *primary["artifacts"],
+        *primary["direction_cells"],
+        *examples["same_prompt_independent_pair"],
+        *examples["historical_pro_design_preflight"],
+    ]
+
+
+def _validate_packet_scope(
+    document: Mapping[str, Any], workdir: Path
+) -> dict[str, Any]:
+    """Prove every enumerated review input is a regular file under workdir."""
+
+    root = workdir.resolve(strict=True)
+    _require(root.is_dir(), "Fable workdir is not a directory")
+    records = _review_records(document)
+    _require(len(records) == 37, "Fable packet file count differs")
+    observed_paths: set[Path] = set()
+    for record in records:
+        _require(isinstance(record, Mapping), "Fable packet record is invalid")
+        claimed = Path(str(record.get("review_path", ""))).expanduser().absolute()
+        _require(str(claimed) != PROTECTED_PATH, "protected path entered Fable packet")
+        _require(not claimed.is_symlink(), "Fable packet file cannot be a symlink")
+        resolved = claimed.resolve(strict=True)
+        _require(
+            resolved.is_file() and resolved.is_relative_to(root),
+            f"Fable packet file is outside workdir: {record.get('logical_name')}",
+        )
+        _require(resolved not in observed_paths, "Fable packet path is duplicated")
+        observed_paths.add(resolved)
+        observed = _record(
+            resolved,
+            logical_name=str(record.get("logical_name")),
+            relative_path=(
+                str(record["relative_path"])
+                if "relative_path" in record else None
+            ),
+        )
+        if "content_hash_sha256" in record:
+            json_document, _ = authorization._load_json(  # noqa: SLF001
+                resolved, name=str(record.get("logical_name"))
+            )
+            observed["content_hash_sha256"] = authorization._validate_content_hash(  # noqa: SLF001
+                json_document, name=str(record.get("logical_name"))
+            )
+        _require(
+            _identity(observed) == _identity(record),
+            f"Fable packet bytes differ: {record.get('logical_name')}",
+        )
+    return {
+        "file_count": len(records),
+        "access_challenge_sha256": document["access_challenge"]["sha256"],
+    }
+
+
 def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -523,14 +732,33 @@ def _execution_record(path: Path | str, *, logical_name: str) -> dict[str, Any]:
     return record
 
 
-def _substantive_raw(path: Path) -> bool:
+def _substantive_raw(path: Path, *, access_challenge_sha256: str) -> bool:
     if not path.is_file() or path.is_symlink() or path.stat().st_size < 1000:
         return False
     try:
-        text = path.read_text(encoding="utf-8", errors="strict").strip().lower()
+        text = path.read_text(encoding="utf-8", errors="strict").strip()
     except UnicodeError:
         return False
-    return text not in {
+    nonempty_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(nonempty_lines) < 3:
+        return False
+    proof_lines = [match.group(0).strip() for match in _ACCESS_PROOF_PATTERN.finditer(text)]
+    if len(proof_lines) != 1 or nonempty_lines[:3] != [
+        proof_lines[0], ACCESS_STATUS_VERIFIED, ACCESS_COUNT_VERIFIED
+    ]:
+        return False
+    proof_hash = hashlib.sha256((proof_lines[0] + "\n").encode("ascii")).hexdigest()
+    if proof_hash != access_challenge_sha256:
+        return False
+    upper = text.upper()
+    if (
+        upper.count(ACCESS_STATUS_VERIFIED) != 1
+        or upper.count(ACCESS_COUNT_VERIFIED) != 1
+        or "PACKET_ACCESS: FAILED" in upper
+        or any(pattern.search(text) is not None for pattern in _ACCESS_DENIAL_PATTERNS)
+    ):
+        return False
+    return text.lower() not in {
         "credit balance is too low", "not logged in", "authentication failed",
         "rate limit",
     }
@@ -564,6 +792,7 @@ def invoke_once(
 
     briefing, _ = authorization._load_json(briefing_path, name="Fable briefing")  # noqa: SLF001
     validate_briefing_document(root, briefing)
+    packet_validation = _validate_packet_scope(briefing, workdir_path)
     helper_record = _execution_record(helper_path, logical_name="fable_high_helper")
     _require(helper_record["sha256"] == FABLE_HELPER_SHA256, "Fable helper SHA-256 differs")
     briefing_record = _execution_record(briefing_path, logical_name="fable_briefing")
@@ -596,7 +825,10 @@ def invoke_once(
         prompt_record is not None
         and prompt_path.read_bytes() == FABLE_PROMPT_PREFIX + briefing_path.read_bytes()
     )
-    raw_valid = _substantive_raw(raw_path)
+    raw_valid = _substantive_raw(
+        raw_path,
+        access_challenge_sha256=packet_validation["access_challenge_sha256"],
+    )
     success = completed.returncode == 0 and prompt_valid and raw_valid
     document: dict[str, Any] = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
@@ -632,6 +864,8 @@ def invoke_once(
         },
         "validation": {
             "compiled_prompt_exact": prompt_valid,
+            "packet_file_count": packet_validation["file_count"],
+            "access_proof_verified": raw_valid,
             "raw_review_substantive": raw_valid,
         },
     }
@@ -684,7 +918,15 @@ def validate_review_bundle(
         == FABLE_PROMPT_PREFIX + Path(briefing_path).read_bytes(),
         "Fable compiled prompt differs from briefing",
     )
-    _require(_substantive_raw(Path(raw_path)), "Fable raw review is not substantive")
+    challenge = briefing.get("access_challenge")
+    _require(isinstance(challenge, Mapping), "Fable access challenge is invalid")
+    _require(
+        _substantive_raw(
+            Path(raw_path),
+            access_challenge_sha256=str(challenge.get("sha256")),
+        ),
+        "Fable raw review lacks verified packet access",
+    )
     recorded = receipt.get("artifacts")
     _require(isinstance(recorded, Mapping), "Fable receipt artifact records are invalid")
     for name, observed in live.items():
@@ -721,7 +963,12 @@ def validate_review_bundle(
     )
     _require(
         receipt.get("validation")
-        == {"compiled_prompt_exact": True, "raw_review_substantive": True},
+        == {
+            "compiled_prompt_exact": True,
+            "packet_file_count": 37,
+            "access_proof_verified": True,
+            "raw_review_substantive": True,
+        },
         "Fable receipt validation flags differ",
     )
     _require(
@@ -764,6 +1011,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build.add_argument("--pro-preflight-spec", type=Path, required=True)
     build.add_argument("--pro-preflight-raw", type=Path, required=True)
     build.add_argument("--pro-preflight-receipt", type=Path, required=True)
+    build.add_argument("--packet-dir", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
     invoke = subparsers.add_parser("invoke-once")
     invoke.add_argument("--repo-root", type=Path, required=True)
@@ -787,6 +1035,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             pro_preflight_spec_path=args.pro_preflight_spec,
             pro_preflight_raw_path=args.pro_preflight_raw,
             pro_preflight_receipt_path=args.pro_preflight_receipt,
+            packet_dir_path=args.packet_dir,
             output_path=args.output,
         )
         print(json.dumps({"status": "briefing_created", "content_hash_sha256": document["content_hash_sha256"]}, sort_keys=True))
@@ -809,6 +1058,9 @@ if __name__ == "__main__":
 
 __all__ = [
     "ADVERSARIAL_CHECKLIST",
+    "ACCESS_COUNT_VERIFIED",
+    "ACCESS_PROOF_PREFIX",
+    "ACCESS_STATUS_VERIFIED",
     "BRIEFING_SCHEMA_VERSION",
     "FABLE_HELPER_SHA256",
     "PROTECTED_PATH",

@@ -92,6 +92,7 @@ class OCRZNCCResult:
     reciprocal_competitor_distance_cells: torch.Tensor
     target_search_centres: torch.Tensor
     target_match_offsets_cells: torch.Tensor
+    source_patch_inside: torch.Tensor
 
     @property
     def accepted_count(self) -> int:
@@ -360,6 +361,11 @@ def ocr_zncc_transport_loss(
         grid_size=config.grid_size,
     )
     source_vectors, source_rms = _center_and_measure(source_patches)
+    source_inside = patch_centres_inside(
+        source,
+        patch_size=config.patch_size,
+        grid_size=config.grid_size,
+    ).detach()
     forward = _best_match(
         query_patch=source_vectors,
         query_rms=source_rms,
@@ -383,6 +389,8 @@ def ocr_zncc_transport_loss(
         dim=-1,
     ) / grid_step(config.grid_size)
     accepted = (
+        source_inside
+        &
         forward["accepted"]
         & reciprocal["accepted"]
         & torch.isfinite(reciprocal_error_cells)
@@ -430,6 +438,7 @@ def ocr_zncc_transport_loss(
         ].detach(),
         target_search_centres=search_centres,
         target_match_offsets_cells=forward["match_offsets_cells"].detach(),
+        source_patch_inside=source_inside,
     )
 
 

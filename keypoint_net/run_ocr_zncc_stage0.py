@@ -58,6 +58,14 @@ RECIPE_PASS_COUNT_MINIMUM = 2
 GRADIENT_NORM_FLOOR = 1e-12
 MEDIAN_TARGET_CONTRIBUTION = 0.10
 COEFFICIENT_CAP = 0.50
+AUDIT_SOURCE_PATHS = (
+    "keypoint_net/run_ocr_zncc_stage0.py",
+    "keypoint_net/run_ocr_zncc_exact_gradient_direction_audit.py",
+    "keypoint_net/run_ocr_zncc_minibatch_gradient_audit.py",
+    "keypoint_net/ocr_zncc_transport.py",
+    "keypoint_net/model.py",
+    "keypoint_net/dataset.py",
+)
 
 
 class Stage0Error(RuntimeError):
@@ -135,9 +143,18 @@ def validate_audit_checkout(repo_root: Path) -> dict[str, Any]:
     root = repo_root.expanduser().resolve(strict=True)
     branch = _git(root, "branch", "--show-current")
     commit = _git(root, "rev-parse", "HEAD")
-    tracked_status = _git(root, "status", "--porcelain", "--untracked-files=no")
+    status = _git(root, "status", "--porcelain")
     _require(branch == EXPECTED_BRANCH, "Stage-0 audit branch differs")
-    _require(tracked_status == "", "Stage-0 audit checkout has tracked changes")
+    _require(status == "", "Stage-0 audit checkout is not completely clean")
+    for relative in AUDIT_SOURCE_PATHS:
+        _git(root, "ls-files", "--error-unmatch", relative)
+        live = (root / relative).read_bytes()
+        committed = subprocess.run(
+            ["git", "-C", str(root), "show", f"HEAD:{relative}"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        _require(live == committed, f"live audit source differs from HEAD: {relative}")
     subprocess.run(
         ["git", "-C", str(root), "merge-base", "--is-ancestor", AUTHORIZED_BASE_COMMIT, commit],
         check=True,
@@ -149,7 +166,8 @@ def validate_audit_checkout(repo_root: Path) -> dict[str, Any]:
         "commit": commit,
         "authorized_base_commit": AUTHORIZED_BASE_COMMIT,
         "authorized_base_is_ancestor": True,
-        "tracked_status": tracked_status,
+        "complete_status": status,
+        "source_paths_verified_against_head": list(AUDIT_SOURCE_PATHS),
     }
 
 

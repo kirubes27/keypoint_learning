@@ -113,17 +113,27 @@ def test_distinct_competitor_margin_excludes_only_adjacent_peak_shoulders() -> N
 
 
 def test_distinct_competitor_still_abstains_on_spatially_repeated_evidence() -> None:
-    image = torch.ones((1, 3, 64, 64), dtype=torch.float32) * 0.5
+    generator = torch.Generator().manual_seed(701)
+    repeated_patch = torch.rand((3, 7, 7), generator=generator) * 0.4 + 0.3
+    source_image = torch.full((1, 3, 64, 64), 0.5)
+    target_image = source_image.clone()
+    source_image[0, :, 28:35, 28:35] = repeated_patch
+    target_image[0, :, 28:35, 24:31] = repeated_patch
+    target_image[0, :, 28:35, 32:39] = repeated_patch
     source = _coordinate(31, 31).view(1, 1, 2)
+    search = source.clone()
     target = _coordinate(32, 31).view(1, 1, 2).requires_grad_(True)
     result = ocr_zncc_transport_loss(
-        image,
-        image.clone(),
+        source_image,
+        target_image,
         source,
-        source,
+        search,
         target,
         config=replace(CONFIG, peak_margin_exclusion_radius_cells=1),
     )
+    assert result.target_peak_zncc.item() > 0.999
+    assert result.target_competitor_distance_cells.item() == 8.0
+    assert abs(result.target_peak_margin.item()) < 1e-6
     assert not bool(result.accepted.item())
     assert torch.isfinite(result.loss)
 
@@ -313,3 +323,20 @@ def test_unrelated_keypoint_channel_is_not_a_negative() -> None:
         atol=0.0,
         rtol=0.0,
     )
+
+
+def test_source_patch_crossing_image_boundary_is_rejected() -> None:
+    source_rgb, target_rgb = _translated_pair()
+    source = _coordinate(1, 31).view(1, 1, 2)
+    search = _coordinate(4, 29).view(1, 1, 2)
+    target = search.clone().requires_grad_(True)
+    result = ocr_zncc_transport_loss(
+        source_rgb,
+        target_rgb,
+        source,
+        search,
+        target,
+        config=CONFIG,
+    )
+    assert result.source_patch_inside.tolist() == [[False]]
+    assert result.accepted.tolist() == [[False]]

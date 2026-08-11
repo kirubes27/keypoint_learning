@@ -36,6 +36,12 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from model import PhaseAModel, compute_losses
 from descriptor_attachment import LOSS_SPEC_SHA256
+from ocr_zncc_transport import (
+    OCRZNCCConfig,
+    combine_with_base_loss,
+    normalized_images_to_retained_rgb,
+    ocr_zncc_transport_loss,
+)
 from dataset import (
     IndexPairDataset,
     IndexPairManifest,
@@ -45,6 +51,7 @@ from dataset import (
 )
 import representation_fresh_checkpoint_authorization as fresh_authorization
 import descriptor_attachment_authorization as descriptor_authorization
+import ocr_zncc_training_authorization as ocr_authorization
 import representation_corpus_inventory
 import fresh_roll_determinism
 
@@ -68,6 +75,28 @@ def _sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _model_state_sha256(model: nn.Module) -> str:
+    """Hash every parameter and buffer in stable name/shape/dtype order."""
+    digest = hashlib.sha256()
+    for name, value in sorted(model.state_dict().items()):
+        tensor = value.detach().cpu().contiguous()
+        digest.update(name.encode("utf-8") + b"\0")
+        digest.update(str(tensor.dtype).encode("ascii") + b"\0")
+        digest.update(json.dumps(list(tensor.shape), separators=(",", ":")).encode("ascii"))
+        digest.update(b"\0" + tensor.numpy().tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def _update_pair_order_digest(digest, pair_ids) -> int:
+    count = 0
+    for value in pair_ids:
+        encoded = str(value).encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        count += 1
+    return count
 
 
 def _source_commit() -> str:
@@ -131,7 +160,72 @@ def _nvidia_driver_facts() -> tuple[str, str]:
     return driver.group(1), cuda.group(1)
 
 
-def _runtime_environment(device: torch.device) -> dict:
+def _bound_runtime_file(path_variable: str, hash_variable: str, name: str) -> dict:
+    """Validate one exact regular runtime-provenance file."""
+    supplied_path = os.environ.get(path_variable)
+    expected_hash = os.environ.get(hash_variable)
+    if not supplied_path or not expected_hash:
+        raise RuntimeError(f"bound run lacks {name} provenance")
+    if re.fullmatch(r"[0-9a-f]{64}", expected_hash) is None:
+        raise RuntimeError(f"{hash_variable} is invalid")
+    path = Path(supplied_path)
+    if not path.is_absolute():
+        raise RuntimeError(f"{name} path must be absolute")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise RuntimeError(f"cannot open {name}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"{name} is not a regular file")
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+            size += len(block)
+    finally:
+        os.close(descriptor)
+    if size != metadata.st_size or digest.hexdigest() != expected_hash:
+        raise RuntimeError(f"{name} live file binding differs")
+    return {
+        "absolute_path": str(path),
+        "sha256": digest.hexdigest(),
+        "size_bytes": size,
+    }
+
+
+def _runtime_provenance_files(*, ocr: bool) -> dict:
+    """Validate runtime locks before any run directory is claimed."""
+    prefix = "OCR" if ocr else "FRESH_ROLL"
+    return {
+        "stage_launch_lock": _bound_runtime_file(
+            f"{prefix}_STAGE_LAUNCH_LOCK" if ocr else "FRESH_ROLL_PRIMARY_MATRIX_LOCK",
+            f"{prefix}_STAGE_LAUNCH_LOCK_SHA256" if ocr else "FRESH_ROLL_PRIMARY_MATRIX_LOCK_SHA256",
+            "OCR stage launch lock" if ocr else "primary matrix launch lock",
+        ),
+        "environment_lock": _bound_runtime_file(
+            f"{prefix}_ENV_LOCK",
+            f"{prefix}_ENV_LOCK_SHA256",
+            "environment lock",
+        ),
+        "slurm_script": _bound_runtime_file(
+            f"{prefix}_SLURM_SCRIPT",
+            f"{prefix}_SLURM_SCRIPT_SHA256",
+            "Slurm job script",
+        ),
+    }
+
+
+def _runtime_environment(
+    device: torch.device,
+    *,
+    provenance_files: dict | None = None,
+    ocr: bool = False,
+) -> dict:
     """Record the reviewed runtime fields without importing torchvision."""
     driver_version = None
     driver_visible_cuda_version = None
@@ -139,61 +233,13 @@ def _runtime_environment(device: torch.device) -> dict:
     if device.type == "cuda":
         driver_version, driver_visible_cuda_version = _nvidia_driver_facts()
         gpu_name = torch.cuda.get_device_name(device)
-    def bound_file(path_variable: str, hash_variable: str, name: str) -> dict:
-        supplied_path = os.environ.get(path_variable)
-        expected_hash = os.environ.get(hash_variable)
-        if not supplied_path or not expected_hash:
-            raise RuntimeError(f"fresh primary run lacks {name} provenance")
-        if re.fullmatch(r"[0-9a-f]{64}", expected_hash) is None:
-            raise RuntimeError(f"{hash_variable} is invalid")
-        path = Path(supplied_path)
-        if not path.is_absolute():
-            raise RuntimeError(f"{name} path must be absolute")
-        try:
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        except OSError as exc:
-            raise RuntimeError(f"cannot open {name}") from exc
-        try:
-            metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode):
-                raise RuntimeError(f"{name} is not a regular file")
-            digest = hashlib.sha256()
-            size = 0
-            while True:
-                block = os.read(descriptor, 1024 * 1024)
-                if not block:
-                    break
-                digest.update(block)
-                size += len(block)
-        finally:
-            os.close(descriptor)
-        if size != metadata.st_size or digest.hexdigest() != expected_hash:
-            raise RuntimeError(f"{name} live file binding differs")
-        return {
-            "absolute_path": str(path),
-            "sha256": digest.hexdigest(),
-            "size_bytes": size,
-        }
 
     slurm_job_id = os.environ.get("SLURM_JOB_ID")
     if not slurm_job_id:
         raise RuntimeError("fresh primary run lacks SLURM_JOB_ID")
-    matrix_lock = bound_file(
-        "FRESH_ROLL_PRIMARY_MATRIX_LOCK",
-        "FRESH_ROLL_PRIMARY_MATRIX_LOCK_SHA256",
-        "primary matrix launch lock",
-    )
-    environment_lock = bound_file(
-        "FRESH_ROLL_ENV_LOCK",
-        "FRESH_ROLL_ENV_LOCK_SHA256",
-        "environment lock",
-    )
-    slurm_script = bound_file(
-        "FRESH_ROLL_SLURM_SCRIPT",
-        "FRESH_ROLL_SLURM_SCRIPT_SHA256",
-        "Slurm job script",
-    )
-    return {
+    if provenance_files is None:
+        provenance_files = _runtime_provenance_files(ocr=ocr)
+    result = {
         "python_implementation": platform.python_implementation(),
         "python_version": platform.python_version(),
         "pytorch_version": str(torch.__version__),
@@ -206,10 +252,38 @@ def _runtime_environment(device: torch.device) -> dict:
         "nvidia_driver_version": driver_version,
         "driver_visible_cuda_version": driver_visible_cuda_version,
         "slurm_job_id": slurm_job_id,
-        "primary_matrix_launch_lock": matrix_lock,
-        "environment_lock": environment_lock,
-        "slurm_job_script": slurm_script,
+        "environment_lock": provenance_files["environment_lock"],
+        "slurm_job_script": provenance_files["slurm_script"],
     }
+    result[
+        "ocr_stage_launch_lock" if ocr else "primary_matrix_launch_lock"
+    ] = provenance_files["stage_launch_lock"]
+    if ocr:
+        pair_id = os.environ.get("OCR_PAIR_ID")
+        pair_position = os.environ.get("OCR_PAIR_POSITION")
+        wrapper_pid = os.environ.get("OCR_PAIR_WRAPPER_PID")
+        cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if (
+            not pair_id
+            or pair_position not in {"1_control", "2_ocr_zncc"}
+            or not wrapper_pid
+            or not wrapper_pid.isdigit()
+            or int(wrapper_pid) <= 0
+            or not cuda_visible_devices
+            or "," in cuda_visible_devices
+        ):
+            raise RuntimeError(
+                "OCR run lacks a single-GPU sequential pair-wrapper binding"
+            )
+        result["ocr_pair_execution"] = {
+            "pair_id": pair_id,
+            "position": pair_position,
+            "wrapper_pid": int(wrapper_pid),
+            "slurm_job_id": slurm_job_id,
+            "cuda_visible_devices": cuda_visible_devices,
+            "allocated_gpu_count": 1,
+        }
+    return result
 
 
 def _infer_eval_frames_dir(data_root: str, object_name: str):
@@ -327,6 +401,9 @@ def train_epoch(
     sigma: float,
     num_keypoints: int,
     lambda_attach: float = 0.0,
+    lambda_ocr_zncc: float = 0.0,
+    ocr_zncc_config: Optional[OCRZNCCConfig] = None,
+    record_pair_order: bool = False,
     *,
     nondeterminism_policy: Optional[dict] = None,
     nondeterminism_evidence: Optional[dict] = None,
@@ -337,6 +414,10 @@ def train_epoch(
     total_loss = 0.0
     total_base = 0.0
     total_attach = 0.0
+    total_ocr_zncc = 0.0
+    total_ocr_accepted = 0
+    total_ocr_possible = 0
+    total_ocr_zero_accept_batches = 0
     total_pred = 0.0
     total_smooth = 0.0
     total_disp = 0.0
@@ -347,8 +428,16 @@ def train_epoch(
     total_cycle = 0.0
     total_act_acc = 0.0
     n_batches = 0
+    pair_order_digest = hashlib.sha256() if record_pair_order else None
+    pair_order_count = 0
 
     for batch in loader:
+        if pair_order_digest is not None:
+            if 'pair_id' not in batch:
+                raise ValueError("pair-order recording requires pair_id values")
+            pair_order_count += _update_pair_order_digest(
+                pair_order_digest, batch['pair_id']
+            )
         x_t = batch['x_t'].to(device)
         x_t1 = batch['x_t1'].to(device)
         action_labels = batch['action_label'].to(device).long()
@@ -376,6 +465,29 @@ def train_epoch(
             x_t1=x_t1,
             loc_bg_threshold=loc_bg_threshold,
         )
+        if lambda_ocr_zncc > 0.0:
+            if ocr_zncc_config is None:
+                raise ValueError("positive OCR-ZNCC weight requires its frozen config")
+            transport = ocr_zncc_transport_loss(
+                normalized_images_to_retained_rgb(x_t),
+                normalized_images_to_retained_rgb(x_t1),
+                outputs['p_t'].reshape(x_t.shape[0], num_keypoints, 2),
+                outputs['p_hat_t1'].reshape(x_t.shape[0], num_keypoints, 2),
+                outputs['p_t1'].reshape(x_t.shape[0], num_keypoints, 2),
+                config=ocr_zncc_config,
+            )
+            optimization_loss = combine_with_base_loss(
+                losses['loss'], transport.loss, weight=lambda_ocr_zncc,
+            )
+            ocr_loss = transport.loss
+            accepted_count = transport.accepted_count
+            possible_count = int(x_t.shape[0]) * num_keypoints
+        else:
+            # The matched control does not execute the matcher at all.
+            optimization_loss = losses['loss']
+            ocr_loss = losses['loss'].detach() * 0.0
+            accepted_count = 0
+            possible_count = 0
 
         # Backward pass
         if nondeterminism_policy is None:
@@ -384,7 +496,7 @@ def train_epoch(
                     "nondeterminism evidence requires an active policy"
                 )
             optimizer.zero_grad()
-            losses['loss'].backward()
+            optimization_loss.backward()
             optimizer.step()
         else:
             if nondeterminism_evidence is None:
@@ -392,16 +504,20 @@ def train_epoch(
                     "nondeterminism policy requires an evidence accumulator"
                 )
             fresh_roll_determinism.backward_and_step(
-                losses['loss'],
+                optimization_loss,
                 optimizer,
                 policy=nondeterminism_policy,
                 evidence=nondeterminism_evidence,
             )
 
         # Accumulate metrics
-        total_loss += losses['loss'].item()
+        total_loss += optimization_loss.item()
         total_base += losses['base_loss'].item()
         total_attach += losses['attachment_loss'].item()
+        total_ocr_zncc += ocr_loss.item()
+        total_ocr_accepted += accepted_count
+        total_ocr_possible += possible_count
+        total_ocr_zero_accept_batches += int(lambda_ocr_zncc > 0.0 and accepted_count == 0)
         total_pred += losses['l_pred'].item()
         total_smooth += losses['l_smooth'].item()
         total_disp += losses['l_disp'].item()
@@ -418,6 +534,13 @@ def train_epoch(
         'train_loss': total_loss / n_batches,
         'base_loss': total_base / n_batches,
         'attachment_loss': total_attach / n_batches,
+        'ocr_zncc_loss': total_ocr_zncc / n_batches,
+        'ocr_zncc_accepted_match_count': total_ocr_accepted,
+        'ocr_zncc_possible_match_count': total_ocr_possible,
+        'ocr_zncc_accepted_match_coverage': (
+            total_ocr_accepted / total_ocr_possible if total_ocr_possible else None
+        ),
+        'ocr_zncc_zero_accept_batch_count': total_ocr_zero_accept_batches,
         'l_pred': total_pred / n_batches,
         'l_smooth': total_smooth / n_batches,
         'l_disp': total_disp / n_batches,
@@ -427,6 +550,10 @@ def train_epoch(
         'l_inv': total_inv / n_batches,
         'l_cycle': total_cycle / n_batches,
         'act_acc': total_act_acc / n_batches,
+        'pair_order_sha256': (
+            pair_order_digest.hexdigest() if pair_order_digest is not None else None
+        ),
+        'pair_order_sample_count': pair_order_count if pair_order_digest is not None else None,
     }
 
 
@@ -446,6 +573,8 @@ def evaluate(
     sigma: float,
     num_keypoints: int,
     lambda_attach: float = 0.0,
+    lambda_ocr_zncc: float = 0.0,
+    ocr_zncc_config: Optional[OCRZNCCConfig] = None,
 ) -> dict:
     """Evaluate one explicitly supplied held-out loader."""
     model.eval()
@@ -453,6 +582,11 @@ def evaluate(
     total_loss = 0.0
     total_base = 0.0
     total_attach = 0.0
+    total_ocr_zncc = 0.0
+    total_ocr_zncc_weight = 0
+    total_ocr_accepted = 0
+    total_ocr_possible = 0
+    total_ocr_zero_accept_batches = 0
     total_pred = 0.0
     total_act = 0.0
     total_loc = 0.0
@@ -460,6 +594,7 @@ def evaluate(
     total_cycle = 0.0
     total_act_acc = 0.0
     n_batches = 0
+    n_samples = 0
 
     for batch in loader:
         x_t = batch['x_t'].to(device)
@@ -488,29 +623,74 @@ def evaluate(
             x_t1=x_t1,
             loc_bg_threshold=loc_bg_threshold,
         )
+        if lambda_ocr_zncc > 0.0:
+            if ocr_zncc_config is None:
+                raise ValueError("positive OCR-ZNCC weight requires its frozen config")
+            transport = ocr_zncc_transport_loss(
+                normalized_images_to_retained_rgb(x_t),
+                normalized_images_to_retained_rgb(x_t1),
+                outputs['p_t'].reshape(x_t.shape[0], num_keypoints, 2),
+                outputs['p_hat_t1'].reshape(x_t.shape[0], num_keypoints, 2),
+                outputs['p_t1'].reshape(x_t.shape[0], num_keypoints, 2),
+                config=ocr_zncc_config,
+            )
+            augmented_loss = combine_with_base_loss(
+                losses['loss'], transport.loss, weight=lambda_ocr_zncc,
+            )
+            ocr_loss = transport.loss
+            accepted_count = transport.accepted_count
+            possible_count = int(x_t.shape[0]) * num_keypoints
+        else:
+            augmented_loss = losses['loss']
+            ocr_loss = losses['loss'] * 0.0
+            accepted_count = 0
+            possible_count = 0
 
-        total_loss += losses['loss'].item()
-        total_base += losses['base_loss'].item()
-        total_attach += losses['attachment_loss'].item()
-        total_pred += losses['l_pred'].item()
-        total_act += losses['l_act'].item()
-        total_loc += losses['l_loc'].item()
-        total_inv += losses['l_inv'].item()
-        total_cycle += losses['l_cycle'].item()
-        total_act_acc += losses['act_acc'].item()
+        batch_sample_count = int(x_t.shape[0])
+        total_loss += augmented_loss.item() * batch_sample_count
+        total_base += losses['base_loss'].item() * batch_sample_count
+        total_attach += losses['attachment_loss'].item() * batch_sample_count
+        total_ocr_zncc += ocr_loss.item() * accepted_count
+        total_ocr_zncc_weight += accepted_count
+        total_ocr_accepted += accepted_count
+        total_ocr_possible += possible_count
+        total_ocr_zero_accept_batches += int(lambda_ocr_zncc > 0.0 and accepted_count == 0)
+        total_pred += losses['l_pred'].item() * batch_sample_count
+        total_act += losses['l_act'].item() * batch_sample_count
+        total_loc += losses['l_loc'].item() * batch_sample_count
+        total_inv += losses['l_inv'].item() * batch_sample_count
+        total_cycle += losses['l_cycle'].item() * batch_sample_count
+        total_act_acc += losses['act_acc'].item() * batch_sample_count
         n_batches += 1
+        n_samples += batch_sample_count
 
     return {
-        'loss': total_loss / n_batches,
-        'train_loss': total_loss / n_batches,
-        'base_loss': total_base / n_batches,
-        'attachment_loss': total_attach / n_batches,
-        'l_pred': total_pred / n_batches,
-        'l_act': total_act / n_batches,
-        'l_loc': total_loc / n_batches,
-        'l_inv': total_inv / n_batches,
-        'l_cycle': total_cycle / n_batches,
-        'act_acc': total_act_acc / n_batches,
+        'loss': total_loss / n_samples,
+        'train_loss': total_loss / n_samples,
+        'base_loss': total_base / n_samples,
+        'attachment_loss': total_attach / n_samples,
+        'ocr_zncc_loss': (
+            total_ocr_zncc / total_ocr_zncc_weight
+            if total_ocr_zncc_weight else 0.0
+        ),
+        'ocr_zncc_accepted_match_count': total_ocr_accepted,
+        'ocr_zncc_possible_match_count': total_ocr_possible,
+        'ocr_zncc_accepted_match_coverage': (
+            total_ocr_accepted / total_ocr_possible if total_ocr_possible else None
+        ),
+        'ocr_zncc_zero_accept_batch_count': total_ocr_zero_accept_batches,
+        'l_pred': total_pred / n_samples,
+        'l_act': total_act / n_samples,
+        'l_loc': total_loc / n_samples,
+        'l_inv': total_inv / n_samples,
+        'l_cycle': total_cycle / n_samples,
+        'act_acc': total_act_acc / n_samples,
+        'aggregation': {
+            'base_and_standard_metrics': 'sample_weighted_complete_loader_mean',
+            'ocr_zncc_loss': 'accepted_match_weighted_complete_loader_mean',
+            'sample_count': n_samples,
+            'batch_count': n_batches,
+        },
     }
 
 
@@ -564,6 +744,7 @@ def _validate_training_arguments(args: argparse.Namespace) -> None:
         "lambda_inv",
         "lambda_cycle",
         "lambda_attach",
+        "lambda_ocr_zncc",
     ):
         value = getattr(args, name, 0.0 if name == "lambda_attach" else None)
         if not np.isfinite(value) or value < 0:
@@ -581,6 +762,21 @@ def _validate_training_arguments(args: argparse.Namespace) -> None:
                     "positive --lambda_attach requires the exact retained "
                     f"configuration: --{name}={expected}"
                 )
+    if getattr(args, "lambda_ocr_zncc", 0.0) > 0.0:
+        ocr_requirements = {
+            "img_size": 512,
+            "heatmap_res": 64,
+            "base_channels": 32,
+            "num_keypoints": 10,
+        }
+        for name, expected in ocr_requirements.items():
+            if getattr(args, name) != expected:
+                raise ValueError(
+                    "positive --lambda_ocr_zncc requires the exact retained "
+                    f"configuration: --{name}={expected}"
+                )
+        if args.ocr_peak_margin_exclusion_radius_cells != 1:
+            raise ValueError("OCR-ZNCC training requires exclusion radius one")
     if (
         not np.isfinite(args.loc_bg_threshold)
         or not 0 <= args.loc_bg_threshold <= 255
@@ -820,6 +1016,63 @@ def _validate_fresh_data_plan(
         raise ValueError("fresh live corpus binding differs")
 
 
+def _validate_ocr_data_plan(
+    data_plan: TrainingDataPlan,
+    binding: ocr_authorization.OCRTrainingBinding,
+    *,
+    data_root: str,
+) -> None:
+    """Cross-bind OCR data to the exact split and live roll corpus."""
+    if data_plan.mode != "development" or data_plan.test_manifest is not None:
+        raise ValueError("OCR cell must use development mode without a test loader")
+    expected = binding.expected_training_arguments
+    split_contract = {
+        "train": {
+            "path": expected["train_pairs_index"],
+            "file_sha256": ocr_authorization.TRAIN_INDEX_SHA256,
+            "content_hash_sha256": "40a70495d144fcf838146178bbdb2756251a413fcea65bc2626a87a5f75c5432",
+            "pair_count": 147,
+        },
+        "validation": {
+            "path": expected["val_pairs_index"],
+            "file_sha256": ocr_authorization.VALIDATION_INDEX_SHA256,
+            "content_hash_sha256": "c64e6c9e822a2cb744e2f681eab210f3d961f73f8b9ede5c786bb873dcf529e0",
+            "pair_count": 21,
+        },
+    }
+    for split, contract in split_contract.items():
+        actual = data_plan.index_provenance.get(split)
+        transform = actual.get("transform") if isinstance(actual, dict) else None
+        if not isinstance(actual, dict) or (
+            actual.get("resolved_path") != contract["path"]
+            or actual.get("file_sha256") != contract["file_sha256"]
+            or actual.get("content_hash_sha256") != contract["content_hash_sha256"]
+            or actual.get("dataset_binding_sha256")
+            != ocr_authorization.FIXED_TRAINING_ARGUMENTS["dataset_binding_sha256"]
+            or actual.get("pair_count_after_object_filter") != contract["pair_count"]
+            or not isinstance(transform, dict)
+            or transform.get("family") != "roll"
+            or transform.get("physical_axis") != "world_z"
+            or transform.get("direction") != "forward"
+            or transform.get("signed_generator") != 6.0
+            or transform.get("expected_2d_family")
+            != "planar_rotation_about_projected_center"
+        ):
+            raise ValueError(f"OCR {split} split provenance differs")
+    inventory_path = (
+        Path(__file__).resolve().parent.parent
+        / "docs/decisions/2026-07-26/representation_oracle_splits/"
+        "inventories/CORPUS_INVENTORY__roll.json"
+    )
+    inventory = representation_corpus_inventory.validate_corpus_inventory(
+        inventory_path.read_bytes(), "roll", data_root,
+    )
+    if inventory.content_hash_sha256 != ocr_authorization.FIXED_TRAINING_ARGUMENTS[
+        "dataset_binding_sha256"
+    ]:
+        raise ValueError("OCR live corpus binding differs")
+
+
 def _prepare_training_data(
     args: argparse.Namespace,
     *,
@@ -896,7 +1149,10 @@ def _prepare_training_data(
                 "mode": "development",
                 "selection": (
                     "minimum_base_validation_loss"
-                    if getattr(args, "descriptor_cell_id", None) is not None
+                    if (
+                        getattr(args, "descriptor_cell_id", None) is not None
+                        or getattr(args, "ocr_cell_id", None) is not None
+                    )
                     else "minimum_total_validation_loss"
                 ),
                 "authoritative_checkpoint": "best_model.pt",
@@ -1085,6 +1341,12 @@ def main():
     parser.add_argument("--descriptor_weight_receipt", type=str, default=None)
     parser.add_argument("--descriptor_weight_receipt_sha256", type=str, default=None)
     parser.add_argument("--descriptor_loss_spec_sha256", type=str, default=None)
+    parser.add_argument(
+        "--ocr_cell_id", type=str, default=None,
+        help="Exact control/OCR-ZNCC cell from a hash-bound experiment manifest.",
+    )
+    parser.add_argument("--ocr_experiment_manifest", type=str, default=None)
+    parser.add_argument("--ocr_experiment_manifest_sha256", type=str, default=None)
     parser.add_argument("--object", type=str, default=None, help="Single object name (e.g., coffeemug)")
     parser.add_argument("--pairs_index", type=str, default=None,
                         help="Deprecated alias for --train_pairs_index. It is "
@@ -1175,6 +1437,15 @@ def main():
         default=0.0,
         help="Exact descriptor-attachment weight; positive values require a bound experiment cell.",
     )
+    parser.add_argument(
+        "--lambda_ocr_zncc", type=float, default=0.0,
+        help="OCR-ZNCC transport coefficient; positive values require a bound OCR cell.",
+    )
+    parser.add_argument(
+        "--ocr_peak_margin_exclusion_radius_cells", type=int, default=1,
+        choices=[1],
+        help="Frozen distinct-competitor exclusion radius for OCR-ZNCC training.",
+    )
     parser.add_argument("--sigma", type=float, default=0.1, help="σ for L_disp length scale")
     parser.add_argument("--loc_bg_threshold", type=float, default=30.0,
                         help="Background subtraction threshold for L_loc (0-255 scale)")
@@ -1222,6 +1493,7 @@ def main():
     repo_root = Path(__file__).resolve().parent.parent
     fresh_binding = None
     descriptor_binding = None
+    ocr_binding = None
     if args.descriptor_cell_id is not None:
         descriptor_binding = descriptor_authorization.bind_training_namespace(
             repo_root,
@@ -1229,10 +1501,22 @@ def main():
         )
     else:
         descriptor_authorization.reject_unbound_descriptor_arguments(args)
+    if args.ocr_cell_id is not None:
+        ocr_binding = ocr_authorization.bind_training_namespace(repo_root, args)
+    else:
+        ocr_authorization.reject_unbound_ocr_arguments(args)
     if args.fresh_cell_id is not None:
         fresh_binding = fresh_authorization.bind_training_namespace(
             repo_root,
             args,
+        )
+    active_experiment_bindings = sum(
+        binding is not None
+        for binding in (fresh_binding, descriptor_binding, ocr_binding)
+    )
+    if active_experiment_bindings > 1:
+        raise ValueError(
+            "fresh, descriptor, and OCR experiment bindings are mutually exclusive"
         )
     _validate_training_arguments(args)
     include_backward = args.lambda_act > 0.0
@@ -1246,6 +1530,39 @@ def main():
             fresh_binding,
             data_root=args.data_root,
         )
+    if ocr_binding is not None:
+        _validate_ocr_data_plan(
+            data_plan,
+            ocr_binding,
+            data_root=args.data_root,
+        )
+        if not ocr_binding.cell_id.endswith("__smoke"):
+            import ocr_zncc_launch_validation as launch_validation
+
+            stage_path = os.environ.get("OCR_STAGE_LAUNCH_LOCK")
+            stage_sha256 = os.environ.get("OCR_STAGE_LAUNCH_LOCK_SHA256")
+            if not stage_path or not stage_sha256:
+                raise RuntimeError(
+                    "scientific OCR cell lacks its stage launch lock"
+                )
+            launch = launch_validation.validate_paired_stage_launch_from_environment(
+                repo_root=repo_root,
+                manifest_path=Path(ocr_binding.manifest_absolute_path),
+                manifest_sha256=ocr_binding.manifest_file_sha256,
+                stage_lock_path=Path(stage_path),
+                stage_lock_sha256=stage_sha256,
+                expected_recipe=ocr_binding.recipe,
+            )
+            if (
+                launch.get("authorization_valid") is not True
+                or launch.get("source_commit") != _source_commit()
+                or launch.get("source_branch")
+                != ocr_authorization.EXPECTED_BRANCH
+                or launch.get("recipe") != ocr_binding.recipe
+            ):
+                raise RuntimeError(
+                    "scientific OCR cell failed deep completed-smoke validation"
+                )
     train_dataset = data_plan.train_dataset
     val_dataset = data_plan.val_dataset
     args.epochs = data_plan.effective_epochs
@@ -1259,7 +1576,7 @@ def main():
     
     # Resolve the executable amendment before claiming an output directory or
     # allowing any CUDA query to initialize a device context.
-    if fresh_binding is not None or descriptor_binding is not None:
+    if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None:
         nondeterminism_policy = (
             fresh_roll_determinism.policy_for_heatmap_resolution(
                 repo_root,
@@ -1279,19 +1596,24 @@ def main():
         determinism_amendment = None
         nondeterminism_evidence = None
 
-    # Claim the fresh cell atomically after every source/data/policy preflight.
-    if fresh_binding is not None or descriptor_binding is not None:
-        bound_run_directory = (
-            fresh_binding.run_directory
-            if fresh_binding is not None
-            else descriptor_binding.run_directory
-        )
-        run_dir = Path(bound_run_directory)
-        run_dir.parent.mkdir(parents=True, exist_ok=True)
-        run_dir.mkdir(exist_ok=False)
+    runtime_provenance_files = (
+        _runtime_provenance_files(ocr=ocr_binding is not None)
+        if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None
+        else None
+    )
 
-    # Reproducibility. Preserve legacy behavior outside the dedicated path.
-    if fresh_binding is not None or descriptor_binding is not None:
+    # Resolve and validate the execution device before claiming the exclusive
+    # run directory.  A scientific OCR cell is a CUDA experiment; silently
+    # falling back to MPS/CPU would not execute the authorized design.
+    device = _select_device()
+    if ocr_binding is not None and device.type != "cuda":
+        raise RuntimeError("bound OCR-ZNCC training requires CUDA")
+    print(f"Using device: {device}")
+
+    # Finish every fallible runtime/determinism preflight before claiming the
+    # exclusive scientific run directory. Preserve legacy behavior outside
+    # the dedicated paths.
+    if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None:
         determinism = _configure_determinism(
             args.seed,
             policy=nondeterminism_policy,
@@ -1301,30 +1623,46 @@ def main():
         determinism = None
     print(f"Seed: {args.seed}")
     
-    # Setup device
-    device = _select_device()
-    print(f"Using device: {device}")
-
     # pin_memory only helps on CUDA; num_workers=0 is safest on MPS/CPU.
     use_cuda = device.type == "cuda"
     n_workers = 4 if use_cuda else 0
     if determinism is not None:
         determinism["data_loader_workers"] = n_workers
     runtime_environment = (
-        _runtime_environment(device)
-        if fresh_binding is not None or descriptor_binding is not None
+        _runtime_environment(
+            device,
+            provenance_files=runtime_provenance_files,
+            ocr=ocr_binding is not None,
+        )
+        if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None
         else None
     )
     full_command = (
         [sys.executable, *sys.argv]
-        if fresh_binding is not None or descriptor_binding is not None
+        if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None
         else None
     )
+
+    # Claim the bound cell only after source, data, policy, device, driver,
+    # package, Slurm, and runtime-file validation has succeeded.
+    if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None:
+        bound_run_directory = (
+            fresh_binding.run_directory
+            if fresh_binding is not None
+            else (
+                descriptor_binding.run_directory
+                if descriptor_binding is not None
+                else ocr_binding.run_directory
+            )
+        )
+        run_dir = Path(bound_run_directory)
+        run_dir.parent.mkdir(parents=True, exist_ok=True)
+        run_dir.mkdir(exist_ok=False)
     
     # Create output directory
     # Include pid (and microseconds) to avoid collisions when launching
     # multiple runs in parallel.
-    if fresh_binding is None and descriptor_binding is None:
+    if fresh_binding is None and descriptor_binding is None and ocr_binding is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         obj_name = args.object or "all"
         run_name = f"phase_a_{obj_name}_{timestamp}_seed{args.seed}_pid{os.getpid()}"
@@ -1340,6 +1678,15 @@ def main():
     config['checkpoint_policy'] = data_plan.checkpoint_policy
     config['index_provenance'] = data_plan.index_provenance
     config['source_commit'] = source_commit
+    ocr_zncc_config = (
+        OCRZNCCConfig(
+            peak_margin_exclusion_radius_cells=(
+                args.ocr_peak_margin_exclusion_radius_cells
+            )
+        )
+        if ocr_binding is not None
+        else None
+    )
     if fresh_binding is not None:
         config['determinism'] = determinism
         config['determinism_amendment'] = determinism_amendment
@@ -1376,8 +1723,21 @@ def main():
                 descriptor_binding.weight_receipt_content_sha256
             ),
         }
-    with open(run_dir / "config.json", "w") as f:
-        json.dump(config, f, indent=2)
+    if ocr_binding is not None:
+        config['determinism'] = determinism
+        config['determinism_amendment'] = determinism_amendment
+        config['full_command'] = full_command
+        config['runtime_environment'] = runtime_environment
+        config['cell_id'] = ocr_binding.cell_id
+        config['ocr_zncc_binding'] = {
+            'cell_id': ocr_binding.cell_id,
+            'recipe': ocr_binding.recipe,
+            'arm': ocr_binding.arm,
+            'experiment_manifest_absolute_path': ocr_binding.manifest_absolute_path,
+            'experiment_manifest_file_sha256': ocr_binding.manifest_file_sha256,
+            'experiment_manifest_content_sha256': ocr_binding.manifest_content_sha256,
+            'ocr_zncc_config': ocr_zncc_config.as_dict(),
+        }
     print(f"Output directory: {run_dir}")
     
     print(f"Train samples: {len(train_dataset)}")
@@ -1386,12 +1746,23 @@ def main():
     elif data_plan.mode == "fixed-final":
         print("Validation samples: none (fixed-final checkpoint policy)")
     
+    train_sampler_seed = args.seed + 10_000_019 if ocr_binding is not None else None
+    train_sampler_generator = None
+    if train_sampler_seed is not None:
+        train_sampler_generator = torch.Generator()
+        train_sampler_generator.manual_seed(train_sampler_seed)
+        config['train_sampler'] = {
+            'algorithm': 'torch_random_sampler_without_replacement',
+            'generator_seed': train_sampler_seed,
+            'epochwise_pair_order_digest_recorded': True,
+        }
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=n_workers,
         pin_memory=use_cuda,
+        generator=train_sampler_generator,
     )
     
     val_loader = None
@@ -1416,6 +1787,7 @@ def main():
         learn_inverse_operator=learn_inverse_operator,
         heatmap_res=args.heatmap_res,
     ).to(device)
+    initial_model_state_sha256 = _model_state_sha256(model)
     
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params:,}")
@@ -1448,6 +1820,10 @@ def main():
         'lambda_inv': args.lambda_inv,
         'lambda_cycle': args.lambda_cycle,
         'lambda_attach': args.lambda_attach,
+        'lambda_ocr_zncc': args.lambda_ocr_zncc,
+        'ocr_zncc_config': (
+            ocr_zncc_config.as_dict() if ocr_zncc_config is not None else None
+        ),
         'descriptor_loss_spec_sha256': (
             LOSS_SPEC_SHA256 if descriptor_binding is not None else None
         ),
@@ -1491,6 +1867,13 @@ def main():
         )
         ckpt_config['determinism'] = determinism
         ckpt_config['determinism_amendment'] = determinism_amendment
+    if ocr_binding is not None:
+        ckpt_config['cell_id'] = ocr_binding.cell_id
+        ckpt_config['ocr_zncc_binding'] = dict(config['ocr_zncc_binding'])
+        ckpt_config['determinism'] = determinism
+        ckpt_config['determinism_amendment'] = determinism_amendment
+        ckpt_config['initial_model_state_sha256'] = initial_model_state_sha256
+        ckpt_config['train_sampler_seed'] = train_sampler_seed
     
     print(f"\nStarting training for {args.epochs} epochs...")
     print(f"Training mode: {data_plan.mode}")
@@ -1499,7 +1882,8 @@ def main():
     print(f"Loss weights: lambda_smooth={args.lambda_smooth}, lambda_disp={args.lambda_disp}, "
           f"lambda_ent={args.lambda_ent}, lambda_act={args.lambda_act}, lambda_loc={args.lambda_loc}, "
           f"lambda_inv={args.lambda_inv}, lambda_cycle={args.lambda_cycle}, "
-          f"lambda_attach={args.lambda_attach}, sigma={args.sigma}")
+          f"lambda_attach={args.lambda_attach}, lambda_ocr_zncc={args.lambda_ocr_zncc}, "
+          f"sigma={args.sigma}")
     if isinstance(train_dataset, IndexPairDataset):
         print(
             "Indexed transform (no inferred geometry): "
@@ -1517,6 +1901,14 @@ def main():
     # ---- First-batch diagnostic (one-time) ----
     with torch.no_grad():
         diag_batch = next(iter(train_loader))
+        diag_pair_order_digest = None
+        diag_pair_order_count = None
+        if ocr_binding is not None:
+            digest = hashlib.sha256()
+            diag_pair_order_count = _update_pair_order_digest(
+                digest, diag_batch['pair_id']
+            )
+            diag_pair_order_digest = digest.hexdigest()
         diag_x_t = diag_batch['x_t'].to(device)
         diag_x_t1 = diag_batch['x_t1'].to(device)
         diag_action_labels = diag_batch['action_label'].to(device).long()
@@ -1533,6 +1925,25 @@ def main():
             sigma=args.sigma, num_keypoints=args.num_keypoints, action_labels=diag_action_labels,
             x_t=diag_x_t, x_t1=diag_x_t1, loc_bg_threshold=args.loc_bg_threshold,
         )
+        if args.lambda_ocr_zncc > 0.0:
+            diag_transport = ocr_zncc_transport_loss(
+                normalized_images_to_retained_rgb(diag_x_t),
+                normalized_images_to_retained_rgb(diag_x_t1),
+                diag_out['p_t'].reshape(diag_x_t.shape[0], args.num_keypoints, 2),
+                diag_out['p_hat_t1'].reshape(diag_x_t.shape[0], args.num_keypoints, 2),
+                diag_out['p_t1'].reshape(diag_x_t.shape[0], args.num_keypoints, 2),
+                config=ocr_zncc_config,
+            )
+            diag_ocr_loss = diag_transport.loss.item()
+            diag_ocr_accepted = diag_transport.accepted_count
+            diag_total = combine_with_base_loss(
+                diag_losses['loss'], diag_transport.loss,
+                weight=args.lambda_ocr_zncc,
+            ).item()
+        else:
+            diag_ocr_loss = 0.0
+            diag_ocr_accepted = 0
+            diag_total = diag_losses['loss'].item()
         print(f"\n[Diagnostic] First batch (before training):")
         print(f"  p_t  range: [{diag_out['p_t'].min().item():.4f}, {diag_out['p_t'].max().item():.4f}]")
         print(f"  l_pred:  {diag_losses['l_pred'].item():.6f}")
@@ -1544,10 +1955,25 @@ def main():
         print(f"  l_inv:   {diag_losses['l_inv'].item():.6f}")
         print(f"  l_cycle: {diag_losses['l_cycle'].item():.6f}")
         print(f"  l_attach:{diag_losses['attachment_loss'].item():.6f}")
+        print(f"  l_ocr:   {diag_ocr_loss:.6f} (accepted={diag_ocr_accepted})")
         print(f"  base:    {diag_losses['base_loss'].item():.6f}")
         print(f"  act_acc: {diag_losses['act_acc'].item():.4f}")
-        print(f"  total:   {diag_losses['loss'].item():.6f}")
+        print(f"  total:   {diag_total:.6f}")
         print("-" * 70)
+
+    post_diagnostic_model_state_sha256 = _model_state_sha256(model)
+    if ocr_binding is not None:
+        config['initial_model_state_sha256'] = initial_model_state_sha256
+        config['post_diagnostic_model_state_sha256'] = post_diagnostic_model_state_sha256
+        config['diagnostic_pair_order_sha256'] = diag_pair_order_digest
+        config['diagnostic_pair_order_sample_count'] = diag_pair_order_count
+        ckpt_config['post_diagnostic_model_state_sha256'] = post_diagnostic_model_state_sha256
+        ckpt_config['diagnostic_pair_order_sha256'] = diag_pair_order_digest
+        ckpt_config['diagnostic_pair_order_sample_count'] = diag_pair_order_count
+    with open(run_dir / "config.json", "x") as f:
+        json.dump(config, f, indent=2)
+
+    sampler_order_history = []
     
     for epoch in range(1, args.epochs + 1):
         # Train
@@ -1557,10 +1983,19 @@ def main():
             args.lambda_loc, args.lambda_inv, args.lambda_cycle,
             args.loc_bg_threshold, args.sigma, args.num_keypoints,
             lambda_attach=args.lambda_attach,
+            lambda_ocr_zncc=args.lambda_ocr_zncc,
+            ocr_zncc_config=ocr_zncc_config,
+            record_pair_order=ocr_binding is not None,
             nondeterminism_policy=nondeterminism_policy,
             nondeterminism_evidence=nondeterminism_evidence,
         )
         optimizer_step_count += len(train_loader)
+        if ocr_binding is not None:
+            sampler_order_history.append({
+                'epoch': epoch,
+                'pair_order_sha256': train_metrics['pair_order_sha256'],
+                'sample_count': train_metrics['pair_order_sample_count'],
+            })
         
         # Step scheduler
         scheduler.step()
@@ -1579,6 +2014,8 @@ def main():
                 f"L_inv: {train_metrics['l_inv']:.5f} | "
                 f"L_cycle: {train_metrics['l_cycle']:.5f} | "
                 f"L_attach: {train_metrics['attachment_loss']:.5f} | "
+                f"L_ocr: {train_metrics['ocr_zncc_loss']:.5f} | "
+                f"OCRcov: {train_metrics['ocr_zncc_accepted_match_coverage']} | "
                 f"Base: {train_metrics['base_loss']:.5f} | "
                 f"ActAcc: {train_metrics['act_acc']:.3f}"
             )
@@ -1587,6 +2024,11 @@ def main():
                 'train_loss': train_metrics['loss'],
                 'train_base_loss': train_metrics['base_loss'],
                 'train_attachment_loss': train_metrics['attachment_loss'],
+                'train_ocr_zncc_loss': train_metrics['ocr_zncc_loss'],
+                'train_ocr_zncc_accepted_match_count': train_metrics['ocr_zncc_accepted_match_count'],
+                'train_ocr_zncc_possible_match_count': train_metrics['ocr_zncc_possible_match_count'],
+                'train_ocr_zncc_accepted_match_coverage': train_metrics['ocr_zncc_accepted_match_coverage'],
+                'train_ocr_zncc_zero_accept_batch_count': train_metrics['ocr_zncc_zero_accept_batch_count'],
                 'train_pred': train_metrics['l_pred'],
                 'train_smooth': train_metrics['l_smooth'],
                 'train_disp': train_metrics['l_disp'],
@@ -1607,23 +2049,32 @@ def main():
                     args.lambda_cycle, args.loc_bg_threshold, args.sigma,
                     args.num_keypoints,
                     lambda_attach=args.lambda_attach,
+                    lambda_ocr_zncc=args.lambda_ocr_zncc,
+                    ocr_zncc_config=ocr_zncc_config,
                 )
                 log_line += (
                     f" | ValTrain: {val_metrics['loss']:.5f}"
                     f" | ValBase: {val_metrics['base_loss']:.5f}"
                     f" | ValAttach: {val_metrics['attachment_loss']:.5f}"
+                    f" | ValOCR: {val_metrics['ocr_zncc_loss']:.5f}"
                 )
                 history_entry.update({
                     'val_loss': val_metrics['loss'],
                     'val_train_loss': val_metrics['train_loss'],
                     'val_base_loss': val_metrics['base_loss'],
                     'val_attachment_loss': val_metrics['attachment_loss'],
+                    'val_ocr_zncc_loss': val_metrics['ocr_zncc_loss'],
+                    'val_ocr_zncc_accepted_match_count': val_metrics['ocr_zncc_accepted_match_count'],
+                    'val_ocr_zncc_possible_match_count': val_metrics['ocr_zncc_possible_match_count'],
+                    'val_ocr_zncc_accepted_match_coverage': val_metrics['ocr_zncc_accepted_match_coverage'],
+                    'val_ocr_zncc_zero_accept_batch_count': val_metrics['ocr_zncc_zero_accept_batch_count'],
                     'val_pred': val_metrics['l_pred'],
                     'val_act': val_metrics['l_act'],
                     'val_loc': val_metrics['l_loc'],
                     'val_inv': val_metrics['l_inv'],
                     'val_cycle': val_metrics['l_cycle'],
                     'val_act_acc': val_metrics['act_acc'],
+                    'val_aggregation': val_metrics['aggregation'],
                 })
 
                 # Development/legacy only: validation selects best_model.pt.
@@ -1637,6 +2088,7 @@ def main():
                         'selection_loss_name': 'base_validation_loss',
                         'base_validation_loss': val_metrics['base_loss'],
                         'attachment_validation_loss': val_metrics['attachment_loss'],
+                        'ocr_zncc_validation_loss': val_metrics['ocr_zncc_loss'],
                         'augmented_validation_loss': val_metrics['train_loss'],
                         'config': ckpt_config,
                     }, run_dir / "best_model.pt")
@@ -1653,6 +2105,8 @@ def main():
                 'loss': train_metrics['loss'],
                 'base_training_loss': train_metrics['base_loss'],
                 'attachment_training_loss': train_metrics['attachment_loss'],
+                'ocr_zncc_training_loss': train_metrics['ocr_zncc_loss'],
+                'ocr_zncc_accepted_match_coverage': train_metrics['ocr_zncc_accepted_match_coverage'],
                 'config': ckpt_config,
             }, run_dir / f"checkpoint_{epoch:05d}.pt")
     
@@ -1666,6 +2120,8 @@ def main():
         'loss': train_metrics['loss'],
         'base_training_loss': train_metrics['base_loss'],
         'attachment_training_loss': train_metrics['attachment_loss'],
+        'ocr_zncc_training_loss': train_metrics['ocr_zncc_loss'],
+        'ocr_zncc_accepted_match_coverage': train_metrics['ocr_zncc_accepted_match_coverage'],
         'config': ckpt_config,
     }, final_model_path)
 
@@ -1690,6 +2146,8 @@ def main():
             args.lambda_cycle, args.loc_bg_threshold, args.sigma,
             args.num_keypoints,
             lambda_attach=args.lambda_attach,
+            lambda_ocr_zncc=args.lambda_ocr_zncc,
+            ocr_zncc_config=ocr_zncc_config,
         )
         fixed_final_test_report = {
             "schema_version": 1,
@@ -1706,6 +2164,15 @@ def main():
     # Save history
     with open(run_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
+    if ocr_binding is not None:
+        with open(run_dir / "sampler_order.json", "x") as f:
+            json.dump({
+                'schema_version': 'ocr_zncc_sampler_order.v1',
+                'generator_seed': train_sampler_seed,
+                'diagnostic_pair_order_sha256': diag_pair_order_digest,
+                'diagnostic_pair_order_sample_count': diag_pair_order_count,
+                'epochs': sampler_order_history,
+            }, f, indent=2)
 
     if fresh_binding is not None:
         completed_nondeterminism_evidence = (
@@ -1745,6 +2212,25 @@ def main():
             runtime_environment=runtime_environment,
         )
         print(f"Descriptor completed-run receipt: {receipt_path}")
+    if ocr_binding is not None:
+        completed_nondeterminism_evidence = (
+            fresh_roll_determinism.finalize_warning_evidence(
+                nondeterminism_evidence,
+                policy=nondeterminism_policy,
+                device_type=device.type,
+            )
+        )
+        receipt_path = ocr_authorization.write_completed_run_receipt(
+            repo_root,
+            ocr_binding,
+            device=str(device),
+            optimizer_step_count=optimizer_step_count,
+            determinism=determinism,
+            nondeterminism_evidence=completed_nondeterminism_evidence,
+            full_command=full_command,
+            runtime_environment=runtime_environment,
+        )
+        print(f"OCR-ZNCC completed-run receipt: {receipt_path}")
     
     print("-" * 60)
     if val_loader is not None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import torch
 
 from keypoint_net.model import spatial_softmax
@@ -76,6 +78,54 @@ def test_deliberately_ambiguous_constant_patch_abstains() -> None:
     assert torch.isfinite(result.reciprocal_peak_zncc).all()
     assert torch.isfinite(result.reciprocal_peak_margin).all()
     assert result.loss.item() == 0.0
+
+
+def test_distinct_competitor_margin_excludes_only_adjacent_peak_shoulders() -> None:
+    axis = torch.linspace(-1.0, 1.0, 64)
+    yy, xx = torch.meshgrid(axis, axis, indexing="ij")
+    base = torch.sin(3.0 * xx) + torch.cos(4.0 * yy) + 0.3 * torch.sin(2.0 * xx + yy)
+    source_rgb = torch.stack((base, 0.8 * base + 0.2 * xx, 0.6 * base + 0.4 * yy)).unsqueeze(0)
+    target_rgb = torch.roll(source_rgb, shifts=(-2, 3), dims=(-2, -1))
+    source = _coordinate(31, 31).view(1, 1, 2)
+    match = _coordinate(34, 29).view(1, 1, 2)
+    target = (match + torch.tensor([[[1.0, 0.0]]]) * grid_step()).requires_grad_(True)
+    legacy = ocr_zncc_transport_loss(
+        source_rgb,
+        target_rgb,
+        source,
+        match,
+        target,
+        config=CONFIG,
+    )
+    distinct = ocr_zncc_transport_loss(
+        source_rgb,
+        target_rgb,
+        source,
+        match,
+        target,
+        config=replace(CONFIG, peak_margin_exclusion_radius_cells=1),
+    )
+    assert torch.equal(legacy.match_coordinates, distinct.match_coordinates)
+    assert legacy.target_competitor_distance_cells.item() == 1.0
+    assert distinct.target_competitor_distance_cells.item() >= 2.0
+    assert distinct.target_peak_margin.item() >= legacy.target_peak_margin.item()
+    assert distinct.reciprocal_peak_margin.item() >= legacy.reciprocal_peak_margin.item()
+
+
+def test_distinct_competitor_still_abstains_on_spatially_repeated_evidence() -> None:
+    image = torch.ones((1, 3, 64, 64), dtype=torch.float32) * 0.5
+    source = _coordinate(31, 31).view(1, 1, 2)
+    target = _coordinate(32, 31).view(1, 1, 2).requires_grad_(True)
+    result = ocr_zncc_transport_loss(
+        image,
+        image.clone(),
+        source,
+        source,
+        target,
+        config=replace(CONFIG, peak_margin_exclusion_radius_cells=1),
+    )
+    assert not bool(result.accepted.item())
+    assert torch.isfinite(result.loss)
 
 
 def test_reciprocal_failure_abstains() -> None:

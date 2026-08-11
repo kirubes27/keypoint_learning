@@ -35,8 +35,8 @@ from keypoint_net.ocr_zncc_transport import (
 )
 
 
-SCHEMA_VERSION = "ocr_zncc_stage0.v1"
-EXPECTED_BRANCH = "agent/ocr-zncc-stage0-20260809"
+SCHEMA_VERSION = "ocr_zncc_stage0.v2_distinct_competitor"
+EXPECTED_BRANCH = "agent/ocr-zncc-training-20260811"
 AUTHORIZED_BASE_COMMIT = "4521538621b410421b1058603d090e2b09ec4178"
 CONTROL_SOURCE_COMMIT = "196245fdc8b6d65a5348d1addebcfc3c58ddb3d6"
 CONTROL_SOURCE_BRANCH = "agent/representation-oracles-20260726"
@@ -537,6 +537,16 @@ def _direction_cell(
                             "reciprocal_peak_zncc": float(transport.reciprocal_peak_zncc[batch_index, channel]),
                             "reciprocal_peak_margin": float(transport.reciprocal_peak_margin[batch_index, channel]),
                             "reciprocal_error_cells": float(transport.reciprocal_error_cells[batch_index, channel]),
+                            "target_competitor_distance_cells": float(
+                                transport.target_competitor_distance_cells[
+                                    batch_index, channel
+                                ]
+                            ),
+                            "reciprocal_competitor_distance_cells": float(
+                                transport.reciprocal_competitor_distance_cells[
+                                    batch_index, channel
+                                ]
+                            ),
                         }
                     )
             offset += int(x_t.shape[0])
@@ -792,11 +802,14 @@ def run_stage0(
     output_dir: Path,
     direction_batch_size: int,
     calibration_batch_size: int,
+    peak_margin_exclusion_radius_cells: int,
 ) -> dict[str, Any]:
     _require(not output_dir.exists(), f"refusing to reuse output directory: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=False)
     checkout = validate_audit_checkout(repo_root)
-    config = OCRZNCCConfig()
+    config = OCRZNCCConfig(
+        peak_margin_exclusion_radius_cells=peak_margin_exclusion_radius_cells,
+    )
     config.validate()
     train_index = repo_root / TRAIN_INDEX_RELPATH
     _require(_sha256_file(train_index) == TRAIN_INDEX_SHA256, "local train index SHA-256 differs")
@@ -971,6 +984,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--direction-batch-size", type=int, default=4)
     parser.add_argument("--calibration-batch-size", type=int, default=4)
+    parser.add_argument(
+        "--peak-margin-exclusion-radius-cells",
+        type=int,
+        choices=(0, 1),
+        required=True,
+        help="0 reproduces the legacy top-two margin; 1 compares spatially distinct peaks",
+    )
     return parser
 
 
@@ -986,6 +1006,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_dir=args.output_dir,
         direction_batch_size=args.direction_batch_size,
         calibration_batch_size=args.calibration_batch_size,
+        peak_margin_exclusion_radius_cells=args.peak_margin_exclusion_radius_cells,
     )
     print(json.dumps(result["decision"], sort_keys=True, indent=2))
     return 0

@@ -36,6 +36,7 @@ class OCRZNCCConfig:
     minimum_patch_rms: float = 0.02
     minimum_peak_zncc: float = 0.80
     minimum_peak_margin: float = 0.03
+    peak_margin_exclusion_radius_cells: int = 0
     reciprocal_tolerance_cells: float = 1.0
     zncc_epsilon: float = 1e-6
     reject_search_boundary: bool = True
@@ -53,6 +54,15 @@ class OCRZNCCConfig:
             raise ValueError("minimum_peak_zncc must be in (-1,1)")
         if not 0.0 < self.minimum_peak_margin < 2.0:
             raise ValueError("minimum_peak_margin must be in (0,2)")
+        if (
+            isinstance(self.peak_margin_exclusion_radius_cells, bool)
+            or not isinstance(self.peak_margin_exclusion_radius_cells, int)
+            or not 0 <= self.peak_margin_exclusion_radius_cells < self.search_radius_cells
+        ):
+            raise ValueError(
+                "peak_margin_exclusion_radius_cells must be an integer in "
+                "[0, search_radius_cells)"
+            )
         if self.reciprocal_tolerance_cells < 0.0:
             raise ValueError("reciprocal_tolerance_cells must be non-negative")
         if self.zncc_epsilon <= 0.0:
@@ -78,6 +88,8 @@ class OCRZNCCResult:
     reciprocal_peak_zncc: torch.Tensor
     reciprocal_peak_margin: torch.Tensor
     reciprocal_error_cells: torch.Tensor
+    target_competitor_distance_cells: torch.Tensor
+    reciprocal_competitor_distance_cells: torch.Tensor
     target_search_centres: torch.Tensor
     target_match_offsets_cells: torch.Tensor
 
@@ -250,10 +262,28 @@ def _best_match(
     valid_evidence = candidate_rms >= config.minimum_patch_rms
     valid = valid_geometry & valid_evidence
     masked_scores = scores.masked_fill(~valid, -torch.inf)
-    best_two = torch.topk(masked_scores, k=2, dim=-1)
-    raw_peak = best_two.values[..., 0]
-    raw_margin = best_two.values[..., 0] - best_two.values[..., 1]
-    index = best_two.indices[..., 0]
+    best = torch.max(masked_scores, dim=-1)
+    raw_peak = best.values
+    index = best.indices
+    best_offset = offsets_cells[index]
+    competitor_separation = (
+        offsets_cells.view(*([1] * (best_offset.ndim - 1)), -1, 2)
+        - best_offset.unsqueeze(-2)
+    ).abs().amax(dim=-1)
+    competitor_valid = valid & (
+        competitor_separation
+        > float(config.peak_margin_exclusion_radius_cells)
+    )
+    competitor = torch.max(
+        scores.masked_fill(~competitor_valid, -torch.inf),
+        dim=-1,
+    )
+    raw_margin = raw_peak - competitor.values
+    competitor_offset = offsets_cells[competitor.indices]
+    competitor_distance = torch.linalg.vector_norm(
+        competitor_offset - best_offset,
+        dim=-1,
+    )
     gather_index = index.unsqueeze(-1).expand(*index.shape, 2)
     match = torch.gather(candidate_centres, -2, gather_index.unsqueeze(-2)).squeeze(-2)
     match_offsets = offsets_cells[index]
@@ -269,8 +299,10 @@ def _best_match(
         match_offsets.abs().amax(dim=-1) == float(config.search_radius_cells)
     )
     enough_valid = valid.sum(dim=-1) >= 2
+    enough_competitors = competitor_valid.any(dim=-1)
     accepted = (
         enough_valid
+        & enough_competitors
         & torch.isfinite(raw_peak)
         & torch.isfinite(raw_margin)
         & (query_rms >= config.minimum_patch_rms)
@@ -288,6 +320,7 @@ def _best_match(
         "matched_rms": matched_rms,
         "peak": peak,
         "margin": margin,
+        "competitor_distance_cells": competitor_distance,
         "accepted": accepted,
     }
 
@@ -389,6 +422,12 @@ def ocr_zncc_transport_loss(
         reciprocal_peak_zncc=reciprocal["peak"].detach(),
         reciprocal_peak_margin=reciprocal["margin"].detach(),
         reciprocal_error_cells=reciprocal_error_cells.detach(),
+        target_competitor_distance_cells=forward[
+            "competitor_distance_cells"
+        ].detach(),
+        reciprocal_competitor_distance_cells=reciprocal[
+            "competitor_distance_cells"
+        ].detach(),
         target_search_centres=search_centres,
         target_match_offsets_cells=forward["match_offsets_cells"].detach(),
     )

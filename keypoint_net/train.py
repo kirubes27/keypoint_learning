@@ -27,6 +27,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# The production runners execute this file directly.  Some environments add
+# the working directory to sys.path implicitly, while the pinned cluster
+# environment exposes only this file's directory.  Bind the repository root
+# explicitly so package-qualified authorization imports behave identically.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import torch
 import torch.nn as nn

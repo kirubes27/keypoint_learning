@@ -389,16 +389,23 @@ def _validate_manifest(
         decision, name="training authorization decision"
     )
     del decision_content
-    expected_decision = {
-        "task55_clean": (
-            "ocr_zncc_task55_training_authorization.v1",
-            "authorize_task55_matched_experiment",
-        ),
-        "task80_assisted": (
-            "ocr_zncc_task80_training_authorization.v1",
-            "authorize_task80_matched_experiment",
-        ),
-    }[recipe]
+    expected_decision = (
+        (
+            "ocr_zncc_dual_recipe_exploratory_authorization.v1",
+            "authorize_dual_recipe_exploratory_matched_experiment",
+        )
+        if exploratory_stage
+        else {
+            "task55_clean": (
+                "ocr_zncc_task55_training_authorization.v1",
+                "authorize_task55_matched_experiment",
+            ),
+            "task80_assisted": (
+                "ocr_zncc_task80_training_authorization.v1",
+                "authorize_task80_matched_experiment",
+            ),
+        }[recipe]
+    )
     _require(
         decision.get("schema_version") == expected_decision[0]
         and decision.get("status") == expected_decision[1]

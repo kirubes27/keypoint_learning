@@ -182,6 +182,7 @@ class FableBriefingBindingTests(unittest.TestCase):
             )
         )
         path.read_text.return_value = (
+            "Independent review of the supplied packet.\n"
             f"{_ACCESS_LINE}\n{fable_review.ACCESS_STATUS_VERIFIED}\n"
             f"{fable_review.ACCESS_COUNT_VERIFIED}\n"
             + "Line-anchored independent review evidence. " * 100

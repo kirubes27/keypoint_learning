@@ -179,6 +179,7 @@ def _arguments(
 
 def prepare(
     *, matrix_root: Path, data_root: Path, authorization_decision: Path,
+    requested_recipe: str | None,
 ) -> Path:
     commit, branch = authorization._source_state(REPO_ROOT)
     resolved_data = data_root.expanduser().resolve(strict=True)
@@ -211,17 +212,34 @@ def prepare(
         "authorize_task80_matched_experiment": "task80_assisted",
     }
     recipe = status_to_recipe.get(decision.get("status"))
-    _require(recipe in RECIPES, "authorization decision status is not executable")
-    expected_schema = (
-        "ocr_zncc_task55_training_authorization.v1"
-        if recipe == "task55_clean"
-        else "ocr_zncc_task80_training_authorization.v1"
+    exploratory = (
+        decision.get("schema_version")
+        == "ocr_zncc_dual_recipe_exploratory_authorization.v1"
+        and decision.get("status")
+        == "authorize_dual_recipe_exploratory_matched_experiment"
     )
-    _require(decision.get("schema_version") == expected_schema,
-             "authorization decision schema differs")
-    if recipe == "task55_clean":
-        from keypoint_net import ocr_zncc_training_decision as decision_validator
+    if exploratory:
+        _require(requested_recipe in RECIPES,
+                 "dual exploratory preparation requires --recipe")
+        recipe = str(requested_recipe)
+        from keypoint_net import (
+            ocr_zncc_exploratory_authorization as decision_validator,
+        )
     else:
+        _require(recipe in RECIPES,
+                 "authorization decision status is not executable")
+        _require(requested_recipe in {None, recipe},
+                 "requested recipe differs from legacy authorization")
+        expected_schema = (
+            "ocr_zncc_task55_training_authorization.v1"
+            if recipe == "task55_clean"
+            else "ocr_zncc_task80_training_authorization.v1"
+        )
+        _require(decision.get("schema_version") == expected_schema,
+                 "authorization decision schema differs")
+    if not exploratory and recipe == "task55_clean":
+        from keypoint_net import ocr_zncc_training_decision as decision_validator
+    elif not exploratory:
         from keypoint_net import (
             ocr_zncc_task80_training_authorization as decision_validator,
         )
@@ -236,6 +254,14 @@ def prepare(
         and deep_validation.get("source_branch") == branch,
         "authorization decision failed deep live validation",
     )
+    if exploratory:
+        _require(
+            recipe in deep_validation.get("authorized_recipes", [])
+            and deep_validation.get("coverage_gate_passed") is False
+            and deep_validation.get("training_interpretation")
+            == "exploratory_user_override",
+            "dual exploratory authorization scope differs",
+        )
     coefficient = float(decision.get("coefficient"))
     _require(0.0 < coefficient <= 0.5, "authorized coefficient is invalid")
     _require(
@@ -252,8 +278,15 @@ def prepare(
                 "recipe": recipe,
                 "seed": seed,
                 "arm": arm,
-                "stage": "task55_primary" if recipe == "task55_clean"
-                         else "task80_conditional",
+                "stage": (
+                    "task55_exploratory_override"
+                    if exploratory and recipe == "task55_clean"
+                    else "task80_exploratory_override"
+                    if exploratory
+                    else "task55_primary"
+                    if recipe == "task55_clean"
+                    else "task80_conditional"
+                ),
                 "training_arguments": _arguments(
                     recipe=recipe, seed=seed, arm=arm,
                     coefficient=coefficient, data_root=resolved_data,
@@ -296,6 +329,10 @@ def prepare(
         "authorization_decision": decision_record,
         "decision_lock": {
             "authorized_recipe": recipe,
+            "authorization_mode": (
+                "exploratory_user_override_failed_coverage"
+                if exploratory else "legacy_staged_authorization"
+            ),
             "checkpoint_selector": "minimum_base_validation_loss",
             "validation_aggregation": "sample_weighted_complete_21_pair_mean",
             "fixed_final_estimand": "epoch_1000_final_model",
@@ -622,6 +659,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     prepare_parser.add_argument("--matrix-root", type=Path, required=True)
     prepare_parser.add_argument("--data-root", type=Path, required=True)
     prepare_parser.add_argument("--authorization-decision", type=Path, required=True)
+    prepare_parser.add_argument("--recipe", choices=RECIPES)
     smoke_lock_parser = subparsers.add_parser("prepare-smoke-lock")
     smoke_lock_parser.add_argument("--manifest", type=Path, required=True)
     smoke_lock_parser.add_argument("--manifest-sha256", required=True)
@@ -648,6 +686,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prepare(
             matrix_root=args.matrix_root, data_root=args.data_root,
             authorization_decision=args.authorization_decision,
+            requested_recipe=args.recipe,
         )
     elif args.command == "prepare-smoke-lock":
         prepare_smoke_lock(

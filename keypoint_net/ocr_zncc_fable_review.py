@@ -49,7 +49,11 @@ FABLE_PROMPT_PREFIX = (
 ).encode("utf-8")
 ACCESS_PROOF_PREFIX = "OCR_ZNCC_FABLE_ACCESS_PROOF="
 ACCESS_STATUS_VERIFIED = "PACKET_ACCESS: VERIFIED"
-ACCESS_COUNT_VERIFIED = "PACKET_FILES_OPENED: 37/37"
+EXPECTED_PACKET_FILE_COUNT = len(authorization.RUN_SOURCE_PATHS) + 17
+ACCESS_COUNT_VERIFIED = (
+    f"PACKET_FILES_OPENED: {EXPECTED_PACKET_FILE_COUNT}/"
+    f"{EXPECTED_PACKET_FILE_COUNT}"
+)
 _ACCESS_PROOF_PATTERN = re.compile(
     rf"(?m)^{re.escape(ACCESS_PROOF_PREFIX)}[0-9a-f]{{64}}\s*$"
 )
@@ -440,10 +444,11 @@ def build_briefing(
             "Use only the files enumerated in this briefing.",
             (
                 "Open access_challenge first and reproduce its exact sole line in "
-                "your report as line 1, followed by PACKET_ACCESS: VERIFIED as line "
-                "2 and PACKET_FILES_OPENED: 37/37 as line 3, only after you have "
-                "opened all enumerated packet files. If any cannot be opened, write "
-                "PACKET_ACCESS: FAILED and stop the substantive assessment."
+                "one three-line block within the first five nonempty report lines, "
+                f"followed by PACKET_ACCESS: VERIFIED and {ACCESS_COUNT_VERIFIED}, "
+                "only after you have opened all enumerated packet files. If any "
+                "cannot be opened, write PACKET_ACCESS: FAILED and stop the "
+                "substantive assessment."
             ),
             "Treat all prior reviewer reports as advisory and stale until verified directly.",
             "Do not treat reviewer agreement as evidence.",
@@ -479,8 +484,9 @@ def build_briefing(
         },
         "requested_deliverable": [
             (
-                "Begin with exactly three plain-text lines: the access-proof line, "
-                "PACKET_ACCESS: VERIFIED, and PACKET_FILES_OPENED: 37/37."
+                "Within the first five nonempty lines, include exactly one consecutive "
+                "three-line block containing the access-proof line, PACKET_ACCESS: "
+                f"VERIFIED, and {ACCESS_COUNT_VERIFIED}."
             ),
             "Trace the exact runtime and evidence lineage.",
             "List confirmed blockers with exact line anchors.",
@@ -683,7 +689,10 @@ def _validate_packet_scope(
     root = workdir.resolve(strict=True)
     _require(root.is_dir(), "Fable workdir is not a directory")
     records = _review_records(document)
-    _require(len(records) == 37, "Fable packet file count differs")
+    _require(
+        len(records) == EXPECTED_PACKET_FILE_COUNT,
+        "Fable packet file count differs",
+    )
     observed_paths: set[Path] = set()
     for record in records:
         _require(isinstance(record, Mapping), "Fable packet record is invalid")
@@ -743,9 +752,17 @@ def _substantive_raw(path: Path, *, access_challenge_sha256: str) -> bool:
     if len(nonempty_lines) < 3:
         return False
     proof_lines = [match.group(0).strip() for match in _ACCESS_PROOF_PATTERN.finditer(text)]
-    if len(proof_lines) != 1 or nonempty_lines[:3] != [
-        proof_lines[0], ACCESS_STATUS_VERIFIED, ACCESS_COUNT_VERIFIED
-    ]:
+    expected_header = [
+        proof_lines[0] if proof_lines else "",
+        ACCESS_STATUS_VERIFIED,
+        ACCESS_COUNT_VERIFIED,
+    ]
+    header_positions = [
+        offset
+        for offset in range(min(5, len(nonempty_lines) - 2))
+        if nonempty_lines[offset:offset + 3] == expected_header
+    ]
+    if len(proof_lines) != 1 or len(header_positions) != 1:
         return False
     proof_hash = hashlib.sha256((proof_lines[0] + "\n").encode("ascii")).hexdigest()
     if proof_hash != access_challenge_sha256:
@@ -965,7 +982,7 @@ def validate_review_bundle(
         receipt.get("validation")
         == {
             "compiled_prompt_exact": True,
-            "packet_file_count": 37,
+            "packet_file_count": EXPECTED_PACKET_FILE_COUNT,
             "access_proof_verified": True,
             "raw_review_substantive": True,
         },
@@ -1061,6 +1078,7 @@ __all__ = [
     "ACCESS_COUNT_VERIFIED",
     "ACCESS_PROOF_PREFIX",
     "ACCESS_STATUS_VERIFIED",
+    "EXPECTED_PACKET_FILE_COUNT",
     "BRIEFING_SCHEMA_VERSION",
     "FABLE_HELPER_SHA256",
     "PROTECTED_PATH",

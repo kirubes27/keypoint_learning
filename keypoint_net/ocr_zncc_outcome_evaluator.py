@@ -319,10 +319,17 @@ def _validate_manifest(
         "receipt training arguments differ from experiment manifest",
     )
     recipe = str(run_receipt.get("recipe"))
+    exploratory_stage = str(matches[0].get("stage", "")).endswith(
+        "_exploratory_override"
+    )
     _require(
         manifest.get("decision_lock")
         == {
             "authorized_recipe": recipe,
+            "authorization_mode": (
+                "exploratory_user_override_failed_coverage"
+                if exploratory_stage else "legacy_staged_authorization"
+            ),
             "checkpoint_selector": "minimum_base_validation_loss",
             "validation_aggregation": "sample_weighted_complete_21_pair_mean",
             "fixed_final_estimand": "epoch_1000_final_model",

@@ -101,6 +101,7 @@ RUN_SOURCE_PATHS = (
     "keypoint_net/ocr_zncc_transport.py",
     "keypoint_net/ocr_zncc_training_authorization.py",
     "keypoint_net/ocr_zncc_training_decision.py",
+    "keypoint_net/ocr_zncc_exploratory_authorization.py",
     "keypoint_net/ocr_zncc_fable_review.py",
     "keypoint_net/ocr_zncc_task80_training_authorization.py",
     "keypoint_net/run_ocr_zncc_stage0.py",
@@ -286,7 +287,10 @@ def bind_training_namespace(repo_root: Path, args: Any) -> OCRTrainingBinding:
         _require(int(identity_seed) == 42,
                  "OCR smoke is limited to seed 42 of its authorized recipe")
     else:
-        _require(cell.get("stage") in {"task55_primary", "task80_conditional"},
+        _require(cell.get("stage") in {
+            "task55_primary", "task80_conditional",
+            "task55_exploratory_override", "task80_exploratory_override",
+        },
                  "OCR scientific cell stage differs")
     for name, value in fixed_contract.items():
         _require(_same(value, expected.get(name)), f"OCR fixed --{name} differs")
@@ -307,7 +311,7 @@ def bind_training_namespace(repo_root: Path, args: Any) -> OCRTrainingBinding:
     _require(live_decision_record["sha256"] == decision_record.get("sha256"),
              "OCR authorization decision file hash differs")
     _validate_content_hash(decision, name="OCR authorization decision")
-    decision_contract = {
+    legacy_decision_contract = {
         "task55_clean": (
             "ocr_zncc_task55_training_authorization.v1",
             "authorize_task55_matched_experiment",
@@ -317,14 +321,25 @@ def bind_training_namespace(repo_root: Path, args: Any) -> OCRTrainingBinding:
             "authorize_task80_matched_experiment",
         ),
     }[recipe]
-    _require(decision.get("schema_version") == decision_contract[0],
-             "OCR authorization decision schema differs")
-    _require(decision.get("status") == decision_contract[1],
-             f"OCR authorization decision does not authorize {recipe}")
+    dual_contract = (
+        "ocr_zncc_dual_recipe_exploratory_authorization.v1",
+        "authorize_dual_recipe_exploratory_matched_experiment",
+    )
+    decision_identity = (
+        decision.get("schema_version"), decision.get("status")
+    )
+    _require(
+        decision_identity in {legacy_decision_contract, dual_contract},
+        f"OCR authorization decision does not authorize {recipe}",
+    )
     _require(decision.get("source_commit") == commit
              and decision.get("source_branch") == branch,
              "OCR authorization decision source differs")
-    if recipe == "task55_clean":
+    if decision_identity == dual_contract:
+        from keypoint_net import (
+            ocr_zncc_exploratory_authorization as decision_validator,
+        )
+    elif recipe == "task55_clean":
         from keypoint_net import ocr_zncc_training_decision as decision_validator
     else:
         from keypoint_net import (
@@ -336,11 +351,19 @@ def bind_training_namespace(repo_root: Path, args: Any) -> OCRTrainingBinding:
     _require(
         isinstance(deep_validation, Mapping)
         and deep_validation.get("authorization_valid") is True
-        and deep_validation.get("status") == decision_contract[1]
+        and deep_validation.get("status") == decision.get("status")
         and deep_validation.get("source_commit") == commit
         and deep_validation.get("source_branch") == branch,
         f"OCR authorization decision failed deep validation for {recipe}",
     )
+    if decision_identity == dual_contract:
+        _require(
+            recipe in deep_validation.get("authorized_recipes", [])
+            and deep_validation.get("coverage_gate_passed") is False
+            and deep_validation.get("training_interpretation")
+            == "exploratory_user_override",
+            f"dual exploratory authorization does not include {recipe}",
+        )
     coefficient = decision.get("coefficient")
     _require(isinstance(coefficient, (int, float)) and not isinstance(coefficient, bool)
              and math.isfinite(float(coefficient)) and 0.0 < float(coefficient) <= 0.5,

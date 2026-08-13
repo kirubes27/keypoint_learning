@@ -39,7 +39,8 @@ from keypoint_net import ocr_zncc_training_authorization as training_authorizati
 from keypoint_net import representation_corpus_inventory as corpus_inventory
 
 
-SCHEMA_VERSION = "ocr_zncc_paired_outcome_cell.v1"
+SCHEMA_VERSION = "ocr_zncc_paired_outcome_cell.v2"
+EVALUATOR_AMENDMENT_ID = "float32_cross_backend_coordinate_policy_v1"
 GENERIC_EVALUATION_CONFIG_SHA256 = (
     "151c973f56d123c085d7c1ab29fb6d720b69243915e06ad05fe1cb3590423e98"
 )
@@ -79,7 +80,9 @@ class ValidatedRun:
     seed: int
     source_commit: str
     source_branch: str
+    evaluation_source_commit: str
     repo_root: Path
+    training_repo_root: Path
     receipt: Mapping[str, Any]
     receipt_record: Mapping[str, Any]
     manifest: Mapping[str, Any]
@@ -232,7 +235,7 @@ def _committed_source_record(
 
 def _validate_checkout(repo_root: Path, *, source_commit: str, source_branch: str) -> dict[str, Any]:
     root = repo_root.expanduser().resolve(strict=True)
-    _require(_git(root, "rev-parse", "HEAD") == source_commit, "checkout commit differs")
+    evaluation_source_commit = _git(root, "rev-parse", "HEAD")
     _require(_git(root, "branch", "--show-current") == source_branch, "checkout branch differs")
     _require(
         _git(root, "status", "--porcelain") == "",
@@ -251,19 +254,63 @@ def _validate_checkout(repo_root: Path, *, source_commit: str, source_branch: st
         raise OCROutcomeEvaluationError(
             "authorized clean research base is not an ancestor"
         ) from exc
+    try:
+        subprocess.run(
+            [
+                "git", "-C", str(root), "merge-base", "--is-ancestor",
+                source_commit, evaluation_source_commit,
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise OCROutcomeEvaluationError(
+            "training source commit is not an ancestor of evaluator source commit"
+        ) from exc
     records = {
-        relative: _committed_source_record(root, relative, source_commit=source_commit)
+        relative: _committed_source_record(
+            root, relative, source_commit=evaluation_source_commit
+        )
         for relative in SOURCE_RELATIVE_PATHS
     }
     return {
         "absolute_path": str(root),
-        "source_commit": source_commit,
+        "training_source_commit": source_commit,
+        "evaluation_source_commit": evaluation_source_commit,
         "source_branch": source_branch,
         "complete_status_clean": True,
         "authorized_base_commit": training_authorization.AUTHORIZED_BASE_COMMIT,
         "authorized_base_is_ancestor": True,
         "source_files": records,
     }
+
+
+def _training_checkout_root(
+    claimed_sources: Mapping[str, Any],
+    *,
+    source_commit: str,
+    source_branch: str,
+) -> Path:
+    """Resolve and validate the original clean training checkout from receipts."""
+
+    roots: set[Path] = set()
+    for relative, claimed in claimed_sources.items():
+        _require(isinstance(claimed, Mapping), f"training source {relative} is invalid")
+        path = Path(str(claimed.get("absolute_path", ""))).expanduser().resolve(strict=True)
+        root = path
+        for _part in Path(relative).parts:
+            root = root.parent
+        _require(path == root / relative, f"training source path differs: {relative}")
+        roots.add(root)
+    _require(len(roots) == 1, "receipt training sources do not share one checkout")
+    root = next(iter(roots)).resolve(strict=True)
+    _require(_git(root, "rev-parse", "HEAD") == source_commit,
+             "training checkout commit differs")
+    _require(_git(root, "branch", "--show-current") == source_branch,
+             "training checkout branch differs")
+    _require(_git(root, "status", "--porcelain") == "",
+             "training checkout is not completely clean")
+    return root
 
 
 def _verify_bound_record(
@@ -844,12 +891,19 @@ def validate_completed_run(
         and set(claimed_sources) == set(training_authorization.RUN_SOURCE_PATHS),
         "receipt training-source role set differs",
     )
+    training_root = _training_checkout_root(
+        claimed_sources,
+        source_commit=source_commit,
+        source_branch=source_branch,
+    )
     for relative, claimed in claimed_sources.items():
         observed = _verify_bound_record(
-            claimed, expected_path=root / relative, name=f"training source {relative}"
+            claimed,
+            expected_path=training_root / relative,
+            name=f"training source {relative}",
         )
         committed = subprocess.run(
-            ["git", "-C", str(root), "show", f"{source_commit}:{relative}"],
+            ["git", "-C", str(training_root), "show", f"{source_commit}:{relative}"],
             check=True,
             capture_output=True,
         ).stdout
@@ -865,7 +919,9 @@ def validate_completed_run(
         seed=seed,
         source_commit=source_commit,
         source_branch=source_branch,
+        evaluation_source_commit=checkout["evaluation_source_commit"],
         repo_root=root,
+        training_repo_root=training_root,
         receipt=receipt,
         receipt_record={
             **receipt_record,
@@ -1014,7 +1070,7 @@ def _validate_roll_corpus_inventory(
     run: ValidatedRun, *, data_root: Path
 ) -> dict[str, Any]:
     inventory_bytes, inventory_record = _committed_file_bytes_and_record(
-        run.repo_root,
+        run.training_repo_root,
         ROLL_CORPUS_INVENTORY_RELATIVE_PATH,
         source_commit=run.source_commit,
         name="committed roll corpus inventory",
@@ -1334,7 +1390,24 @@ def _infer_soft_coordinates(
         logits, temperature=1.0, softmax_dtype="float32"
     ).astype(np.float64)
     maximum_error = float(np.max(np.abs(derived_points - supplied_points)))
-    _require(maximum_error <= 1e-6, "soft coordinates disagree with logits")
+    coordinate_tolerance, coordinate_tolerance_key = (
+        representation_evaluator._coordinate_consistency_policy(  # noqa: SLF001
+            case_kind="checkpoint",
+            estimator={"logit_dtype": "float32", "softmax_dtype": "float32"},
+            numeric_registry={},
+        )
+    )
+    _require(
+        coordinate_tolerance
+        == representation_evaluator.CHECKPOINT_FLOAT32_CROSS_BACKEND_COORDINATE_TOLERANCE
+        and coordinate_tolerance_key
+        == representation_evaluator.CHECKPOINT_FLOAT32_CROSS_BACKEND_COORDINATE_TOLERANCE_KEY,
+        "checkpoint coordinate-consistency policy differs",
+    )
+    _require(
+        maximum_error <= coordinate_tolerance,
+        "soft coordinates disagree with logits under the checkpoint float32 policy",
+    )
     _require(bool(np.all((derived_points >= -1.0) & (derived_points <= 1.0))),
              "soft coordinates lie outside [-1,1]")
     after = _model_state_sha256(model)
@@ -1344,6 +1417,11 @@ def _infer_soft_coordinates(
         "channel_indices": list(SOFT_COORDINATE_CHANNELS),
         "coordinate_estimator": "production_spatial_expectation_from_float32_logits",
         "maximum_supplied_vs_recomputed_coordinate_error": maximum_error,
+        "coordinate_consistency_tolerance": coordinate_tolerance,
+        "coordinate_consistency_tolerance_key": coordinate_tolerance_key,
+        "coordinate_consistency_policy_kind": "implementation_consistency_not_quality",
+        "coordinate_consistency_pass": True,
+        "legacy_1e_minus_6_warning_exceeded": maximum_error > 1e-6,
         "model_state_unchanged": True,
         "gradients_enabled_inside_inference": False,
         "model_state_sha256": after,
@@ -1475,6 +1553,7 @@ def _build_result_document(
         "seed": run.seed,
         "source_commit": run.source_commit,
         "source_branch": run.source_branch,
+        "evaluation_source_commit": run.evaluation_source_commit,
         "metric_lock": {
             "primary_metric": "canonical_drift.median_rms_objdiag",
             "implementation": "keypoint_net.eval_representation._canonical_drift",
@@ -1484,6 +1563,16 @@ def _build_result_document(
             "soft_coordinate_channel_indices": list(SOFT_COORDINATE_CHANNELS),
             "checkpoint_roles": list(CHECKPOINT_ROLES),
             "threshold_selected_from_outcomes": False,
+            "evaluator_amendment_id": EVALUATOR_AMENDMENT_ID,
+            "coordinate_consistency_tolerance": (
+                representation_evaluator.
+                CHECKPOINT_FLOAT32_CROSS_BACKEND_COORDINATE_TOLERANCE
+            ),
+            "coordinate_consistency_tolerance_key": (
+                representation_evaluator.
+                CHECKPOINT_FLOAT32_CROSS_BACKEND_COORDINATE_TOLERANCE_KEY
+            ),
+            "coordinate_consistency_is_quality_threshold": False,
         },
         "lineage": {
             "completed_run_receipt": dict(run.receipt_record),

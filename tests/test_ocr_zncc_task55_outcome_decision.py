@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import copy
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import numpy as np
+import torch
 
 from keypoint_net import ocr_zncc_outcome_evaluator as evaluator
 from keypoint_net import ocr_zncc_task55_outcome_decision as decision
@@ -147,6 +152,7 @@ class OCRTask55DecisionTests(unittest.TestCase):
     def test_roll_inventory_must_match_live_corpus_and_committed_source(self) -> None:
         run = mock.Mock()
         run.repo_root = Path("/repo")
+        run.training_repo_root = Path("/training-repo")
         run.source_commit = "a" * 40
         run.evaluation_source_files = {
             "keypoint_net/representation_corpus_inventory.py": {
@@ -186,9 +192,124 @@ class OCRTask55DecisionTests(unittest.TestCase):
             binding["validator_source"],
         )
 
+    def test_checkpoint_float32_coordinate_policy_accepts_roundoff_but_rejects_drift(
+        self,
+    ) -> None:
+        class DummyModel(torch.nn.Module):
+            def extractor(self, batch):
+                return (
+                    torch.zeros((batch.shape[0], 20), dtype=torch.float32),
+                    torch.zeros((batch.shape[0], 10, 64, 64), dtype=torch.float32),
+                )
+
+        model = DummyModel().eval()
+        images = [np.zeros((2, 2, 3), dtype=np.uint8) for _ in range(24)]
+        with mock.patch.object(
+            evaluator.representation_evaluator,
+            "spatial_expectation",
+            return_value=np.full((24, 10, 2), 2e-6, dtype=np.float32),
+        ):
+            _points, _logits, record = evaluator._infer_soft_coordinates(  # noqa: SLF001
+                model, images
+            )
+        self.assertTrue(record["coordinate_consistency_pass"])
+        self.assertEqual(1e-4, record["coordinate_consistency_tolerance"])
+        self.assertEqual(
+            evaluator.representation_evaluator.
+            CHECKPOINT_FLOAT32_CROSS_BACKEND_COORDINATE_TOLERANCE_KEY,
+            record["coordinate_consistency_tolerance_key"],
+        )
+
+        with mock.patch.object(
+            evaluator.representation_evaluator,
+            "spatial_expectation",
+            return_value=np.full((24, 10, 2), 2e-4, dtype=np.float32),
+        ), self.assertRaisesRegex(
+            evaluator.OCROutcomeEvaluationError,
+            "checkpoint float32 policy",
+        ):
+            evaluator._infer_soft_coordinates(model, images)  # noqa: SLF001
+
+    def test_evaluator_commit_is_distinct_and_descends_from_training_commit(self) -> None:
+        training_commit = "a" * 40
+        evaluation_commit = "b" * 40
+        source_calls = []
+
+        def fake_git(_root, *arguments):
+            return {
+                ("rev-parse", "HEAD"): evaluation_commit,
+                ("branch", "--show-current"):
+                    "agent/ocr-zncc-training-20260811",
+                ("status", "--porcelain"): "",
+            }[arguments]
+
+        def fake_source(_root, relative, *, source_commit):
+            source_calls.append((relative, source_commit))
+            return {"relative_path": relative, "sha256": "c" * 64}
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            evaluator, "_git", side_effect=fake_git
+        ), mock.patch.object(
+            evaluator, "_committed_source_record", side_effect=fake_source
+        ), mock.patch.object(
+            evaluator.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ):
+            checkout = evaluator._validate_checkout(  # noqa: SLF001
+                Path(directory),
+                source_commit=training_commit,
+                source_branch="agent/ocr-zncc-training-20260811",
+            )
+        self.assertEqual(training_commit, checkout["training_source_commit"])
+        self.assertEqual(evaluation_commit, checkout["evaluation_source_commit"])
+        self.assertEqual(
+            {(relative, evaluation_commit) for relative in evaluator.SOURCE_RELATIVE_PATHS},
+            set(source_calls),
+        )
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            evaluator,
+            "_git",
+            side_effect=lambda _root, *arguments: {
+                ("rev-parse", "HEAD"): evaluation_commit,
+                ("branch", "--show-current"):
+                    "agent/ocr-zncc-training-20260811",
+                ("status", "--porcelain"): "modified",
+            }[arguments],
+        ), self.assertRaisesRegex(
+            evaluator.OCROutcomeEvaluationError,
+            "not completely clean",
+        ):
+            evaluator._validate_checkout(  # noqa: SLF001
+                Path(directory),
+                source_commit=training_commit,
+                source_branch="agent/ocr-zncc-training-20260811",
+            )
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            evaluator, "_git", side_effect=fake_git
+        ), mock.patch.object(
+            evaluator.subprocess,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0),
+                subprocess.CalledProcessError(1, []),
+            ],
+        ), self.assertRaisesRegex(
+            evaluator.OCROutcomeEvaluationError,
+            "training source commit is not an ancestor",
+        ):
+            evaluator._validate_checkout(  # noqa: SLF001
+                Path(directory),
+                source_commit=training_commit,
+                source_branch="agent/ocr-zncc-training-20260811",
+            )
+
     def test_mutated_live_corpus_inventory_binding_is_rejected(self) -> None:
         run = mock.Mock()
         run.repo_root = Path("/repo")
+        run.training_repo_root = Path("/training-repo")
         run.source_commit = "a" * 40
         run.evaluation_source_files = {
             "keypoint_net/representation_corpus_inventory.py": {"sha256": "9" * 64},

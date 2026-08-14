@@ -389,6 +389,7 @@ def _visualize_event(
         f"physical percentile={hard['physical_target_mask_percentile']:.3f}; "
         f"detector-physical cosine={hard['detector_minus_physical_similarity']:+.3f}; "
         f"detector distance={hard['detector_distance_to_physical_cells']:.2f} cells; "
+        f"feature-best distance={hard['object_argmax_distance_to_physical_cells']:.2f} cells; "
         f"grounded={hard['grounded_physical_edge']}",
         fontsize=11,
     )

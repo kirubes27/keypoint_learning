@@ -10,7 +10,7 @@ from keypoint_net.frozen_feature_decode import (
     sample_target_similarities,
     stable_spatial_top_two,
 )
-from keypoint_net.evaluate_frozen_feature_decode import _basis_metrics
+from keypoint_net.evaluate_frozen_feature_decode import _basis_metrics, _json_safe
 from keypoint_net.frozen_wobble_forensics import rotate_points
 
 
@@ -89,3 +89,9 @@ def test_one_large_jump_fails_only_affected_identity_quality() -> None:
     report, _ = _basis_metrics(decoded, decoded.copy(), anchor, theta, masks)
     assert report["channels"][2]["strict_r64_diagnostic_pass"] is False
     assert report["channels"][2]["checks"]["material_error"] is False
+
+
+def test_json_safe_converts_nested_numpy_scalars() -> None:
+    result = _json_safe({"pass": np.bool_(True), "count": [np.int64(3)], "value": np.float32(1.25)})
+    assert result == {"pass": True, "count": [3], "value": 1.25}
+    assert type(result["pass"]) is bool

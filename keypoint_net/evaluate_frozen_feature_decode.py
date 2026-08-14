@@ -64,6 +64,17 @@ def _require(condition: bool, message: str) -> None:
         raise DecodeEvaluationError(message)
 
 
+def _json_safe(value: Any) -> Any:
+    """Recursively convert NumPy scalars without changing numeric values."""
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -420,6 +431,7 @@ def evaluate(raw_receipt_path: Path, output_dir: Path, repo_root: Path) -> dict[
         "training_or_weight_update_performed": False,
     }
     result_path = output_dir / "feature_decode_evaluation.json"
+    result = _json_safe(result)
     result_path.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     return {"report": _file_record(result_path), "hard_pass_count": basis_reports["hard_peak"]["strict_pass_count"], "soft_pass_count": basis_reports["soft_coordinate"]["strict_pass_count"]}
 

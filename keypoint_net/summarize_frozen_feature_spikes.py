@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -25,6 +26,7 @@ SCHEMA_VERSION = "frozen_feature_spike_summary.v1"
 EXPECTED_SOURCE_SCHEMA = "frozen_feature_spike_forensics.v1_1"
 EXPECTED_ROLES = 24
 EXPECTED_VISUALS = 48
+SUMMARY_IMPLEMENTATION_SOURCE = "keypoint_net/summarize_frozen_feature_spikes.py"
 
 
 class FeatureSummaryError(ValueError):
@@ -50,6 +52,27 @@ def _file_record(path: Path) -> dict[str, Any]:
         "absolute_path": str(resolved),
         "sha256": _sha256(resolved),
         "size_bytes": resolved.stat().st_size,
+    }
+
+
+def _implementation_binding() -> dict[str, Any]:
+    repo_root = Path(__file__).resolve().parents[1]
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    clean = subprocess.run(
+        ["git", "diff", "--quiet", "HEAD", "--", SUMMARY_IMPLEMENTATION_SOURCE],
+        cwd=repo_root,
+        check=False,
+    )
+    _require(clean.returncode == 0, "summary implementation differs from its recorded HEAD")
+    return {
+        "implementation_head": head,
+        "implementation_source": _file_record(repo_root / SUMMARY_IMPLEMENTATION_SOURCE),
     }
 
 
@@ -246,6 +269,7 @@ def _plot_rank_boxplot(edges: list[Mapping[str, Any]], output_path: Path) -> Non
 
 
 def run(source_path: Path, expected_sha256: str, output_dir: Path) -> dict[str, Any]:
+    implementation = _implementation_binding()
     source_record = _file_record(source_path)
     _require(source_record["sha256"] == expected_sha256, "source SHA-256 differs")
     source = json.loads(source_path.read_text(encoding="utf-8"))
@@ -266,7 +290,8 @@ def run(source_path: Path, expected_sha256: str, output_dir: Path) -> dict[str, 
         "artifact_type": "bound_descriptive_summary_of_complete_frozen_feature_spike_forensics",
         "source": source_record,
         "expected_source_sha256": expected_sha256,
-        "implementation_head": source["implementation"]["implementation_head"],
+        "feature_forensic_implementation_head": source["implementation"]["implementation_head"],
+        "summary_implementation": implementation,
         "training_or_weight_update_performed": False,
         "inventory": {
             "checkpoint_roles": len(source["role_records"]),

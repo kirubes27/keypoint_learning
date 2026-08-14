@@ -15,6 +15,7 @@ try:
     from .frozen_nuisance_sensitivity import (
         IMAGE_SIZE,
         LOCKED_SPECS,
+        apply_binomial3_prefilter,
         apply_nuisance,
         normalized_residual_cells,
         normalized_residual_pixels,
@@ -38,6 +39,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
     from frozen_nuisance_sensitivity import (  # type: ignore
         IMAGE_SIZE,
         LOCKED_SPECS,
+        apply_binomial3_prefilter,
         apply_nuisance,
         normalized_residual_cells,
         normalized_residual_pixels,
@@ -147,13 +149,23 @@ def _quantiles(values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _apply_prefilter(normalized: torch.Tensor, name: str) -> torch.Tensor:
+    if name == "none":
+        return normalized
+    if name == "binomial3":
+        return apply_binomial3_prefilter(normalized)
+    raise FrozenNuisanceRunError(f"unknown prefilter: {name}")
+
+
 def run_role(
     manifest: Mapping[str, Any],
     role_key: str,
     *,
     batch_size: int,
+    prefilter: str = "none",
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     _require(batch_size > 0, "batch size must be positive")
+    _require(prefilter in {"none", "binomial3"}, "prefilter is invalid")
     matches = [item for item in manifest["roles"] if item.get("role_key") == role_key]
     _require(len(matches) == 1, "role key is absent or duplicated")
     role = matches[0]
@@ -189,13 +201,27 @@ def run_role(
         "recovered_soft_coordinate": np.empty(shape_pfk + (2,), dtype=np.float64),
         "recovered_hard_coordinate": np.empty(shape_pfk + (2,), dtype=np.float64),
         "perturbed_separated_logit_margin": np.empty(shape_pfk, dtype=np.float64),
+        "prefilter_baseline_soft_shift_pixels": np.empty(
+            (EXPECTED_FRAMES, EXPECTED_CHANNELS), dtype=np.float64
+        ),
+        "prefilter_baseline_hard_shift_cells": np.empty(
+            (EXPECTED_FRAMES, EXPECTED_CHANNELS), dtype=np.float64
+        ),
     }
 
     state_before = _state_sha256(model)
     for start in range(0, EXPECTED_FRAMES, batch_size):
         stop = min(start + batch_size, EXPECTED_FRAMES)
         normalized = _preprocess(image_paths[start:stop])
-        baseline = _infer(model, normalized)
+        original_baseline = _infer(model, normalized)
+        baseline_input = _apply_prefilter(normalized, prefilter)
+        baseline = _infer(model, baseline_input)
+        arrays["prefilter_baseline_soft_shift_pixels"][start:stop] = normalized_residual_pixels(
+            original_baseline["soft_coordinate"], baseline["soft_coordinate"]
+        ).cpu().numpy()
+        arrays["prefilter_baseline_hard_shift_cells"][start:stop] = normalized_residual_cells(
+            original_baseline["hard_coordinate"], baseline["hard_coordinate"]
+        ).cpu().numpy()
         arrays["baseline_soft_coordinate"][start:stop] = baseline["soft_coordinate"].cpu().numpy()
         arrays["baseline_hard_coordinate"][start:stop] = baseline["hard_coordinate"].cpu().numpy()
         arrays["baseline_separated_logit_margin"][start:stop] = baseline[
@@ -203,7 +229,7 @@ def run_role(
         ].cpu().numpy()
 
         for nuisance_index, spec in enumerate(LOCKED_SPECS):
-            perturbed_input = apply_nuisance(normalized, spec)
+            perturbed_input = _apply_prefilter(apply_nuisance(normalized, spec), prefilter)
             perturbed = _infer(model, perturbed_input)
             recovered_soft = undo_nuisance_coordinates(perturbed["soft_coordinate"], spec)
             recovered_hard = undo_nuisance_coordinates(perturbed["hard_coordinate"], spec)
@@ -227,7 +253,7 @@ def run_role(
             ].cpu().numpy()
 
             if spec.kind == "identity":
-                _require(torch.equal(perturbed_input, normalized), "identity input differs")
+                _require(torch.equal(perturbed_input, baseline_input), "identity input differs")
                 for field in (
                     "soft_coordinate",
                     "hard_coordinate",
@@ -286,12 +312,19 @@ def run_role(
             "nuisances": nuisance_names,
             "batch_size": batch_size,
             "device": "cpu",
+            "prefilter": prefilter,
         },
         "summary": summary,
         "model_state_sha256_before": state_before,
         "model_state_sha256_after": state_after,
         "model_state_unchanged": state_before == state_after,
         "identity_repeat_exact": True,
+        "prefilter_baseline_soft_shift_pixels": _quantiles(
+            arrays["prefilter_baseline_soft_shift_pixels"]
+        ),
+        "prefilter_baseline_hard_shift_cells": _quantiles(
+            arrays["prefilter_baseline_hard_shift_cells"]
+        ),
         "second_peak_exclusion_radius_cells": SECOND_PEAK_RADIUS_CELLS,
         "opened_rgb_paths": [str(path) for path in image_paths],
         "opened_rgb_count": len(image_paths),
@@ -311,12 +344,18 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--torch-threads", type=int, default=4)
+    parser.add_argument("--prefilter", choices=("none", "binomial3"), default="none")
     args = parser.parse_args(argv)
 
     _require(not args.output_dir.exists(), "output directory already exists; use a fresh attempt")
     torch.set_num_threads(args.torch_threads)
     manifest, manifest_record = _load_manifest(args.manifest.resolve(strict=True))
-    arrays, receipt = run_role(manifest, args.role_key, batch_size=args.batch_size)
+    arrays, receipt = run_role(
+        manifest,
+        args.role_key,
+        batch_size=args.batch_size,
+        prefilter=args.prefilter,
+    )
     args.output_dir.mkdir(parents=True, exist_ok=False)
     arrays_path = args.output_dir / "nuisance_sensitivity_arrays.npz"
     np.savez_compressed(arrays_path, **arrays)

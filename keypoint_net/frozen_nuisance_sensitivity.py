@@ -127,6 +127,16 @@ def apply_nuisance(normalized: torch.Tensor, spec: NuisanceSpec) -> torch.Tensor
     return rgb_to_normalized(transformed.clamp(0.0, 1.0))
 
 
+def apply_binomial3_prefilter(normalized: torch.Tensor) -> torch.Tensor:
+    """Apply one fixed 3x3 separable binomial antialias filter in RGB space."""
+    _require(normalized.ndim == 4 and normalized.shape[1] == 3, "input must be Bx3xHxW")
+    rgb = normalized_to_rgb(normalized)
+    vector = rgb.new_tensor([1.0, 2.0, 1.0]) / 4.0
+    kernel = torch.outer(vector, vector).view(1, 1, 3, 3).expand(3, 1, 3, 3)
+    filtered = F.conv2d(F.pad(rgb, (1, 1, 1, 1), mode="reflect"), kernel, groups=3)
+    return rgb_to_normalized(filtered.clamp(0.0, 1.0))
+
+
 def undo_nuisance_coordinates(coordinates: torch.Tensor, spec: NuisanceSpec) -> torch.Tensor:
     """Map perturbed-image normalized xy coordinates back to source image xy."""
     _require(coordinates.shape[-1] == 2, "coordinates must end in xy")
@@ -189,6 +199,7 @@ __all__ = [
     "LOCKED_SPECS",
     "NuisanceSensitivityError",
     "NuisanceSpec",
+    "apply_binomial3_prefilter",
     "apply_nuisance_coordinates",
     "apply_nuisance",
     "normalized_residual_cells",

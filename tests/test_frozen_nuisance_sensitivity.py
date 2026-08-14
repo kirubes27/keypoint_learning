@@ -7,6 +7,7 @@ import torch
 from keypoint_net.frozen_nuisance_sensitivity import (
     IMAGE_SIZE,
     LOCKED_SPECS,
+    apply_binomial3_prefilter,
     apply_nuisance_coordinates,
     apply_nuisance,
     normalized_residual_cells,
@@ -89,3 +90,13 @@ def test_spatial_peak_summary_uses_xy_and_separated_peak() -> None:
     assert torch.allclose(coordinates[..., 0], torch.full((1, 10), -1.0 + 22.0 / 63.0))
     assert torch.allclose(coordinates[..., 1], torch.full((1, 10), -1.0 + 14.0 / 63.0))
     assert torch.equal(margin, torch.full((1, 10), 2.0))
+
+
+def test_binomial_prefilter_preserves_constant_rgb() -> None:
+    rgb = torch.empty((1, 3, IMAGE_SIZE, IMAGE_SIZE))
+    rgb[:, 0] = 0.2
+    rgb[:, 1] = 0.5
+    rgb[:, 2] = 0.9
+    normalized = rgb_to_normalized(rgb)
+    recovered = normalized_to_rgb(apply_binomial3_prefilter(normalized))
+    assert torch.max(torch.abs(recovered - rgb)).item() < 2e-7

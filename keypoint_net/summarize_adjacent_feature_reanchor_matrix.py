@@ -70,7 +70,7 @@ def _plot_heatmaps(records: list[dict[str, Any]], output: Path) -> None:
     feature = np.asarray([[row["channels"][channel]["feature_success"] for channel in range(10)] for row in records])
     detector = np.asarray([[row["channels"][channel]["detector_success"] for channel in range(10)] for row in records])
     labels = [row["role_key"] for row in records]
-    fig, axes = plt.subplots(1, 3, figsize=(18, 11), sharey=True)
+    fig, axes = plt.subplots(1, 3, figsize=(20, 11), sharey=True, constrained_layout=True)
     images = [
         axes[0].imshow(feature, aspect="auto", vmin=0.0, vmax=1.0, cmap="viridis"),
         axes[1].imshow(detector, aspect="auto", vmin=0.0, vmax=1.0, cmap="viridis"),
@@ -82,10 +82,10 @@ def _plot_heatmaps(records: list[dict[str, Any]], output: Path) -> None:
     for axis in axes:
         axis.set_xticks(range(10), [f"KP{i}" for i in range(10)], rotation=45)
     axes[0].set_yticks(range(len(labels)), labels, fontsize=7)
-    fig.colorbar(images[0], ax=axes[:2], fraction=0.025, pad=0.02, label="fraction of 180 cyclic edges")
-    fig.colorbar(images[2], ax=axes[2], fraction=0.05, pad=0.02, label="fraction difference")
+    fig.colorbar(images[0], ax=axes[0], fraction=0.046, pad=0.04, label="fraction of 180 cyclic edges")
+    fig.colorbar(images[1], ax=axes[1], fraction=0.046, pad=0.04, label="fraction of 180 cyclic edges")
+    fig.colorbar(images[2], ax=axes[2], fraction=0.046, pad=0.04, label="fraction difference")
     fig.suptitle("Per-role, per-keypoint adjacent material recoverability; descriptive only")
-    fig.subplots_adjust(left=0.28, right=0.96, top=0.93, bottom=0.08, wspace=0.12)
     fig.savefig(output, dpi=170)
     plt.close(fig)
 

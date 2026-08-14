@@ -165,6 +165,55 @@ def _group_rows(edges: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return output
 
 
+def _group_task_arm_rows(edges: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, ...], list[Mapping[str, Any]]] = defaultdict(list)
+    for edge in edges:
+        for basis in ("hard_peak", "soft_coordinate"):
+            grouped[
+                (str(edge["task"]), str(edge["arm"]), str(edge["condition"]), basis)
+            ].append(edge[basis])
+    return [
+        {
+            "task": key[0],
+            "arm": key[1],
+            "condition": key[2],
+            "basis": key[3],
+            **summarize_grounded_rows(rows),
+            "descriptive_not_inferential": True,
+        }
+        for key, rows in sorted(grouped.items())
+    ]
+
+
+def _group_channel_selection_rows(edges: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, ...], list[Mapping[str, Any]]] = defaultdict(list)
+    for edge in edges:
+        for label in edge["channel_selection_labels"]:
+            for basis in ("hard_peak", "soft_coordinate"):
+                grouped[
+                    (
+                        str(edge["task"]),
+                        str(edge["arm"]),
+                        str(edge["condition"]),
+                        basis,
+                        str(label),
+                    )
+                ].append(edge[basis])
+    return [
+        {
+            "task": key[0],
+            "arm": key[1],
+            "condition": key[2],
+            "basis": key[3],
+            "channel_selection_label": key[4],
+            **summarize_grounded_rows(rows),
+            "descriptive_not_inferential": True,
+            "overlap_caveat": "an edge appears in both label groups when KP2 is also the worst-q99 channel",
+        }
+        for key, rows in sorted(grouped.items())
+    ]
+
+
 def _verify_visuals(source: Mapping[str, Any]) -> dict[str, Any]:
     records = []
     for role_key, role_visuals in sorted(source["visuals"].items()):
@@ -299,6 +348,8 @@ def run(source_path: Path, expected_sha256: str, output_dir: Path) -> dict[str, 
             "visuals": visual_inventory,
         },
         "grouped_grounded_descriptives": _group_rows(edges),
+        "task_arm_grounded_descriptives_across_best_and_final": _group_task_arm_rows(edges),
+        "channel_selection_grounded_descriptives_across_best_and_final": _group_channel_selection_rows(edges),
         "plots": {
             "detector_vs_feature_distance": _file_record(distance_path),
             "physical_feature_rank": _file_record(rank_path),

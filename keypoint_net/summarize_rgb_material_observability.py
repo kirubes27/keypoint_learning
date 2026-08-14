@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-SCHEMA_VERSION = "rgb_material_observability_matrix_summary.v1"
+SCHEMA_VERSION = "rgb_material_observability_matrix_summary.v2"
 EXPECTED_ROLES = 24
 EXPECTED_CHANNELS = 10
 PATCH_SIZES = (35, 105)
@@ -177,6 +177,12 @@ def summarize(manifest_path: Path, matrix_root: Path, output_dir: Path) -> dict[
                 "n_role_channels": len(role_channels),
                 "strict_pass_count": int(sum(channel["strict_pass"] for _, channel in role_channels)),
                 "source_eligible_count": int(sum(channel["source_eligible"] for _, channel in role_channels)),
+                "grounded_matcher_assessable_count": int(
+                    sum(channel["grounded_matcher_assessable"] for _, channel in role_channels)
+                ),
+                "grounded_matcher_strict_pass_count": int(
+                    sum(channel["grounded_matcher_strict_pass"] for _, channel in role_channels)
+                ),
                 "grounded_edge_count": int(sum(channel["grounded_edge_count"] for _, channel in role_channels)),
                 "grounded_failure_count": int(sum(channel["grounded_failure_count"] for _, channel in role_channels)),
                 "valid_edge_count": int(sum(channel["valid_edge_count"] for _, channel in role_channels)),
@@ -187,6 +193,12 @@ def summarize(manifest_path: Path, matrix_root: Path, output_dir: Path) -> dict[
                         "n_role_channels": len(channels),
                         "strict_pass_count": int(sum(channel["strict_pass"] for channel in channels)),
                         "source_eligible_count": int(sum(channel["source_eligible"] for channel in channels)),
+                        "grounded_matcher_assessable_count": int(
+                            sum(channel["grounded_matcher_assessable"] for channel in channels)
+                        ),
+                        "grounded_matcher_strict_pass_count": int(
+                            sum(channel["grounded_matcher_strict_pass"] for channel in channels)
+                        ),
                         "grounded_failure_count": int(sum(channel["grounded_failure_count"] for channel in channels)),
                     }
                     for key, channels in sorted(groups.items())

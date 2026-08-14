@@ -153,6 +153,8 @@ def test_scope_contract_passes_only_complete_distinct_grounded_edges() -> None:
         "global",
     )
     assert report["strict_pass_count"] == 10
+    assert report["grounded_matcher_assessable_count"] == 10
+    assert report["grounded_matcher_strict_pass_count"] == 10
     arrays["global_valid"][0, 7, 3] = False
     failed, _ = _scope_metrics(
         arrays,
@@ -166,3 +168,21 @@ def test_scope_contract_passes_only_complete_distinct_grounded_edges() -> None:
         "global",
     )
     assert failed["strict_pass_count"] == 9
+    assert failed["grounded_matcher_assessable_count"] == 10
+    assert failed["grounded_matcher_strict_pass_count"] == 9
+
+    physical_target_on_object = np.ones((frames, channels), dtype=bool)
+    physical_target_on_object[:, 0] = False
+    partly_ungrounded, _ = _scope_metrics(
+        arrays,
+        ranks,
+        source,
+        physical,
+        physical_target_on_object,
+        masks,
+        np.roll(np.arange(frames), -1),
+        0,
+        "global",
+    )
+    assert partly_ungrounded["grounded_matcher_assessable_count"] == 9
+    assert partly_ungrounded["grounded_matcher_strict_pass_count"] == 8

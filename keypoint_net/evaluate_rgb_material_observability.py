@@ -14,6 +14,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -47,7 +48,7 @@ except ImportError:
     )
 
 
-SCHEMA_VERSION = "rgb_material_observability_evaluation.v1"
+SCHEMA_VERSION = "rgb_material_observability_evaluation.v2"
 EXPECTED_RAW_SCHEMA = "rgb_material_observability_raw_receipt.v1"
 EXPECTED_FRAMES = 180
 EXPECTED_CHANNELS = 10
@@ -318,6 +319,10 @@ def _scope_metrics(
             | (np.nan_to_num(error[:, channel], nan=np.inf) > MATERIAL_ERROR_LIMIT_PX)
             | ~predicted_on_object[:, channel]
         )
+        grounded_matcher_assessable = bool(np.any(grounded_rows))
+        grounded_matcher_strict_pass = bool(
+            grounded_matcher_assessable and not np.any(grounded_failures)
+        )
         channels.append(
             {
                 "channel": channel,
@@ -327,6 +332,8 @@ def _scope_metrics(
                 "valid_edge_count": int(np.sum(valid[:, channel])),
                 "grounded_edge_count": int(np.sum(grounded_rows)),
                 "grounded_failure_count": int(np.sum(grounded_failures)),
+                "grounded_matcher_assessable": grounded_matcher_assessable,
+                "grounded_matcher_strict_pass": grounded_matcher_strict_pass,
                 "material_error_px": _distribution(error[:, channel]),
                 "predicted_target_on_object_rate": float(np.mean(predicted_on_object[:, channel])),
                 "minimum_other_prediction_distance_px": (
@@ -343,6 +350,12 @@ def _scope_metrics(
         "strict_pass_count": int(sum(row["strict_pass"] for row in channels)),
         "strict_all_ten_pass": bool(all(row["strict_pass"] for row in channels)),
         "source_eligible_count": int(np.sum(eligible)),
+        "grounded_matcher_assessable_count": int(
+            sum(row["grounded_matcher_assessable"] for row in channels)
+        ),
+        "grounded_matcher_strict_pass_count": int(
+            sum(row["grounded_matcher_strict_pass"] for row in channels)
+        ),
         "channels": channels,
         "material_error_px_all_valid_edges": _distribution(error),
         "physical_candidate_rank_all_valid": _distribution(
@@ -455,6 +468,9 @@ def _plot_worst(
 
 
 def evaluate(raw_receipt_path: Path, output_dir: Path, repo_root: Path) -> dict[str, Any]:
+    # Freeze OpenCV's internal threading so parallel role workers do not change
+    # scheduling or oversubscribe the CPU during the exact score recomputation.
+    cv2.setNumThreads(1)
     receipt, arrays, receipt_record = _load_raw(raw_receipt_path)
     images, masks, theta, image_paths = _load_images_and_geometry(receipt)
     source_normalized = np.asarray(arrays["source_coordinate_normalized"], dtype=np.float64)
@@ -548,6 +564,10 @@ def evaluate(raw_receipt_path: Path, output_dir: Path, repo_root: Path) -> dict[
             "minimum_pair_distance_px": MINIMUM_PAIR_DISTANCE_PX,
             "minimum_source_activity_rms_px": MINIMUM_ACTIVITY_RMS_PX,
             "derivation": "unchanged full-resolution planted calibration; not fitted to matcher outcomes",
+        },
+        "reporting_contract": {
+            "strict_pass": "all upstream source-state, match, material-error, on-object, and cross-channel checks pass for all 180 edges",
+            "grounded_matcher_strict_pass": "at least one physically grounded edge exists and every grounded edge is valid, within the frozen material-error limit, and predicts on-object; upstream activity/distinctness is reported separately",
         },
         "source_state": {
             "active_count": int(np.sum(source["active"])),

@@ -29,8 +29,8 @@ except ImportError:
     from plot_frozen_wobble_pair import _load_run, _paired_numeric_summary  # type: ignore
 
 
-SCHEMA_VERSION = "frozen_wobble_local_matrix_summary.v1"
-EXPECTED_RUN_IMPLEMENTATION_HEAD = "49d1203d18fd4cb66a78f308a2c33944a69c03ca"
+SCHEMA_VERSION = "frozen_wobble_complete_matrix_summary.v1"
+EXPECTED_RUN_IMPLEMENTATION_ANCESTOR = "49d1203d18fd4cb66a78f308a2c33944a69c03ca"
 EXPECTED_CHANNELS = 10
 EXPECTED_FRAMES = 180
 TASKS = ("task55_clean", "task80_assisted")
@@ -40,25 +40,6 @@ ROLES = ("best_model", "final_model")
 IMPLEMENTATION_SOURCES = (
     "keypoint_net/summarize_frozen_wobble_matrix.py",
     "keypoint_net/plot_frozen_wobble_pair.py",
-)
-EXPECTED_LOCAL_ROLES = frozenset(
-    {
-        "task55_clean__control__seed42__best_model",
-        "task55_clean__control__seed42__final_model",
-        "task55_clean__control__seed43__best_model",
-        "task55_clean__control__seed44__best_model",
-        "task55_clean__ocr_zncc__seed42__best_model",
-        "task55_clean__ocr_zncc__seed42__final_model",
-        "task55_clean__ocr_zncc__seed43__best_model",
-        "task55_clean__ocr_zncc__seed44__best_model",
-        "task80_assisted__control__seed42__best_model",
-        "task80_assisted__control__seed42__final_model",
-        "task80_assisted__control__seed43__best_model",
-        "task80_assisted__ocr_zncc__seed42__best_model",
-        "task80_assisted__ocr_zncc__seed42__final_model",
-        "task80_assisted__ocr_zncc__seed43__best_model",
-        "task80_assisted__ocr_zncc__seed44__best_model",
-    }
 )
 
 
@@ -113,7 +94,7 @@ def _implementation_binding(repo_root: Path) -> dict[str, Any]:
         text=True,
     ).stdout.strip()
     ancestry = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", EXPECTED_RUN_IMPLEMENTATION_HEAD, head],
+        ["git", "merge-base", "--is-ancestor", EXPECTED_RUN_IMPLEMENTATION_ANCESTOR, head],
         cwd=repo_root,
         check=False,
     )
@@ -126,7 +107,7 @@ def _implementation_binding(repo_root: Path) -> dict[str, Any]:
     _require(cleanliness.returncode == 0, "matrix summarizer source differs from its recorded HEAD")
     return {
         "implementation_head": head,
-        "required_frozen_run_ancestor_commit": EXPECTED_RUN_IMPLEMENTATION_HEAD,
+        "required_frozen_run_ancestor_commit": EXPECTED_RUN_IMPLEMENTATION_ANCESTOR,
         "implementation_sources": {
             relative: _file_record(repo_root / relative) for relative in IMPLEMENTATION_SOURCES
         },
@@ -144,6 +125,22 @@ def _all_expected_roles() -> set[str]:
         for arm in ARMS
         for seed in SEEDS
         for role in ROLES
+    }
+
+
+def _commit_descends(repo_root: Path, commit: str, ancestor: str) -> bool:
+    return subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, commit],
+        cwd=repo_root,
+        check=False,
+    ).returncode == 0
+
+
+def _runtime_source_bundle(report: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    sources = report["bindings"]["implementation_sources"]
+    return {
+        relative: {"sha256": record["sha256"], "size_bytes": record["size_bytes"]}
+        for relative, record in sorted(sources.items())
     }
 
 
@@ -501,16 +498,31 @@ def run(matrix_root: Path, output_dir: Path) -> dict[str, Any]:
     repo_root = Path(__file__).resolve().parents[1]
     implementation = _implementation_binding(repo_root)
     report_paths = sorted(matrix_root.resolve(strict=True).glob("*/forensic_report.json"))
-    _require(len(report_paths) == len(EXPECTED_LOCAL_ROLES), "available report count differs from the fixed local inventory")
+    all_expected = _all_expected_roles()
+    _require(len(report_paths) == len(all_expected), "available report count differs from the full protocol inventory")
 
     loaded: dict[str, dict[str, Any]] = {}
     observed_roles: set[str] = set()
     common_thresholds: Mapping[str, Any] | None = None
+    common_runtime_sources: Mapping[str, Any] | None = None
+    run_implementation_heads: set[str] = set()
     for report_path in report_paths:
         run_dir = report_path.parent
         report, arrays = _load_run(run_dir)
         _require(report["content_hash_sha256"] == _content_hash(report), "forensic report content hash differs")
-        _require(report["bindings"]["implementation_head"] == EXPECTED_RUN_IMPLEMENTATION_HEAD, "frozen-run implementation HEAD differs")
+        run_head = report["bindings"]["implementation_head"]
+        _require(
+            _commit_descends(repo_root, run_head, EXPECTED_RUN_IMPLEMENTATION_ANCESTOR),
+            "frozen-run implementation does not descend from the bound forensic implementation",
+        )
+        run_implementation_heads.add(run_head)
+        runtime_sources = _runtime_source_bundle(report)
+        if common_runtime_sources is None:
+            common_runtime_sources = runtime_sources
+        _require(
+            runtime_sources == common_runtime_sources,
+            "frozen roles used different runtime evaluator source bytes",
+        )
         role_key = _role_key(report["recipe"], report["arm"], int(report["seed"]), report["checkpoint_role"])
         _require(run_dir.name == role_key, "run directory and bound role key differ")
         _require(role_key not in observed_roles, "duplicate role in matrix")
@@ -534,7 +546,7 @@ def run(matrix_root: Path, output_dir: Path) -> dict[str, Any]:
                 "raw_arrays": _file_record(run_dir / "raw_forensic_arrays.npz"),
             },
         }
-    _require(observed_roles == EXPECTED_LOCAL_ROLES, "observed roles differ from the fixed local inventory")
+    _require(observed_roles == all_expected, "observed roles differ from the full protocol inventory")
 
     paired_rows = []
     for task in TASKS:
@@ -562,13 +574,18 @@ def run(matrix_root: Path, output_dir: Path) -> dict[str, Any]:
         "metric_matrix": _matrix_visual(run_rows, output_dir / "01_metric_matrix.png"),
         "strict_category_matrix": _category_visual(run_rows, output_dir / "02_strict_category_matrix.png"),
     }
-    all_expected = _all_expected_roles()
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "artifact_type": "source_bound_frozen_checkpoint_local_matrix_summary",
+        "artifact_type": "source_bound_frozen_checkpoint_complete_matrix_summary",
         "training_or_weight_update_performed": False,
         "implementation": implementation,
         "matrix_root": str(matrix_root.resolve(strict=True)),
+        "frozen_run_implementation": {
+            "observed_heads": sorted(run_implementation_heads),
+            "required_ancestor_commit": EXPECTED_RUN_IMPLEMENTATION_ANCESTOR,
+            "identical_runtime_source_bytes_across_all_roles": True,
+            "runtime_sources": common_runtime_sources,
+        },
         "inventory": {
             "full_protocol_roles": len(all_expected),
             "available_local_roles": len(observed_roles),

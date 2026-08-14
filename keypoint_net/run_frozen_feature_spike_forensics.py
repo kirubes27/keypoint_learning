@@ -52,7 +52,7 @@ except ImportError:
     from summarize_frozen_wobble_matrix import _all_expected_roles, _content_hash, _role_key  # type: ignore
 
 
-SCHEMA_VERSION = "frozen_feature_spike_forensics.v1"
+SCHEMA_VERSION = "frozen_feature_spike_forensics.v1_1"
 EXPECTED_MATRIX_SUMMARY_SCHEMA = "frozen_wobble_complete_matrix_summary.v1"
 EXPECTED_FRAMES = 180
 EXPECTED_CHANNELS = 10
@@ -336,6 +336,7 @@ def _image(data_root: Path, frame: int) -> np.ndarray:
 
 def _visualize_event(
     role_key: str,
+    visual_reason: str,
     edge: Mapping[str, Any],
     arrays: Mapping[str, np.ndarray],
     features: Mapping[int, np.ndarray],
@@ -383,7 +384,8 @@ def _visualize_event(
         ax.set_ylim(1, -1)
         ax.axis("off")
     fig.suptitle(
-        f"{role_key}: {edge['condition']} {edge['direction']} for KP{channel}\n"
+        f"{role_key}: {visual_reason}\n"
+        f"{edge['condition']} {edge['direction']} for KP{channel}\n"
         f"physical percentile={hard['physical_target_mask_percentile']:.3f}; "
         f"detector-physical cosine={hard['detector_minus_physical_similarity']:+.3f}; "
         f"detector distance={hard['detector_distance_to_physical_cells']:.2f} cells; "
@@ -507,20 +509,39 @@ def run(
                             row[basis] = match
                         edges.append(row)
                         role_edges.append(row)
-        worst_visual_edge = max(
-            (row for row in role_edges if row["condition"] == "spike"),
+        grounded_spike_edges = [
+            row
+            for row in role_edges
+            if row["condition"] == "spike" and row["hard_peak"]["grounded_physical_edge"]
+        ]
+        visual_candidates = grounded_spike_edges or [
+            row for row in role_edges if row["condition"] == "spike"
+        ]
+        largest_detector_jump_edge = max(
+            visual_candidates,
             key=lambda row: row["hard_peak"]["detector_distance_to_physical_cells"],
         )
-        visual_path = visual_root / f"{role_key}__worst_feature_event.png"
-        visuals[role_key] = _visualize_event(
-            role_key,
-            worst_visual_edge,
-            arrays,
-            features,
-            masks,
-            data_root,
-            visual_path,
+        farthest_feature_argmax_edge = max(
+            visual_candidates,
+            key=lambda row: row["hard_peak"]["object_argmax_distance_to_physical_cells"],
         )
+        visual_edges = {
+            "largest_grounded_detector_jump": largest_detector_jump_edge,
+            "farthest_grounded_feature_argmax": farthest_feature_argmax_edge,
+        }
+        visuals[role_key] = {}
+        for visual_reason, visual_edge in visual_edges.items():
+            visual_path = visual_root / f"{role_key}__{visual_reason}.png"
+            visuals[role_key][visual_reason] = _visualize_event(
+                role_key,
+                visual_reason.replace("_", " "),
+                visual_edge,
+                arrays,
+                features,
+                masks,
+                data_root,
+                visual_path,
+            )
         role_records.append(
             {
                 "role_key": role_key,
@@ -532,17 +553,20 @@ def run(
                 "forensic_report": _file_record(report_path),
                 "raw_arrays": _file_record(report_path.parent / "raw_forensic_arrays.npz"),
                 "inference": inference,
-                "visual_event": {
-                    key: worst_visual_edge[key]
-                    for key in (
-                        "channel",
-                        "condition",
-                        "centre_frame",
-                        "direction",
-                        "source_frame",
-                        "target_frame",
-                        "hard_peak",
-                    )
+                "visual_events": {
+                    visual_reason: {
+                        key: visual_edge[key]
+                        for key in (
+                            "channel",
+                            "condition",
+                            "centre_frame",
+                            "direction",
+                            "source_frame",
+                            "target_frame",
+                            "hard_peak",
+                        )
+                    }
+                    for visual_reason, visual_edge in visual_edges.items()
                 },
             }
         )
@@ -602,7 +626,7 @@ def run(
         "result": _file_record(result_path),
         "checkpoint_roles": len(role_records),
         "selected_edges": len(edges),
-        "correlation_montages": len(visuals),
+        "correlation_montages": sum(len(role_visuals) for role_visuals in visuals.values()),
         "training_or_weight_update_performed": False,
     }
 

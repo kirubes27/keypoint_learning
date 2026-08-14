@@ -148,6 +148,26 @@ def undo_nuisance_coordinates(coordinates: torch.Tensor, spec: NuisanceSpec) -> 
     raise NuisanceSensitivityError(f"unknown nuisance kind: {spec.kind}")
 
 
+def apply_nuisance_coordinates(coordinates: torch.Tensor, spec: NuisanceSpec) -> torch.Tensor:
+    """Map source normalized xy coordinates into the planted nuisance image."""
+    _require(coordinates.shape[-1] == 2, "coordinates must end in xy")
+    _require(bool(torch.isfinite(coordinates).all()), "coordinates contain non-finite values")
+    if spec.kind in {"identity", "brightness"}:
+        return coordinates.clone()
+    if spec.kind == "translation":
+        tx, ty = _normalized_translation(spec.dx_pixels, spec.dy_pixels, size=IMAGE_SIZE)
+        delta = coordinates.new_tensor([tx, ty])
+        return coordinates + delta
+    if spec.kind == "rotation":
+        radians = math.radians(spec.clockwise_degrees)
+        cosine = math.cos(radians)
+        sine = math.sin(radians)
+        x = coordinates[..., 0]
+        y = coordinates[..., 1]
+        return torch.stack((cosine * x - sine * y, sine * x + cosine * y), dim=-1)
+    raise NuisanceSensitivityError(f"unknown nuisance kind: {spec.kind}")
+
+
 def normalized_residual_pixels(reference: torch.Tensor, recovered: torch.Tensor) -> torch.Tensor:
     _require(reference.shape == recovered.shape and reference.shape[-1] == 2, "coordinate shapes differ")
     return torch.linalg.vector_norm(recovered - reference, dim=-1) * ((IMAGE_SIZE - 1) / 2.0)
@@ -169,6 +189,7 @@ __all__ = [
     "LOCKED_SPECS",
     "NuisanceSensitivityError",
     "NuisanceSpec",
+    "apply_nuisance_coordinates",
     "apply_nuisance",
     "normalized_residual_cells",
     "normalized_residual_pixels",

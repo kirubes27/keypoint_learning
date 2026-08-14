@@ -7,6 +7,7 @@ import torch
 from keypoint_net.frozen_nuisance_sensitivity import (
     IMAGE_SIZE,
     LOCKED_SPECS,
+    apply_nuisance_coordinates,
     apply_nuisance,
     normalized_residual_cells,
     normalized_residual_pixels,
@@ -42,7 +43,8 @@ def test_translation_coordinate_undo_recovers_source() -> None:
         [2.0 * spec.dx_pixels / (IMAGE_SIZE - 1), 2.0 * spec.dy_pixels / (IMAGE_SIZE - 1)],
         dtype=source.dtype,
     )
-    perturbed = source + delta
+    perturbed = apply_nuisance_coordinates(source, spec)
+    assert torch.equal(perturbed, source + delta)
     recovered = undo_nuisance_coordinates(perturbed, spec)
     assert torch.equal(recovered, source)
 
@@ -53,7 +55,8 @@ def test_rotation_coordinate_undo_recovers_source() -> None:
     angle = math.radians(spec.clockwise_degrees)
     c, s = math.cos(angle), math.sin(angle)
     x, y = source[..., 0], source[..., 1]
-    perturbed = torch.stack((c * x - s * y, s * x + c * y), dim=-1)
+    perturbed = apply_nuisance_coordinates(source, spec)
+    assert torch.equal(perturbed, torch.stack((c * x - s * y, s * x + c * y), dim=-1))
     recovered = undo_nuisance_coordinates(perturbed, spec)
     assert torch.max(torch.abs(recovered - source)).item() < 1e-15
 

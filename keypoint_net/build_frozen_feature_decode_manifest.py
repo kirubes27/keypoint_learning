@@ -115,8 +115,14 @@ def build_manifest(matrix_summary_path: Path, repo_root: Path) -> dict[str, Any]
                     "image_sha256": str(frame["image_sha256"]),
                 }
             )
-        data_root = str(Path(str(corpus["data_root"])).resolve(strict=True))
+        data_root = str(Path(str(corpus["object_root"])).resolve(strict=True))
         if common_images is None:
+            for image in images:
+                image_path = (Path(data_root) / image["image_relpath"]).resolve(strict=True)
+                _require(
+                    _sha256(image_path) == image["image_sha256"],
+                    f"{role_key}: RGB object-root binding differs at frame {image['frame_index']}",
+                )
             common_images = images
             common_data_root = data_root
         else:
@@ -146,7 +152,7 @@ def build_manifest(matrix_summary_path: Path, repo_root: Path) -> dict[str, Any]
             "forbidden": ["mask", "theta", "pivot", "physical track", "operator prediction", "prior forensic arrays", "OCR match"],
         },
         "corpus": {
-            "data_root": common_data_root,
+            "rgb_object_root": common_data_root,
             "frame_count": EXPECTED_FRAMES,
             "frames": common_images,
         },

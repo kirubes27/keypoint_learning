@@ -84,7 +84,7 @@ def _load_manifest(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 def _image_paths(manifest: Mapping[str, Any]) -> list[Path]:
     corpus = manifest.get("corpus")
     _require(isinstance(corpus, Mapping), "corpus binding is missing")
-    root = Path(str(corpus.get("data_root"))).resolve(strict=True)
+    root = Path(str(corpus.get("rgb_object_root"))).resolve(strict=True)
     frames = corpus.get("frames")
     _require(isinstance(frames, list) and len(frames) == EXPECTED_FRAMES, "RGB frame count differs")
     paths: list[Path] = []

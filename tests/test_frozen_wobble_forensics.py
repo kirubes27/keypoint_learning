@@ -15,6 +15,11 @@ from keypoint_net.frozen_wobble_forensics import (
     warp_image_by_standard_rotation,
 )
 from keypoint_net.frozen_wobble_oracle_calibration import build_calibration
+from keypoint_net.run_frozen_wobble_forensics import (
+    EXPECTED_EVALUATION_COMMIT,
+    IMPLEMENTATION_SOURCE_RELATIVE_PATHS,
+    _implementation_binding,
+)
 
 
 def _orbit(canonical: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -27,6 +32,17 @@ def test_geometry_smoke_locks_physical_sign_and_pivot() -> None:
     assert report["correct_sign_rms_normalized"] < 1e-14
     assert report["wrong_sign_rms_normalized"] > 0.1
     assert report["wrong_pivot_rms_normalized"] > 0.05
+
+
+def test_forensic_implementation_binding_separates_ancestor_from_current_head() -> None:
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    head, source_records = _implementation_binding(repo_root)
+    assert len(head) == 40
+    assert head != EXPECTED_EVALUATION_COMMIT
+    assert tuple(source_records) == IMPLEMENTATION_SOURCE_RELATIVE_PATHS
+    assert all(record["sha256"] for record in source_records.values())
 
 
 def test_exact_material_points_become_constant_after_derotation() -> None:

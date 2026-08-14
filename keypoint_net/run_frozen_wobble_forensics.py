@@ -60,6 +60,11 @@ EXPECTED_STRIDE_DEG = 6.0
 COORDINATE_CONSISTENCY_TOLERANCE = 1e-4
 CELL_RE = re.compile(r"^(task55_clean|task80_assisted)__(control|ocr_zncc)__seed(42|43|44)$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+IMPLEMENTATION_SOURCE_RELATIVE_PATHS = (
+    "keypoint_net/run_frozen_wobble_forensics.py",
+    "keypoint_net/frozen_wobble_forensics.py",
+    "keypoint_net/model.py",
+)
 
 
 class FrozenForensicError(ValueError):
@@ -93,6 +98,47 @@ def _file_sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _implementation_binding(repo_root: Path) -> tuple[str, dict[str, Any]]:
+    """Bind the committed forensic implementation without conflating its HEAD
+    with the older outcome evaluator commit.
+
+    The completed outcomes remain locked to ``EXPECTED_EVALUATION_COMMIT`` in
+    ``_validate_outcome``.  The forensic implementation may be a later commit,
+    but it must descend from that exact commit and its runtime source files must
+    be byte-for-byte clean relative to its own HEAD.
+    """
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", EXPECTED_EVALUATION_COMMIT, head],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    _require(
+        ancestry.returncode == 0,
+        "forensic implementation HEAD does not descend from the source-bound evaluator commit",
+    )
+    cleanliness = subprocess.run(
+        ["git", "diff", "--quiet", "HEAD", "--", *IMPLEMENTATION_SOURCE_RELATIVE_PATHS],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    _require(
+        cleanliness.returncode == 0,
+        "forensic runtime source files differ from the recorded implementation HEAD",
+    )
+    source_records = {
+        relative_path: _regular_file_record(repo_root / relative_path)
+        for relative_path in IMPLEMENTATION_SOURCE_RELATIVE_PATHS
+    }
+    return head, source_records
 
 
 def _regular_file_record(path_value: Path | str) -> dict[str, Any]:
@@ -597,10 +643,7 @@ def _save_raw_arrays(path: Path, arrays: Mapping[str, np.ndarray]) -> dict[str, 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     repo_root = Path(__file__).resolve().parents[1]
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo_root, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    _require(head == EXPECTED_EVALUATION_COMMIT, "implementation worktree HEAD differs from the source-bound evaluator commit")
+    head, source_records = _implementation_binding(repo_root)
 
     calibration, calibration_record = _load_json(args.calibration, name="oracle calibration")
     _validate_calibration(calibration, calibration_record, expected_sha256=args.expected_calibration_sha256)
@@ -664,14 +707,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raw_arrays[f"separated_peak_r{radius}_{name}"] = np.asarray(value)
     raw_record = _save_raw_arrays(output_dir / "raw_forensic_arrays.npz", raw_arrays)
 
-    source_records = {
-        str(path.relative_to(repo_root)): _regular_file_record(path)
-        for path in (
-            Path(__file__).resolve(),
-            repo_root / "keypoint_net" / "frozen_wobble_forensics.py",
-            repo_root / "keypoint_net" / "model.py",
-        )
-    }
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "source_bound_frozen_checkpoint_full_orbit_forensics",
@@ -685,6 +720,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "classification_status": "descriptive_forensic_smoke_not_yet_final_success_contract",
         "bindings": {
             "implementation_head": head,
+            "required_evaluation_ancestor_commit": EXPECTED_EVALUATION_COMMIT,
             "implementation_sources": source_records,
             "outcome_json": outcome_record,
             "checkpoint": checkpoint_record,

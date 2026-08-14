@@ -342,7 +342,7 @@ def _plot_spikes(
     candidates: list[tuple[int, int, str]] = [
         (int(np.argmax(feature_error_px[:, kp2])), kp2, "KP2 largest feature error"),
         (int(np.argmax(detector_error_px[:, kp2])), kp2, "KP2 largest detector wobble"),
-        (int(np.argmax(feature_error_px[:, worst_channel])), worst_channel, "matrix-role largest feature error"),
+        (int(np.argmax(feature_error_px[:, worst_channel])), worst_channel, "role largest feature error"),
     ]
     correction = np.where((detector_error_px > MATERIAL_ERROR_MAX * PIXEL_SCALE) & (feature_error_px <= MATERIAL_ERROR_MAX * PIXEL_SCALE))
     if correction[0].size:
@@ -372,7 +372,6 @@ def _plot_spikes(
         axes[row, 1].legend(fontsize=8)
         for axis in axes[row]:
             axis.axis("off")
-    fig.suptitle("Adjacent learned-feature visual spike audit")
     fig.tight_layout()
     fig.savefig(output, dpi=170)
     plt.close(fig)

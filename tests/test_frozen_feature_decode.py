@@ -10,6 +10,8 @@ from keypoint_net.frozen_feature_decode import (
     sample_target_similarities,
     stable_spatial_top_two,
 )
+from keypoint_net.evaluate_frozen_feature_decode import _basis_metrics
+from keypoint_net.frozen_wobble_forensics import rotate_points
 
 
 def test_endpoint_cells_reach_exact_corners() -> None:
@@ -61,3 +63,29 @@ def test_detector_similarity_matches_correlation_at_same_cell() -> None:
                 x = 0 if float(coords[basis, batch, keypoint, 0]) == -1.0 else 3
                 y = 0 if float(coords[basis, batch, keypoint, 1]) == -1.0 else 3
                 torch.testing.assert_close(sampled[basis, batch, keypoint], correlation[basis, batch, keypoint, y, x])
+
+
+def test_physical_full_orbit_track_passes_every_channel() -> None:
+    theta = np.arange(180, dtype=np.float64) * 2.0
+    angle = np.arange(10, dtype=np.float64) * 36.0
+    canonical = np.stack((0.4 * np.cos(np.deg2rad(angle)), 0.4 * np.sin(np.deg2rad(angle))), axis=-1)
+    anchor = rotate_points(canonical, theta[27])
+    decoded = rotate_points(np.broadcast_to(anchor, (180, 10, 2)), theta[:, None] - theta[27])
+    masks = np.ones((180, 512, 512), dtype=bool)
+    report, derived = _basis_metrics(decoded, decoded.copy(), anchor, theta, masks)
+    assert report["strict_pass_count"] == 10
+    assert report["strict_all_ten_pass"] is True
+    np.testing.assert_allclose(derived["material_error_pixels"], 0.0, atol=1e-12)
+
+
+def test_one_large_jump_fails_only_affected_identity_quality() -> None:
+    theta = np.arange(180, dtype=np.float64) * 2.0
+    angle = np.arange(10, dtype=np.float64) * 36.0
+    canonical = np.stack((0.4 * np.cos(np.deg2rad(angle)), 0.4 * np.sin(np.deg2rad(angle))), axis=-1)
+    anchor = rotate_points(canonical, theta[27])
+    decoded = rotate_points(np.broadcast_to(anchor, (180, 10, 2)), theta[:, None] - theta[27])
+    decoded[90, 2] += np.asarray([0.2, -0.1])
+    masks = np.ones((180, 512, 512), dtype=bool)
+    report, _ = _basis_metrics(decoded, decoded.copy(), anchor, theta, masks)
+    assert report["channels"][2]["strict_r64_diagnostic_pass"] is False
+    assert report["channels"][2]["checks"]["material_error"] is False

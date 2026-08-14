@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 import torch
 
 from keypoint_net.frozen_nuisance_sensitivity import (
@@ -12,6 +14,7 @@ from keypoint_net.frozen_nuisance_sensitivity import (
 from keypoint_net.model import PhaseAModel
 from keypoint_net.same_frame_equivariance import (
     LOCKED_EQUIVARIANCE_SPECS,
+    add_locked_equivariance_to_pair_loss,
     combine_with_base_loss,
     distribution_equivariance_loss,
     run_locked_equivariance_path,
@@ -200,3 +203,59 @@ def test_zero_weight_returns_exact_base_loss_object() -> None:
     combined.backward()
     assert base.grad.item() == 1.0
     assert auxiliary.grad is None
+
+
+def test_paired_control_and_candidate_match_batchnorm_and_operator_gradient() -> None:
+    generator = torch.Generator().manual_seed(29)
+    x_t = rgb_to_normalized(
+        torch.rand((1, 3, IMAGE_SIZE, IMAGE_SIZE), generator=generator)
+    )
+    x_t1 = rgb_to_normalized(
+        torch.rand((1, 3, IMAGE_SIZE, IMAGE_SIZE), generator=generator)
+    )
+    control = PhaseAModel(
+        num_keypoints=2,
+        base_channels=2,
+        operator_type="shared_affine",
+        heatmap_res=64,
+    )
+    candidate = copy.deepcopy(control)
+    control.train()
+    candidate.train()
+
+    def execute(model: PhaseAModel, weight: float):
+        outputs = model(x_t, x_t1)
+        base = torch.nn.functional.mse_loss(outputs["p_hat_t1"], outputs["p_t1"])
+        paired = add_locked_equivariance_to_pair_loss(
+            model.extractor,
+            x_t,
+            x_t1,
+            outputs["heatmaps_t"],
+            outputs["heatmaps_t1"],
+            base,
+            weight=weight,
+        )
+        return outputs, base, paired
+
+    _, control_base, control_result = execute(control, 0.0)
+    _, _, candidate_result = execute(candidate, 0.5)
+    assert control_result.optimization_loss is control_base
+    for name, control_value in control.state_dict().items():
+        assert torch.equal(control_value, candidate.state_dict()[name]), name
+
+    control_result.optimization_loss.backward()
+    candidate_result.optimization_loss.backward()
+    for control_parameter, candidate_parameter in zip(
+        control.operator.parameters(), candidate.operator.parameters(), strict=True
+    ):
+        assert control_parameter.grad is not None
+        assert candidate_parameter.grad is not None
+        assert torch.equal(control_parameter.grad, candidate_parameter.grad)
+    assert any(
+        control_parameter.grad is not None
+        and candidate_parameter.grad is not None
+        and not torch.equal(control_parameter.grad, candidate_parameter.grad)
+        for control_parameter, candidate_parameter in zip(
+            control.extractor.parameters(), candidate.extractor.parameters(), strict=True
+        )
+    )

@@ -57,6 +57,14 @@ class SameFrameEquivarianceResult:
     transformed_image_count: int
 
 
+@dataclass(frozen=True)
+class PairedEquivarianceLossResult:
+    """One paired training path after the always-executed extra forwards."""
+
+    optimization_loss: torch.Tensor
+    equivariance: SameFrameEquivarianceResult
+
+
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise SameFrameEquivarianceError(message)
@@ -217,10 +225,47 @@ def combine_with_base_loss(
     return base_loss + float(weight) * equivariance_loss
 
 
+def add_locked_equivariance_to_pair_loss(
+    extractor: nn.Module,
+    x_t: torch.Tensor,
+    x_t1: torch.Tensor,
+    heatmaps_t: torch.Tensor,
+    heatmaps_t1: torch.Tensor,
+    base_optimization_loss: torch.Tensor,
+    *,
+    weight: float,
+) -> PairedEquivarianceLossResult:
+    """Execute one fair pair path and combine it with an existing objective.
+
+    The caller must invoke this function in both the zero-weight control and
+    positive candidate.  Thus the transformed-image construction, augmented
+    extractor forward, and BatchNorm exposure are identical before the weight
+    is applied.
+    """
+    _require(x_t.shape == x_t1.shape, "training-pair image shapes differ")
+    _require(heatmaps_t.shape == heatmaps_t1.shape, "training-pair heatmap shapes differ")
+    _require(x_t.shape[0] == heatmaps_t.shape[0], "image/heatmap batch differs")
+    equivariance = run_locked_equivariance_path(
+        extractor,
+        torch.cat((x_t, x_t1), dim=0),
+        torch.cat((heatmaps_t, heatmaps_t1), dim=0),
+    )
+    return PairedEquivarianceLossResult(
+        optimization_loss=combine_with_base_loss(
+            base_optimization_loss,
+            equivariance.loss,
+            weight=weight,
+        ),
+        equivariance=equivariance,
+    )
+
+
 __all__ = [
     "LOCKED_EQUIVARIANCE_SPECS",
+    "PairedEquivarianceLossResult",
     "SameFrameEquivarianceError",
     "SameFrameEquivarianceResult",
+    "add_locked_equivariance_to_pair_loss",
     "combine_with_base_loss",
     "distribution_equivariance_loss",
     "jensen_shannon_per_heatmap",

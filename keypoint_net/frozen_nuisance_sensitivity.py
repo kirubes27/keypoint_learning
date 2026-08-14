@@ -75,6 +75,57 @@ def _normalized_translation(dx_pixels: float, dy_pixels: float, *, size: int) ->
     return 2.0 * dx_pixels / (size - 1), 2.0 * dy_pixels / (size - 1)
 
 
+def nuisance_output_to_input_affine(
+    spec: NuisanceSpec,
+    *,
+    batch_size: int,
+    coordinate_size: int,
+    reference: torch.Tensor,
+) -> torch.Tensor:
+    """Return the endpoint-aligned output-to-input affine for one nuisance.
+
+    ``coordinate_size`` defines the pixel unit stored in ``spec``.  It stays
+    at the 512-pixel input size when the same physical warp is applied to a
+    lower-resolution heatmap distribution.
+    """
+    _require(batch_size >= 1, "batch size must be positive")
+    _require(coordinate_size >= 2, "coordinate size must be at least two")
+    _require(reference.is_floating_point(), "reference must be floating point")
+    theta = torch.zeros(
+        (batch_size, 2, 3),
+        device=reference.device,
+        dtype=reference.dtype,
+    )
+    if spec.kind in {"identity", "brightness"}:
+        theta[:, 0, 0] = 1.0
+        theta[:, 1, 1] = 1.0
+        return theta
+    if spec.kind == "translation":
+        tx, ty = _normalized_translation(
+            spec.dx_pixels,
+            spec.dy_pixels,
+            size=coordinate_size,
+        )
+        theta[:, 0, 0] = 1.0
+        theta[:, 1, 1] = 1.0
+        # affine_grid maps output positions to input sample positions, so use
+        # the inverse of the desired content translation.
+        theta[:, 0, 2] = -tx
+        theta[:, 1, 2] = -ty
+        return theta
+    if spec.kind == "rotation":
+        radians = math.radians(spec.clockwise_degrees)
+        cosine = math.cos(radians)
+        sine = math.sin(radians)
+        # Inverse of clockwise content rotation in image x/y coordinates.
+        theta[:, 0, 0] = cosine
+        theta[:, 0, 1] = sine
+        theta[:, 1, 0] = -sine
+        theta[:, 1, 1] = cosine
+        return theta
+    raise NuisanceSensitivityError(f"unknown nuisance kind: {spec.kind}")
+
+
 def apply_nuisance(normalized: torch.Tensor, spec: NuisanceSpec) -> torch.Tensor:
     """Apply one locked nuisance directly to an unmodified normalized batch.
 
@@ -95,26 +146,12 @@ def apply_nuisance(normalized: torch.Tensor, spec: NuisanceSpec) -> torch.Tensor
         return rgb_to_normalized((rgb + spec.brightness_delta).clamp(0.0, 1.0))
 
     batch = normalized.shape[0]
-    theta = torch.zeros((batch, 2, 3), device=rgb.device, dtype=rgb.dtype)
-    if spec.kind == "translation":
-        tx, ty = _normalized_translation(spec.dx_pixels, spec.dy_pixels, size=width)
-        theta[:, 0, 0] = 1.0
-        theta[:, 1, 1] = 1.0
-        # affine_grid maps output positions to input sample positions, so use
-        # the inverse of the desired content translation.
-        theta[:, 0, 2] = -tx
-        theta[:, 1, 2] = -ty
-    elif spec.kind == "rotation":
-        radians = math.radians(spec.clockwise_degrees)
-        cosine = math.cos(radians)
-        sine = math.sin(radians)
-        # Inverse of clockwise content rotation in image x/y coordinates.
-        theta[:, 0, 0] = cosine
-        theta[:, 0, 1] = sine
-        theta[:, 1, 0] = -sine
-        theta[:, 1, 1] = cosine
-    else:
-        raise NuisanceSensitivityError(f"unknown nuisance kind: {spec.kind}")
+    theta = nuisance_output_to_input_affine(
+        spec,
+        batch_size=batch,
+        coordinate_size=width,
+        reference=rgb,
+    )
 
     grid = F.affine_grid(theta, rgb.shape, align_corners=True)
     transformed = F.grid_sample(
@@ -205,6 +242,7 @@ __all__ = [
     "normalized_residual_cells",
     "normalized_residual_pixels",
     "normalized_to_rgb",
+    "nuisance_output_to_input_affine",
     "rgb_to_normalized",
     "undo_nuisance_coordinates",
 ]

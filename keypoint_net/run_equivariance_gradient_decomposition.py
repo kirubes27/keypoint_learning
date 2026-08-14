@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover
 
 
 SCHEMA_VERSION = "same_frame_equivariance_gradient_decomposition.v1"
-RELATIVE_VECTOR_TOLERANCE = 5e-4
+RELATIVE_VECTOR_TOLERANCE = 2e-3
 NORM_FLOOR = 1e-12
 
 

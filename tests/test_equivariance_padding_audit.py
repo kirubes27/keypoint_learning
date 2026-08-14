@@ -24,6 +24,20 @@ def test_zero_padding_path_is_exact_candidate_path() -> None:
         assert torch.equal(observed, warp_spatial_distribution(probability, spec))
 
 
+def test_probability_rotation_is_clockwise_about_heatmap_center() -> None:
+    probability = torch.zeros((1, 1, 17, 17), dtype=torch.float64)
+    # Four cells to the right of the exact centre. A 90-degree clockwise
+    # content rotation must place it four cells below the centre.
+    probability[0, 0, 8, 12] = 1.0
+    moved = warp_spatial_distribution(
+        probability,
+        NuisanceSpec(name="clockwise_quarter_turn", kind="rotation", clockwise_degrees=90.0),
+    )
+    expected = torch.zeros_like(probability)
+    expected[0, 0, 12, 8] = 1.0
+    assert torch.allclose(moved, expected, atol=1e-12, rtol=0.0)
+
+
 def test_outer_cell_mass_counts_each_corner_once() -> None:
     probability = torch.zeros((1, 1, 4, 4), dtype=torch.float64)
     probability[0, 0, 0, 0] = 0.25

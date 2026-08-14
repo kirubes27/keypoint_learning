@@ -402,6 +402,7 @@ def run(
     expected_matrix_summary_sha256: str,
     data_root: Path,
     output_dir: Path,
+    role_key_filter: str | None = None,
 ) -> dict[str, Any]:
     repo_root = Path(__file__).resolve().parents[1]
     implementation = _implementation_binding(repo_root)
@@ -411,6 +412,10 @@ def run(
     _require(matrix_summary["schema_version"] == EXPECTED_MATRIX_SUMMARY_SCHEMA, "matrix summary schema differs")
     _require(matrix_summary["content_hash_sha256"] == _content_hash(matrix_summary), "matrix summary content hash differs")
     _require(matrix_summary["inventory"]["matrix_complete"] is True, "matrix summary is incomplete")
+    expected_roles = _all_expected_roles()
+    if role_key_filter is not None:
+        _require(role_key_filter in expected_roles, "requested smoke role is not one of the 24 frozen roles")
+        expected_roles = {role_key_filter}
 
     images, masks, theta, frame_indices, corpus = _load_corpus(data_root)
     _require(np.array_equal(theta, np.arange(EXPECTED_FRAMES) * 2.0), "corpus theta differs")
@@ -424,6 +429,8 @@ def run(
     visuals = {}
     observed_roles = set()
     for report_path in sorted(matrix_root.resolve(strict=True).glob("*/forensic_report.json")):
+        if role_key_filter is not None and report_path.parent.name != role_key_filter:
+            continue
         report, arrays = _load_run(report_path.parent)
         role_key = _role_key(report["recipe"], report["arm"], int(report["seed"]), report["checkpoint_role"])
         _require(role_key == report_path.parent.name, "role directory differs from report")
@@ -540,15 +547,19 @@ def run(
             }
         )
         print(
-            f"completed {len(role_records):02d}/24 {role_key}: "
+            f"completed {len(role_records):02d}/{len(expected_roles):02d} {role_key}: "
             f"{len(role_edges)} selected adjacent edges, no training",
             flush=True,
         )
-    _require(observed_roles == _all_expected_roles(), "feature forensics does not contain all 24 roles")
+    _require(observed_roles == expected_roles, "feature forensics does not contain its exact requested role set")
 
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "artifact_type": "source_bound_complete_frozen_feature_spike_forensics",
+        "artifact_type": (
+            "source_bound_complete_frozen_feature_spike_forensics"
+            if role_key_filter is None
+            else "source_bound_single_role_frozen_feature_spike_smoke"
+        ),
         "training_or_weight_update_performed": False,
         "implementation": implementation,
         "bindings": {
@@ -566,6 +577,7 @@ def run(
             "new_or_replacement_descriptor_used": False,
         },
         "selection": {
+            "role_scope": "all 24 frozen roles" if role_key_filter is None else role_key_filter,
             "channels": "blue KP2 and largest canonical second-difference-q99 channel; evaluated once if identical",
             "spikes": "five pre-existing largest non-seam second-difference centres",
             "controls": "five lowest centres after excluding every spike centre +/-2 frames; magnitude then frame-index tie-break",
@@ -602,6 +614,10 @@ def main() -> None:
     parser.add_argument("--expected-matrix-summary-sha256", required=True)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--role-key",
+        help="run one exact frozen role as a production-path smoke; omit for the complete 24-role matrix",
+    )
     args = parser.parse_args()
     print(
         json.dumps(
@@ -611,6 +627,7 @@ def main() -> None:
                 args.expected_matrix_summary_sha256,
                 args.data_root,
                 args.output_dir,
+                args.role_key,
             ),
             indent=2,
             sort_keys=True,

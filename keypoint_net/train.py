@@ -49,6 +49,7 @@ from ocr_zncc_transport import (
     normalized_images_to_retained_rgb,
     ocr_zncc_transport_loss,
 )
+from same_frame_equivariance import add_locked_equivariance_to_pair_loss
 from dataset import (
     IndexPairDataset,
     IndexPairManifest,
@@ -59,6 +60,7 @@ from dataset import (
 import representation_fresh_checkpoint_authorization as fresh_authorization
 import descriptor_attachment_authorization as descriptor_authorization
 import ocr_zncc_training_authorization as ocr_authorization
+import same_frame_equivariance_smoke_authorization as self_equivariance_authorization
 import representation_corpus_inventory
 import fresh_roll_determinism
 
@@ -205,14 +207,48 @@ def _bound_runtime_file(path_variable: str, hash_variable: str, name: str) -> di
     }
 
 
-def _runtime_provenance_files(*, ocr: bool) -> dict:
+def _runtime_provenance_files(
+    *, ocr: bool, self_equivariance: bool = False
+) -> dict:
     """Validate runtime locks before any run directory is claimed."""
-    prefix = "OCR" if ocr else "FRESH_ROLL"
+    if ocr and self_equivariance:
+        raise RuntimeError("runtime provenance experiment kinds are mutually exclusive")
+    prefix = (
+        "OCR"
+        if ocr
+        else ("SELF_EQUIVARIANCE" if self_equivariance else "FRESH_ROLL")
+    )
+    stage_path_variable = (
+        "OCR_STAGE_LAUNCH_LOCK"
+        if ocr
+        else (
+            "SELF_EQUIVARIANCE_STAGE_LAUNCH_LOCK"
+            if self_equivariance
+            else "FRESH_ROLL_PRIMARY_MATRIX_LOCK"
+        )
+    )
+    stage_hash_variable = (
+        "OCR_STAGE_LAUNCH_LOCK_SHA256"
+        if ocr
+        else (
+            "SELF_EQUIVARIANCE_STAGE_LAUNCH_LOCK_SHA256"
+            if self_equivariance
+            else "FRESH_ROLL_PRIMARY_MATRIX_LOCK_SHA256"
+        )
+    )
     return {
         "stage_launch_lock": _bound_runtime_file(
-            f"{prefix}_STAGE_LAUNCH_LOCK" if ocr else "FRESH_ROLL_PRIMARY_MATRIX_LOCK",
-            f"{prefix}_STAGE_LAUNCH_LOCK_SHA256" if ocr else "FRESH_ROLL_PRIMARY_MATRIX_LOCK_SHA256",
-            "OCR stage launch lock" if ocr else "primary matrix launch lock",
+            stage_path_variable,
+            stage_hash_variable,
+            (
+                "OCR stage launch lock"
+                if ocr
+                else (
+                    "self-equivariance stage launch lock"
+                    if self_equivariance
+                    else "primary matrix launch lock"
+                )
+            ),
         ),
         "environment_lock": _bound_runtime_file(
             f"{prefix}_ENV_LOCK",
@@ -232,6 +268,7 @@ def _runtime_environment(
     *,
     provenance_files: dict | None = None,
     ocr: bool = False,
+    self_equivariance: bool = False,
 ) -> dict:
     """Record the reviewed runtime fields without importing torchvision."""
     driver_version = None
@@ -245,7 +282,9 @@ def _runtime_environment(
     if not slurm_job_id:
         raise RuntimeError("fresh primary run lacks SLURM_JOB_ID")
     if provenance_files is None:
-        provenance_files = _runtime_provenance_files(ocr=ocr)
+        provenance_files = _runtime_provenance_files(
+            ocr=ocr, self_equivariance=self_equivariance
+        )
     result = {
         "python_implementation": platform.python_implementation(),
         "python_version": platform.python_version(),
@@ -262,9 +301,16 @@ def _runtime_environment(
         "environment_lock": provenance_files["environment_lock"],
         "slurm_job_script": provenance_files["slurm_script"],
     }
-    result[
-        "ocr_stage_launch_lock" if ocr else "primary_matrix_launch_lock"
-    ] = provenance_files["stage_launch_lock"]
+    stage_key = (
+        "ocr_stage_launch_lock"
+        if ocr
+        else (
+            "self_equivariance_stage_launch_lock"
+            if self_equivariance
+            else "primary_matrix_launch_lock"
+        )
+    )
+    result[stage_key] = provenance_files["stage_launch_lock"]
     if ocr:
         pair_id = os.environ.get("OCR_PAIR_ID")
         pair_position = os.environ.get("OCR_PAIR_POSITION")
@@ -283,6 +329,31 @@ def _runtime_environment(
                 "OCR run lacks a single-GPU sequential pair-wrapper binding"
             )
         result["ocr_pair_execution"] = {
+            "pair_id": pair_id,
+            "position": pair_position,
+            "wrapper_pid": int(wrapper_pid),
+            "slurm_job_id": slurm_job_id,
+            "cuda_visible_devices": cuda_visible_devices,
+            "allocated_gpu_count": 1,
+        }
+    if self_equivariance:
+        pair_id = os.environ.get("SELF_EQUIVARIANCE_PAIR_ID")
+        pair_position = os.environ.get("SELF_EQUIVARIANCE_PAIR_POSITION")
+        wrapper_pid = os.environ.get("SELF_EQUIVARIANCE_PAIR_WRAPPER_PID")
+        cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if (
+            not pair_id
+            or pair_position not in {"1_control", "2_self_equivariance"}
+            or not wrapper_pid
+            or not wrapper_pid.isdigit()
+            or int(wrapper_pid) <= 0
+            or not cuda_visible_devices
+            or "," in cuda_visible_devices
+        ):
+            raise RuntimeError(
+                "self-equivariance run lacks a single-GPU sequential pair binding"
+            )
+        result["self_equivariance_pair_execution"] = {
             "pair_id": pair_id,
             "position": pair_position,
             "wrapper_pid": int(wrapper_pid),
@@ -410,6 +481,8 @@ def train_epoch(
     lambda_attach: float = 0.0,
     lambda_ocr_zncc: float = 0.0,
     ocr_zncc_config: Optional[OCRZNCCConfig] = None,
+    execute_self_equivariance: bool = False,
+    lambda_self_equivariance: float = 0.0,
     record_pair_order: bool = False,
     *,
     nondeterminism_policy: Optional[dict] = None,
@@ -422,6 +495,9 @@ def train_epoch(
     total_base = 0.0
     total_attach = 0.0
     total_ocr_zncc = 0.0
+    total_self_equivariance = 0.0
+    total_self_equivariance_translation = 0.0
+    total_self_equivariance_rotation = 0.0
     total_ocr_accepted = 0
     total_ocr_possible = 0
     total_ocr_zero_accept_batches = 0
@@ -472,7 +548,28 @@ def train_epoch(
             x_t1=x_t1,
             loc_bg_threshold=loc_bg_threshold,
         )
-        if lambda_ocr_zncc > 0.0:
+        if execute_self_equivariance:
+            paired_equivariance = add_locked_equivariance_to_pair_loss(
+                model.extractor,
+                x_t,
+                x_t1,
+                outputs['heatmaps_t'],
+                outputs['heatmaps_t1'],
+                losses['loss'],
+                weight=lambda_self_equivariance,
+            )
+            optimization_loss = paired_equivariance.optimization_loss
+            self_equivariance_loss = paired_equivariance.equivariance.loss
+            self_equivariance_translation = paired_equivariance.equivariance.per_transform_loss[
+                'translation_plus_quarter_pixel_xy'
+            ]
+            self_equivariance_rotation = paired_equivariance.equivariance.per_transform_loss[
+                'rotation_plus_quarter_degree_clockwise_image'
+            ]
+            ocr_loss = losses['loss'].detach() * 0.0
+            accepted_count = 0
+            possible_count = 0
+        elif lambda_ocr_zncc > 0.0:
             if ocr_zncc_config is None:
                 raise ValueError("positive OCR-ZNCC weight requires its frozen config")
             transport = ocr_zncc_transport_loss(
@@ -489,12 +586,18 @@ def train_epoch(
             ocr_loss = transport.loss
             accepted_count = transport.accepted_count
             possible_count = int(x_t.shape[0]) * num_keypoints
+            self_equivariance_loss = losses['loss'].detach() * 0.0
+            self_equivariance_translation = losses['loss'].detach() * 0.0
+            self_equivariance_rotation = losses['loss'].detach() * 0.0
         else:
             # The matched control does not execute the matcher at all.
             optimization_loss = losses['loss']
             ocr_loss = losses['loss'].detach() * 0.0
             accepted_count = 0
             possible_count = 0
+            self_equivariance_loss = losses['loss'].detach() * 0.0
+            self_equivariance_translation = losses['loss'].detach() * 0.0
+            self_equivariance_rotation = losses['loss'].detach() * 0.0
 
         # Backward pass
         if nondeterminism_policy is None:
@@ -522,6 +625,9 @@ def train_epoch(
         total_base += losses['base_loss'].item()
         total_attach += losses['attachment_loss'].item()
         total_ocr_zncc += ocr_loss.item()
+        total_self_equivariance += self_equivariance_loss.item()
+        total_self_equivariance_translation += self_equivariance_translation.item()
+        total_self_equivariance_rotation += self_equivariance_rotation.item()
         total_ocr_accepted += accepted_count
         total_ocr_possible += possible_count
         total_ocr_zero_accept_batches += int(lambda_ocr_zncc > 0.0 and accepted_count == 0)
@@ -542,6 +648,13 @@ def train_epoch(
         'base_loss': total_base / n_batches,
         'attachment_loss': total_attach / n_batches,
         'ocr_zncc_loss': total_ocr_zncc / n_batches,
+        'self_equivariance_loss': total_self_equivariance / n_batches,
+        'self_equivariance_translation_loss': (
+            total_self_equivariance_translation / n_batches
+        ),
+        'self_equivariance_rotation_loss': (
+            total_self_equivariance_rotation / n_batches
+        ),
         'ocr_zncc_accepted_match_count': total_ocr_accepted,
         'ocr_zncc_possible_match_count': total_ocr_possible,
         'ocr_zncc_accepted_match_coverage': (
@@ -582,6 +695,8 @@ def evaluate(
     lambda_attach: float = 0.0,
     lambda_ocr_zncc: float = 0.0,
     ocr_zncc_config: Optional[OCRZNCCConfig] = None,
+    execute_self_equivariance: bool = False,
+    lambda_self_equivariance: float = 0.0,
 ) -> dict:
     """Evaluate one explicitly supplied held-out loader."""
     model.eval()
@@ -590,6 +705,9 @@ def evaluate(
     total_base = 0.0
     total_attach = 0.0
     total_ocr_zncc = 0.0
+    total_self_equivariance = 0.0
+    total_self_equivariance_translation = 0.0
+    total_self_equivariance_rotation = 0.0
     total_ocr_zncc_weight = 0
     total_ocr_accepted = 0
     total_ocr_possible = 0
@@ -630,7 +748,28 @@ def evaluate(
             x_t1=x_t1,
             loc_bg_threshold=loc_bg_threshold,
         )
-        if lambda_ocr_zncc > 0.0:
+        if execute_self_equivariance:
+            paired_equivariance = add_locked_equivariance_to_pair_loss(
+                model.extractor,
+                x_t,
+                x_t1,
+                outputs['heatmaps_t'],
+                outputs['heatmaps_t1'],
+                losses['loss'],
+                weight=lambda_self_equivariance,
+            )
+            augmented_loss = paired_equivariance.optimization_loss
+            self_equivariance_loss = paired_equivariance.equivariance.loss
+            self_equivariance_translation = paired_equivariance.equivariance.per_transform_loss[
+                'translation_plus_quarter_pixel_xy'
+            ]
+            self_equivariance_rotation = paired_equivariance.equivariance.per_transform_loss[
+                'rotation_plus_quarter_degree_clockwise_image'
+            ]
+            ocr_loss = losses['loss'] * 0.0
+            accepted_count = 0
+            possible_count = 0
+        elif lambda_ocr_zncc > 0.0:
             if ocr_zncc_config is None:
                 raise ValueError("positive OCR-ZNCC weight requires its frozen config")
             transport = ocr_zncc_transport_loss(
@@ -647,17 +786,30 @@ def evaluate(
             ocr_loss = transport.loss
             accepted_count = transport.accepted_count
             possible_count = int(x_t.shape[0]) * num_keypoints
+            self_equivariance_loss = losses['loss'] * 0.0
+            self_equivariance_translation = losses['loss'] * 0.0
+            self_equivariance_rotation = losses['loss'] * 0.0
         else:
             augmented_loss = losses['loss']
             ocr_loss = losses['loss'] * 0.0
             accepted_count = 0
             possible_count = 0
+            self_equivariance_loss = losses['loss'] * 0.0
+            self_equivariance_translation = losses['loss'] * 0.0
+            self_equivariance_rotation = losses['loss'] * 0.0
 
         batch_sample_count = int(x_t.shape[0])
         total_loss += augmented_loss.item() * batch_sample_count
         total_base += losses['base_loss'].item() * batch_sample_count
         total_attach += losses['attachment_loss'].item() * batch_sample_count
         total_ocr_zncc += ocr_loss.item() * accepted_count
+        total_self_equivariance += self_equivariance_loss.item() * batch_sample_count
+        total_self_equivariance_translation += (
+            self_equivariance_translation.item() * batch_sample_count
+        )
+        total_self_equivariance_rotation += (
+            self_equivariance_rotation.item() * batch_sample_count
+        )
         total_ocr_zncc_weight += accepted_count
         total_ocr_accepted += accepted_count
         total_ocr_possible += possible_count
@@ -679,6 +831,13 @@ def evaluate(
         'ocr_zncc_loss': (
             total_ocr_zncc / total_ocr_zncc_weight
             if total_ocr_zncc_weight else 0.0
+        ),
+        'self_equivariance_loss': total_self_equivariance / n_samples,
+        'self_equivariance_translation_loss': (
+            total_self_equivariance_translation / n_samples
+        ),
+        'self_equivariance_rotation_loss': (
+            total_self_equivariance_rotation / n_samples
         ),
         'ocr_zncc_accepted_match_count': total_ocr_accepted,
         'ocr_zncc_possible_match_count': total_ocr_possible,
@@ -752,6 +911,7 @@ def _validate_training_arguments(args: argparse.Namespace) -> None:
         "lambda_cycle",
         "lambda_attach",
         "lambda_ocr_zncc",
+        "lambda_self_equivariance",
     ):
         value = getattr(args, name, 0.0 if name == "lambda_attach" else None)
         if not np.isfinite(value) or value < 0:
@@ -784,6 +944,19 @@ def _validate_training_arguments(args: argparse.Namespace) -> None:
                 )
         if args.ocr_peak_margin_exclusion_radius_cells != 1:
             raise ValueError("OCR-ZNCC training requires exclusion radius one")
+    if getattr(args, "lambda_self_equivariance", 0.0) > 0.0:
+        self_equivariance_requirements = {
+            "img_size": 512,
+            "heatmap_res": 64,
+            "base_channels": 32,
+            "num_keypoints": 10,
+        }
+        for name, expected in self_equivariance_requirements.items():
+            if getattr(args, name) != expected:
+                raise ValueError(
+                    "positive --lambda_self_equivariance requires the exact "
+                    f"retained configuration: --{name}={expected}"
+                )
     if (
         not np.isfinite(args.loc_bg_threshold)
         or not 0 <= args.loc_bg_threshold <= 255
@@ -1080,6 +1253,66 @@ def _validate_ocr_data_plan(
         raise ValueError("OCR live corpus binding differs")
 
 
+def _validate_self_equivariance_data_plan(
+    data_plan: TrainingDataPlan,
+    binding: self_equivariance_authorization.SelfEquivarianceSmokeBinding,
+    *,
+    data_root: str,
+) -> None:
+    """Cross-bind the one-epoch smoke to the retained hammer roll split."""
+    if data_plan.mode != "development" or data_plan.test_manifest is not None:
+        raise ValueError(
+            "self-equivariance smoke must use development mode without a test loader"
+        )
+    expected = binding.expected_training_arguments
+    split_contract = {
+        "train": {
+            "path": expected["train_pairs_index"],
+            "file_sha256": self_equivariance_authorization.TRAIN_INDEX_SHA256,
+            "content_hash_sha256": "40a70495d144fcf838146178bbdb2756251a413fcea65bc2626a87a5f75c5432",
+            "pair_count": 147,
+        },
+        "validation": {
+            "path": expected["val_pairs_index"],
+            "file_sha256": self_equivariance_authorization.VALIDATION_INDEX_SHA256,
+            "content_hash_sha256": "c64e6c9e822a2cb744e2f681eab210f3d961f73f8b9ede5c786bb873dcf529e0",
+            "pair_count": 21,
+        },
+    }
+    for split, contract in split_contract.items():
+        actual = data_plan.index_provenance.get(split)
+        transform = actual.get("transform") if isinstance(actual, dict) else None
+        if not isinstance(actual, dict) or (
+            actual.get("resolved_path") != contract["path"]
+            or actual.get("file_sha256") != contract["file_sha256"]
+            or actual.get("content_hash_sha256") != contract["content_hash_sha256"]
+            or actual.get("dataset_binding_sha256")
+            != self_equivariance_authorization.DATASET_BINDING_SHA256
+            or actual.get("pair_count_after_object_filter") != contract["pair_count"]
+            or not isinstance(transform, dict)
+            or transform.get("family") != "roll"
+            or transform.get("physical_axis") != "world_z"
+            or transform.get("direction") != "forward"
+            or transform.get("signed_generator") != 6.0
+            or transform.get("expected_2d_family")
+            != "planar_rotation_about_projected_center"
+        ):
+            raise ValueError(f"self-equivariance {split} split provenance differs")
+    inventory_path = (
+        Path(__file__).resolve().parent.parent
+        / "docs/decisions/2026-07-26/representation_oracle_splits/"
+        "inventories/CORPUS_INVENTORY__roll.json"
+    )
+    inventory = representation_corpus_inventory.validate_corpus_inventory(
+        inventory_path.read_bytes(), "roll", data_root,
+    )
+    if (
+        inventory.content_hash_sha256
+        != self_equivariance_authorization.DATASET_BINDING_SHA256
+    ):
+        raise ValueError("self-equivariance live corpus binding differs")
+
+
 def _prepare_training_data(
     args: argparse.Namespace,
     *,
@@ -1354,6 +1587,24 @@ def main():
     )
     parser.add_argument("--ocr_experiment_manifest", type=str, default=None)
     parser.add_argument("--ocr_experiment_manifest_sha256", type=str, default=None)
+    parser.add_argument(
+        "--self_equivariance_cell_id",
+        type=str,
+        default=None,
+        help="Exact control/candidate cell from the one-epoch smoke manifest.",
+    )
+    parser.add_argument(
+        "--self_equivariance_experiment_manifest", type=str, default=None
+    )
+    parser.add_argument(
+        "--self_equivariance_experiment_manifest_sha256", type=str, default=None
+    )
+    parser.add_argument(
+        "--self_equivariance_calibration_receipt", type=str, default=None
+    )
+    parser.add_argument(
+        "--self_equivariance_calibration_receipt_sha256", type=str, default=None
+    )
     parser.add_argument("--object", type=str, default=None, help="Single object name (e.g., coffeemug)")
     parser.add_argument("--pairs_index", type=str, default=None,
                         help="Deprecated alias for --train_pairs_index. It is "
@@ -1449,6 +1700,15 @@ def main():
         help="OCR-ZNCC transport coefficient; positive values require a bound OCR cell.",
     )
     parser.add_argument(
+        "--lambda_self_equivariance",
+        type=float,
+        default=0.0,
+        help=(
+            "Same-frame distribution-equivariance coefficient. The zero-weight "
+            "control still executes the identical common-BatchNorm path when bound."
+        ),
+    )
+    parser.add_argument(
         "--ocr_peak_margin_exclusion_radius_cells", type=int, default=1,
         choices=[1],
         help="Frozen distinct-competitor exclusion radius for OCR-ZNCC training.",
@@ -1501,6 +1761,7 @@ def main():
     fresh_binding = None
     descriptor_binding = None
     ocr_binding = None
+    self_equivariance_binding = None
     if args.descriptor_cell_id is not None:
         descriptor_binding = descriptor_authorization.bind_training_namespace(
             repo_root,
@@ -1512,6 +1773,14 @@ def main():
         ocr_binding = ocr_authorization.bind_training_namespace(repo_root, args)
     else:
         ocr_authorization.reject_unbound_ocr_arguments(args)
+    if args.self_equivariance_cell_id is not None:
+        self_equivariance_binding = (
+            self_equivariance_authorization.bind_training_namespace(
+                repo_root, args
+            )
+        )
+    else:
+        self_equivariance_authorization.reject_unbound_arguments(args)
     if args.fresh_cell_id is not None:
         fresh_binding = fresh_authorization.bind_training_namespace(
             repo_root,
@@ -1519,11 +1788,16 @@ def main():
         )
     active_experiment_bindings = sum(
         binding is not None
-        for binding in (fresh_binding, descriptor_binding, ocr_binding)
+        for binding in (
+            fresh_binding,
+            descriptor_binding,
+            ocr_binding,
+            self_equivariance_binding,
+        )
     )
     if active_experiment_bindings > 1:
         raise ValueError(
-            "fresh, descriptor, and OCR experiment bindings are mutually exclusive"
+            "fresh, descriptor, OCR, and self-equivariance bindings are mutually exclusive"
         )
     _validate_training_arguments(args)
     include_backward = args.lambda_act > 0.0
@@ -1570,6 +1844,12 @@ def main():
                 raise RuntimeError(
                     "scientific OCR cell failed deep completed-smoke validation"
                 )
+    if self_equivariance_binding is not None:
+        _validate_self_equivariance_data_plan(
+            data_plan,
+            self_equivariance_binding,
+            data_root=args.data_root,
+        )
     train_dataset = data_plan.train_dataset
     val_dataset = data_plan.val_dataset
     args.epochs = data_plan.effective_epochs
@@ -1583,7 +1863,16 @@ def main():
     
     # Resolve the executable amendment before claiming an output directory or
     # allowing any CUDA query to initialize a device context.
-    if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None:
+    experiment_bound = any(
+        binding is not None
+        for binding in (
+            fresh_binding,
+            descriptor_binding,
+            ocr_binding,
+            self_equivariance_binding,
+        )
+    )
+    if experiment_bound:
         nondeterminism_policy = (
             fresh_roll_determinism.policy_for_heatmap_resolution(
                 repo_root,
@@ -1604,8 +1893,11 @@ def main():
         nondeterminism_evidence = None
 
     runtime_provenance_files = (
-        _runtime_provenance_files(ocr=ocr_binding is not None)
-        if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None
+        _runtime_provenance_files(
+            ocr=ocr_binding is not None,
+            self_equivariance=self_equivariance_binding is not None,
+        )
+        if experiment_bound
         else None
     )
 
@@ -1613,14 +1905,14 @@ def main():
     # run directory.  A scientific OCR cell is a CUDA experiment; silently
     # falling back to MPS/CPU would not execute the authorized design.
     device = _select_device()
-    if ocr_binding is not None and device.type != "cuda":
-        raise RuntimeError("bound OCR-ZNCC training requires CUDA")
+    if (ocr_binding is not None or self_equivariance_binding is not None) and device.type != "cuda":
+        raise RuntimeError("bound OCR/self-equivariance training requires CUDA")
     print(f"Using device: {device}")
 
     # Finish every fallible runtime/determinism preflight before claiming the
     # exclusive scientific run directory. Preserve legacy behavior outside
     # the dedicated paths.
-    if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None:
+    if experiment_bound:
         determinism = _configure_determinism(
             args.seed,
             policy=nondeterminism_policy,
@@ -1640,26 +1932,31 @@ def main():
             device,
             provenance_files=runtime_provenance_files,
             ocr=ocr_binding is not None,
+            self_equivariance=self_equivariance_binding is not None,
         )
-        if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None
+        if experiment_bound
         else None
     )
     full_command = (
         [sys.executable, *sys.argv]
-        if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None
+        if experiment_bound
         else None
     )
 
     # Claim the bound cell only after source, data, policy, device, driver,
     # package, Slurm, and runtime-file validation has succeeded.
-    if fresh_binding is not None or descriptor_binding is not None or ocr_binding is not None:
+    if experiment_bound:
         bound_run_directory = (
             fresh_binding.run_directory
             if fresh_binding is not None
             else (
                 descriptor_binding.run_directory
                 if descriptor_binding is not None
-                else ocr_binding.run_directory
+                else (
+                    ocr_binding.run_directory
+                    if ocr_binding is not None
+                    else self_equivariance_binding.run_directory
+                )
             )
         )
         run_dir = Path(bound_run_directory)
@@ -1669,7 +1966,7 @@ def main():
     # Create output directory
     # Include pid (and microseconds) to avoid collisions when launching
     # multiple runs in parallel.
-    if fresh_binding is None and descriptor_binding is None and ocr_binding is None:
+    if not experiment_bound:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         obj_name = args.object or "all"
         run_name = f"phase_a_{obj_name}_{timestamp}_seed{args.seed}_pid{os.getpid()}"
@@ -1745,6 +2042,33 @@ def main():
             'experiment_manifest_content_sha256': ocr_binding.manifest_content_sha256,
             'ocr_zncc_config': ocr_zncc_config.as_dict(),
         }
+    if self_equivariance_binding is not None:
+        config['determinism'] = determinism
+        config['determinism_amendment'] = determinism_amendment
+        config['full_command'] = full_command
+        config['runtime_environment'] = runtime_environment
+        config['cell_id'] = self_equivariance_binding.cell_id
+        config['self_equivariance_binding'] = {
+            'cell_id': self_equivariance_binding.cell_id,
+            'recipe': self_equivariance_binding.recipe,
+            'arm': self_equivariance_binding.arm,
+            'experiment_manifest_absolute_path': (
+                self_equivariance_binding.manifest_absolute_path
+            ),
+            'experiment_manifest_file_sha256': (
+                self_equivariance_binding.manifest_file_sha256
+            ),
+            'experiment_manifest_content_sha256': (
+                self_equivariance_binding.manifest_content_sha256
+            ),
+            'calibration_absolute_path': (
+                self_equivariance_binding.calibration_absolute_path
+            ),
+            'calibration_file_sha256': (
+                self_equivariance_binding.calibration_file_sha256
+            ),
+            'common_batch_execution_in_both_arms': True,
+        }
     print(f"Output directory: {run_dir}")
     
     print(f"Train samples: {len(train_dataset)}")
@@ -1753,7 +2077,11 @@ def main():
     elif data_plan.mode == "fixed-final":
         print("Validation samples: none (fixed-final checkpoint policy)")
     
-    train_sampler_seed = args.seed + 10_000_019 if ocr_binding is not None else None
+    train_sampler_seed = (
+        args.seed + 10_000_019
+        if ocr_binding is not None or self_equivariance_binding is not None
+        else None
+    )
     train_sampler_generator = None
     if train_sampler_seed is not None:
         train_sampler_generator = torch.Generator()
@@ -1828,6 +2156,7 @@ def main():
         'lambda_cycle': args.lambda_cycle,
         'lambda_attach': args.lambda_attach,
         'lambda_ocr_zncc': args.lambda_ocr_zncc,
+        'lambda_self_equivariance': args.lambda_self_equivariance,
         'ocr_zncc_config': (
             ocr_zncc_config.as_dict() if ocr_zncc_config is not None else None
         ),
@@ -1881,6 +2210,15 @@ def main():
         ckpt_config['determinism_amendment'] = determinism_amendment
         ckpt_config['initial_model_state_sha256'] = initial_model_state_sha256
         ckpt_config['train_sampler_seed'] = train_sampler_seed
+    if self_equivariance_binding is not None:
+        ckpt_config['cell_id'] = self_equivariance_binding.cell_id
+        ckpt_config['self_equivariance_binding'] = dict(
+            config['self_equivariance_binding']
+        )
+        ckpt_config['determinism'] = determinism
+        ckpt_config['determinism_amendment'] = determinism_amendment
+        ckpt_config['initial_model_state_sha256'] = initial_model_state_sha256
+        ckpt_config['train_sampler_seed'] = train_sampler_seed
     
     print(f"\nStarting training for {args.epochs} epochs...")
     print(f"Training mode: {data_plan.mode}")
@@ -1890,6 +2228,7 @@ def main():
           f"lambda_ent={args.lambda_ent}, lambda_act={args.lambda_act}, lambda_loc={args.lambda_loc}, "
           f"lambda_inv={args.lambda_inv}, lambda_cycle={args.lambda_cycle}, "
           f"lambda_attach={args.lambda_attach}, lambda_ocr_zncc={args.lambda_ocr_zncc}, "
+          f"lambda_self_equivariance={args.lambda_self_equivariance}, "
           f"sigma={args.sigma}")
     if isinstance(train_dataset, IndexPairDataset):
         print(
@@ -1910,7 +2249,7 @@ def main():
         diag_batch = next(iter(train_loader))
         diag_pair_order_digest = None
         diag_pair_order_count = None
-        if ocr_binding is not None:
+        if ocr_binding is not None or self_equivariance_binding is not None:
             digest = hashlib.sha256()
             diag_pair_order_count = _update_pair_order_digest(
                 digest, diag_batch['pair_id']
@@ -1932,7 +2271,31 @@ def main():
             sigma=args.sigma, num_keypoints=args.num_keypoints, action_labels=diag_action_labels,
             x_t=diag_x_t, x_t1=diag_x_t1, loc_bg_threshold=args.loc_bg_threshold,
         )
-        if args.lambda_ocr_zncc > 0.0:
+        if self_equivariance_binding is not None:
+            diag_equivariance = add_locked_equivariance_to_pair_loss(
+                model.extractor,
+                diag_x_t,
+                diag_x_t1,
+                diag_out['heatmaps_t'],
+                diag_out['heatmaps_t1'],
+                diag_losses['loss'],
+                weight=args.lambda_self_equivariance,
+            )
+            diag_self_equivariance_loss = diag_equivariance.equivariance.loss.item()
+            diag_self_equivariance_translation = (
+                diag_equivariance.equivariance.per_transform_loss[
+                    'translation_plus_quarter_pixel_xy'
+                ].item()
+            )
+            diag_self_equivariance_rotation = (
+                diag_equivariance.equivariance.per_transform_loss[
+                    'rotation_plus_quarter_degree_clockwise_image'
+                ].item()
+            )
+            diag_ocr_loss = 0.0
+            diag_ocr_accepted = 0
+            diag_total = diag_equivariance.optimization_loss.item()
+        elif args.lambda_ocr_zncc > 0.0:
             diag_transport = ocr_zncc_transport_loss(
                 normalized_images_to_retained_rgb(diag_x_t),
                 normalized_images_to_retained_rgb(diag_x_t1),
@@ -1947,10 +2310,16 @@ def main():
                 diag_losses['loss'], diag_transport.loss,
                 weight=args.lambda_ocr_zncc,
             ).item()
+            diag_self_equivariance_loss = 0.0
+            diag_self_equivariance_translation = 0.0
+            diag_self_equivariance_rotation = 0.0
         else:
             diag_ocr_loss = 0.0
             diag_ocr_accepted = 0
             diag_total = diag_losses['loss'].item()
+            diag_self_equivariance_loss = 0.0
+            diag_self_equivariance_translation = 0.0
+            diag_self_equivariance_rotation = 0.0
         print(f"\n[Diagnostic] First batch (before training):")
         print(f"  p_t  range: [{diag_out['p_t'].min().item():.4f}, {diag_out['p_t'].max().item():.4f}]")
         print(f"  l_pred:  {diag_losses['l_pred'].item():.6f}")
@@ -1963,13 +2332,19 @@ def main():
         print(f"  l_cycle: {diag_losses['l_cycle'].item():.6f}")
         print(f"  l_attach:{diag_losses['attachment_loss'].item():.6f}")
         print(f"  l_ocr:   {diag_ocr_loss:.6f} (accepted={diag_ocr_accepted})")
+        print(
+            "  l_selfeq:"
+            f"{diag_self_equivariance_loss:.6f} "
+            f"(translation={diag_self_equivariance_translation:.6f}, "
+            f"rotation={diag_self_equivariance_rotation:.6f})"
+        )
         print(f"  base:    {diag_losses['base_loss'].item():.6f}")
         print(f"  act_acc: {diag_losses['act_acc'].item():.4f}")
         print(f"  total:   {diag_total:.6f}")
         print("-" * 70)
 
     post_diagnostic_model_state_sha256 = _model_state_sha256(model)
-    if ocr_binding is not None:
+    if ocr_binding is not None or self_equivariance_binding is not None:
         config['initial_model_state_sha256'] = initial_model_state_sha256
         config['post_diagnostic_model_state_sha256'] = post_diagnostic_model_state_sha256
         config['diagnostic_pair_order_sha256'] = diag_pair_order_digest
@@ -1992,12 +2367,16 @@ def main():
             lambda_attach=args.lambda_attach,
             lambda_ocr_zncc=args.lambda_ocr_zncc,
             ocr_zncc_config=ocr_zncc_config,
-            record_pair_order=ocr_binding is not None,
+            execute_self_equivariance=self_equivariance_binding is not None,
+            lambda_self_equivariance=args.lambda_self_equivariance,
+            record_pair_order=(
+                ocr_binding is not None or self_equivariance_binding is not None
+            ),
             nondeterminism_policy=nondeterminism_policy,
             nondeterminism_evidence=nondeterminism_evidence,
         )
         optimizer_step_count += len(train_loader)
-        if ocr_binding is not None:
+        if ocr_binding is not None or self_equivariance_binding is not None:
             sampler_order_history.append({
                 'epoch': epoch,
                 'pair_order_sha256': train_metrics['pair_order_sha256'],
@@ -2023,6 +2402,7 @@ def main():
                 f"L_attach: {train_metrics['attachment_loss']:.5f} | "
                 f"L_ocr: {train_metrics['ocr_zncc_loss']:.5f} | "
                 f"OCRcov: {train_metrics['ocr_zncc_accepted_match_coverage']} | "
+                f"L_selfeq: {train_metrics['self_equivariance_loss']:.5f} | "
                 f"Base: {train_metrics['base_loss']:.5f} | "
                 f"ActAcc: {train_metrics['act_acc']:.3f}"
             )
@@ -2036,6 +2416,9 @@ def main():
                 'train_ocr_zncc_possible_match_count': train_metrics['ocr_zncc_possible_match_count'],
                 'train_ocr_zncc_accepted_match_coverage': train_metrics['ocr_zncc_accepted_match_coverage'],
                 'train_ocr_zncc_zero_accept_batch_count': train_metrics['ocr_zncc_zero_accept_batch_count'],
+                'train_self_equivariance_loss': train_metrics['self_equivariance_loss'],
+                'train_self_equivariance_translation_loss': train_metrics['self_equivariance_translation_loss'],
+                'train_self_equivariance_rotation_loss': train_metrics['self_equivariance_rotation_loss'],
                 'train_pred': train_metrics['l_pred'],
                 'train_smooth': train_metrics['l_smooth'],
                 'train_disp': train_metrics['l_disp'],
@@ -2058,12 +2441,17 @@ def main():
                     lambda_attach=args.lambda_attach,
                     lambda_ocr_zncc=args.lambda_ocr_zncc,
                     ocr_zncc_config=ocr_zncc_config,
+                    execute_self_equivariance=(
+                        self_equivariance_binding is not None
+                    ),
+                    lambda_self_equivariance=args.lambda_self_equivariance,
                 )
                 log_line += (
                     f" | ValTrain: {val_metrics['loss']:.5f}"
                     f" | ValBase: {val_metrics['base_loss']:.5f}"
                     f" | ValAttach: {val_metrics['attachment_loss']:.5f}"
                     f" | ValOCR: {val_metrics['ocr_zncc_loss']:.5f}"
+                    f" | ValSelfEq: {val_metrics['self_equivariance_loss']:.5f}"
                 )
                 history_entry.update({
                     'val_loss': val_metrics['loss'],
@@ -2075,6 +2463,9 @@ def main():
                     'val_ocr_zncc_possible_match_count': val_metrics['ocr_zncc_possible_match_count'],
                     'val_ocr_zncc_accepted_match_coverage': val_metrics['ocr_zncc_accepted_match_coverage'],
                     'val_ocr_zncc_zero_accept_batch_count': val_metrics['ocr_zncc_zero_accept_batch_count'],
+                    'val_self_equivariance_loss': val_metrics['self_equivariance_loss'],
+                    'val_self_equivariance_translation_loss': val_metrics['self_equivariance_translation_loss'],
+                    'val_self_equivariance_rotation_loss': val_metrics['self_equivariance_rotation_loss'],
                     'val_pred': val_metrics['l_pred'],
                     'val_act': val_metrics['l_act'],
                     'val_loc': val_metrics['l_loc'],
@@ -2096,6 +2487,7 @@ def main():
                         'base_validation_loss': val_metrics['base_loss'],
                         'attachment_validation_loss': val_metrics['attachment_loss'],
                         'ocr_zncc_validation_loss': val_metrics['ocr_zncc_loss'],
+                        'self_equivariance_validation_loss': val_metrics['self_equivariance_loss'],
                         'augmented_validation_loss': val_metrics['train_loss'],
                         'config': ckpt_config,
                     }, run_dir / "best_model.pt")
@@ -2114,6 +2506,7 @@ def main():
                 'attachment_training_loss': train_metrics['attachment_loss'],
                 'ocr_zncc_training_loss': train_metrics['ocr_zncc_loss'],
                 'ocr_zncc_accepted_match_coverage': train_metrics['ocr_zncc_accepted_match_coverage'],
+                'self_equivariance_training_loss': train_metrics['self_equivariance_loss'],
                 'config': ckpt_config,
             }, run_dir / f"checkpoint_{epoch:05d}.pt")
     
@@ -2129,6 +2522,7 @@ def main():
         'attachment_training_loss': train_metrics['attachment_loss'],
         'ocr_zncc_training_loss': train_metrics['ocr_zncc_loss'],
         'ocr_zncc_accepted_match_coverage': train_metrics['ocr_zncc_accepted_match_coverage'],
+        'self_equivariance_training_loss': train_metrics['self_equivariance_loss'],
         'config': ckpt_config,
     }, final_model_path)
 
@@ -2155,6 +2549,8 @@ def main():
             lambda_attach=args.lambda_attach,
             lambda_ocr_zncc=args.lambda_ocr_zncc,
             ocr_zncc_config=ocr_zncc_config,
+            execute_self_equivariance=self_equivariance_binding is not None,
+            lambda_self_equivariance=args.lambda_self_equivariance,
         )
         fixed_final_test_report = {
             "schema_version": 1,
@@ -2171,10 +2567,14 @@ def main():
     # Save history
     with open(run_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
-    if ocr_binding is not None:
+    if ocr_binding is not None or self_equivariance_binding is not None:
         with open(run_dir / "sampler_order.json", "x") as f:
             json.dump({
-                'schema_version': 'ocr_zncc_sampler_order.v1',
+                'schema_version': (
+                    'ocr_zncc_sampler_order.v1'
+                    if ocr_binding is not None
+                    else 'same_frame_equivariance_smoke_sampler_order.v1'
+                ),
                 'generator_seed': train_sampler_seed,
                 'diagnostic_pair_order_sha256': diag_pair_order_digest,
                 'diagnostic_pair_order_sample_count': diag_pair_order_count,
@@ -2238,6 +2638,27 @@ def main():
             runtime_environment=runtime_environment,
         )
         print(f"OCR-ZNCC completed-run receipt: {receipt_path}")
+    if self_equivariance_binding is not None:
+        completed_nondeterminism_evidence = (
+            fresh_roll_determinism.finalize_warning_evidence(
+                nondeterminism_evidence,
+                policy=nondeterminism_policy,
+                device_type=device.type,
+            )
+        )
+        receipt_path = (
+            self_equivariance_authorization.write_completed_run_receipt(
+                repo_root,
+                self_equivariance_binding,
+                device=str(device),
+                optimizer_step_count=optimizer_step_count,
+                determinism=determinism,
+                nondeterminism_evidence=completed_nondeterminism_evidence,
+                full_command=full_command,
+                runtime_environment=runtime_environment,
+            )
+        )
+        print(f"Self-equivariance smoke completed-run receipt: {receipt_path}")
     
     print("-" * 60)
     if val_loader is not None:

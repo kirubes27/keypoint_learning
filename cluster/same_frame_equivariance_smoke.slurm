@@ -5,6 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
+#SBATCH --constraint="nvd&avx512"
 #SBATCH --mem-per-cpu=5000
 #SBATCH --array=0-1%2
 #SBATCH -A l0003424

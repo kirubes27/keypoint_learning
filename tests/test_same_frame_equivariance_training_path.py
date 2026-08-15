@@ -26,6 +26,14 @@ from keypoint_net import (
 )
 
 
+class ClusterLaunchGuardTest(unittest.TestCase):
+    def test_gpu_smoke_requires_the_pinned_environment_cpu_feature(self) -> None:
+        slurm_text = (
+            REPO_ROOT / "cluster/same_frame_equivariance_smoke.slurm"
+        ).read_text(encoding="utf-8")
+        self.assertIn('#SBATCH --constraint="nvd&avx512"', slurm_text)
+
+
 class _MarkerModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()

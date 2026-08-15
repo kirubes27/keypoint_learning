@@ -33,6 +33,12 @@ try:
         spatial_expectation_float32,
     )
     from .model import PhaseAModel
+    from .frozen_nuisance_sensitivity import apply_nuisance
+    from .same_frame_consensus import (
+        LOCKED_CONSENSUS_SPECS,
+        consensus_probabilities_from_view_logits,
+        spatial_expectation_from_probabilities,
+    )
 except ImportError:  # Support direct ``python keypoint_net/...`` execution.
     from frozen_wobble_forensics import (  # type: ignore
         canonicalize,
@@ -44,6 +50,12 @@ except ImportError:  # Support direct ``python keypoint_net/...`` execution.
         spatial_expectation_float32,
     )
     from model import PhaseAModel  # type: ignore
+    from frozen_nuisance_sensitivity import apply_nuisance  # type: ignore
+    from same_frame_consensus import (  # type: ignore
+        LOCKED_CONSENSUS_SPECS,
+        consensus_probabilities_from_view_logits,
+        spatial_expectation_from_probabilities,
+    )
 
 
 SCHEMA_VERSION = "frozen_wobble_forensics.v1"
@@ -72,6 +84,9 @@ SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 IMPLEMENTATION_SOURCE_RELATIVE_PATHS = (
     "keypoint_net/run_frozen_wobble_forensics.py",
     "keypoint_net/frozen_wobble_forensics.py",
+    "keypoint_net/frozen_nuisance_sensitivity.py",
+    "keypoint_net/same_frame_equivariance.py",
+    "keypoint_net/same_frame_consensus.py",
     "keypoint_net/model.py",
 )
 
@@ -491,21 +506,57 @@ def _load_corpus(
     }
 
 
-def _infer(model: PhaseAModel, images: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+def _infer(
+    model: PhaseAModel,
+    images: list[np.ndarray],
+    *,
+    decoder: str = "native",
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     _require(not model.training and all(not p.requires_grad for p in model.parameters()), "model is not frozen in eval mode")
+    _require(decoder in {"native", "same_frame_consensus_v1"}, "unknown decoder")
     before = _state_sha256(model)
     means = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
     stds = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
     supplied_batches: list[np.ndarray] = []
     logit_batches: list[np.ndarray] = []
+    aligned_view_count = 1
+    decoder_specs: list[dict[str, Any]] = []
     with torch.inference_mode():
         for start in range(0, len(images), 8):
             array = np.stack(images[start : start + 8])
             batch = torch.from_numpy(array.copy()).permute(0, 3, 1, 2).float().div_(255.0)
             batch = batch.sub_(means).div_(stds)
-            flattened, logits = model.extractor(batch)
-            supplied_batches.append(flattened.reshape(batch.shape[0], EXPECTED_CHANNEL_COUNT, 2).cpu().numpy().copy())
-            logit_batches.append(logits.cpu().numpy().copy())
+            if decoder == "native":
+                flattened, logits = model.extractor(batch)
+                supplied_batches.append(flattened.reshape(batch.shape[0], EXPECTED_CHANNEL_COUNT, 2).cpu().numpy().copy())
+                logit_batches.append(logits.cpu().numpy().copy())
+            else:
+                view_logits = []
+                for spec in LOCKED_CONSENSUS_SPECS:
+                    view_batch = batch if spec.kind == "identity" else apply_nuisance(batch, spec)
+                    _, logits = model.extractor(view_batch)
+                    view_logits.append(logits)
+                consensus, _ = consensus_probabilities_from_view_logits(
+                    torch.stack(view_logits),
+                    specs=LOCKED_CONSENSUS_SPECS,
+                )
+                direct = spatial_expectation_from_probabilities(consensus)
+                # Logging probability mass gives heatmap_topology the same
+                # consensus after its ordinary temperature-1 softmax.
+                consensus_logits = torch.log(consensus.clamp_min(torch.finfo(consensus.dtype).tiny))
+                supplied_batches.append(direct.cpu().numpy().copy())
+                logit_batches.append(consensus_logits.cpu().numpy().copy())
+                aligned_view_count = len(LOCKED_CONSENSUS_SPECS)
+                decoder_specs = [
+                    {
+                        "name": spec.name,
+                        "kind": spec.kind,
+                        "dx_pixels": float(spec.dx_pixels),
+                        "dy_pixels": float(spec.dy_pixels),
+                        "clockwise_degrees": float(spec.clockwise_degrees),
+                    }
+                    for spec in LOCKED_CONSENSUS_SPECS
+                ]
     supplied = np.concatenate(supplied_batches).astype(np.float32, copy=False)
     logits = np.concatenate(logit_batches).astype(np.float32, copy=False)
     _require(supplied.shape == (EXPECTED_FRAME_COUNT, EXPECTED_CHANNEL_COUNT, 2), "supplied coordinate shape differs")
@@ -518,10 +569,17 @@ def _infer(model: PhaseAModel, images: list[np.ndarray]) -> tuple[np.ndarray, np
     return derived, logits, {
         "device": "cpu",
         "batch_size": 8,
+        "decoder": decoder,
+        "decoder_equal_weight_aligned_view_count": aligned_view_count,
+        "decoder_view_specs": decoder_specs,
         "inference_mode": True,
         "optimizer_constructed": False,
         "training_or_weight_update_performed": False,
-        "coordinate_estimator": "NumPy float32 endpoint-grid expectation checked against production PyTorch extractor output",
+        "coordinate_estimator": (
+            "NumPy float32 endpoint-grid expectation checked against production PyTorch extractor output"
+            if decoder == "native"
+            else "NumPy float32 endpoint-grid expectation checked against direct PyTorch expectation of the equal-weight source-aligned consensus distribution"
+        ),
         "maximum_supplied_vs_recomputed_coordinate_error": maximum_error,
         "coordinate_consistency_tolerance": COORDINATE_CONSISTENCY_TOLERANCE,
         "coordinate_consistency_policy_kind": "implementation consistency, not a scientific quality threshold",
@@ -843,7 +901,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     images, masks, theta, frame_indices, corpus = _load_corpus(args.data_root)
-    points, logits, inference = _infer(model, images)
+    points, logits, inference = _infer(model, images, decoder=args.decoder)
     canonical = canonicalize(points, theta)
     wrong_sign = canonicalize(points, theta, sign=1)
     topology = heatmap_topology(logits)
@@ -893,6 +951,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "seed": identity["seed"],
         "checkpoint_role": args.checkpoint_role,
         "checkpoint_epoch": int(checkpoint_binding["epoch"]),
+        "decoder": args.decoder,
         "training_or_weight_update_performed": False,
         "checkpoint_training_or_weight_update_performed": identity[
             "checkpoint_training_occurred"
@@ -1003,6 +1062,11 @@ def main() -> None:
     source_group.add_argument("--smoke-completed-run-receipt", type=Path)
     parser.add_argument("--checkpoint-role", choices=("best_model", "final_model"), required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument(
+        "--decoder",
+        choices=("native", "same_frame_consensus_v1"),
+        default="native",
+    )
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--pair-index", type=Path, required=True)
     parser.add_argument("--calibration", type=Path, required=True)

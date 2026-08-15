@@ -162,12 +162,63 @@ def _kp2_timeseries(
         for boundary in (24, 27, 177):
             ax.axvline(boundary, color="#888888", lw=0.8, alpha=0.7)
     axes[-1].set_xlabel("rendered frame index (2° per frame)")
+    recipes = {str(report["recipe"]) for report in reports.values()}
+    recipe_label = next(iter(recipes)) if len(recipes) == 1 else "mixed recipes"
+    roles = {str(report["checkpoint_role"]) for report in reports.values()}
+    role_label = next(iter(roles)) if len(roles) == 1 else "mixed checkpoints"
     fig.suptitle(
-        "Task80 seed42 best checkpoint, blue KP2\n"
+        f"{recipe_label} seed42 {role_label}, blue KP2\n"
         "Vertical lines mark holdout/guard/train boundaries. Traces are descriptive over one correlated orbit.",
         fontsize=13,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
+    return _save_figure(fig, output)
+
+
+def _all_channel_coordinate_timeseries(
+    names: list[str],
+    arrays_by_name: dict[str, dict[str, np.ndarray]],
+    reports: dict[str, dict[str, Any]],
+    output: Path,
+) -> dict[str, Any]:
+    fig, axes = plt.subplots(5, 2, figsize=(18, 18), sharex=True)
+    colors = ("#333333", "#D55E00")
+    for channel, ax in enumerate(axes.flat):
+        for arm_index, name in enumerate(names):
+            arrays = arrays_by_name[name]
+            frame = arrays["frame_index"]
+            canonical = arrays["soft_canonical_coordinate"][:, channel]
+            ax.plot(
+                frame,
+                canonical[:, 0],
+                color=colors[arm_index],
+                lw=0.9,
+                label=f"{name} x",
+            )
+            ax.plot(
+                frame,
+                canonical[:, 1],
+                color=colors[arm_index],
+                lw=0.8,
+                ls="--",
+                label=f"{name} y",
+            )
+        ax.set_title(f"KP{channel}")
+        ax.set_ylabel("de-rotated normalized coordinate")
+        ax.grid(alpha=0.2)
+        for boundary in (24, 27, 177):
+            ax.axvline(boundary, color="#888888", lw=0.7, alpha=0.6)
+    for ax in axes[-1]:
+        ax.set_xlabel("rendered frame index (2 degrees per frame)")
+    axes[0, 0].legend(loc="upper right", ncol=2, fontsize=7)
+    recipes = {str(report["recipe"]) for report in reports.values()}
+    recipe_label = next(iter(recipes)) if len(recipes) == 1 else "mixed recipes"
+    fig.suptitle(
+        f"{recipe_label}: all ten material-coordinate traces over the full 180-frame orbit\n"
+        "Solid is x; dashed is y. These are descriptive traces from one correlated orbit.",
+        fontsize=13,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
     return _save_figure(fig, output)
 
 
@@ -480,8 +531,14 @@ def main() -> None:
         "trajectory_overview": _trajectory_overview(names, arrays, output_dir / "01_trajectory_overview.png"),
         "kp2_timeseries": _kp2_timeseries(names, arrays, reports, output_dir / "02_kp2_timeseries.png"),
         "kp2_heatmap_traces": _heatmap_traces(names, arrays, output_dir / "03_kp2_heatmap_traces.png"),
-        "first_kp2_spike_montage": _spike_montage(names[0], reports[names[0]], arrays[names[0]], args.data_root, output_dir / "04_control_kp2_spike_montage.png"),
-        "second_kp2_spike_montage": _spike_montage(names[1], reports[names[1]], arrays[names[1]], args.data_root, output_dir / "05_ocr_kp2_spike_montage.png"),
+        "first_kp2_spike_montage": _spike_montage(names[0], reports[names[0]], arrays[names[0]], args.data_root, output_dir / "04_first_kp2_spike_montage.png"),
+        "second_kp2_spike_montage": _spike_montage(names[1], reports[names[1]], arrays[names[1]], args.data_root, output_dir / "05_second_kp2_spike_montage.png"),
+        "all_channel_coordinate_timeseries": _all_channel_coordinate_timeseries(
+            names,
+            arrays,
+            reports,
+            output_dir / "06_all_channel_coordinate_timeseries.png",
+        ),
     }
     summary = _paired_numeric_summary(reports, arrays, names)
     summary["visual_files"] = files

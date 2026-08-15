@@ -18,7 +18,11 @@ from keypoint_net.frozen_wobble_oracle_calibration import build_calibration
 from keypoint_net.run_frozen_wobble_forensics import (
     EXPECTED_EVALUATION_COMMIT,
     IMPLEMENTATION_SOURCE_RELATIVE_PATHS,
+    SELF_EQUIVARIANCE_SMOKE_COMPLETED_SCHEMA,
+    SELF_EQUIVARIANCE_SMOKE_TRAINING_COMMIT,
+    _content_hash,
     _implementation_binding,
+    _validate_self_equivariance_smoke_receipt,
 )
 
 
@@ -43,6 +47,41 @@ def test_forensic_implementation_binding_separates_ancestor_from_current_head() 
     assert head != EXPECTED_EVALUATION_COMMIT
     assert tuple(source_records) == IMPLEMENTATION_SOURCE_RELATIVE_PATHS
     assert all(record["sha256"] for record in source_records.values())
+
+
+def test_self_equivariance_smoke_receipt_binds_one_epoch_checkpoint() -> None:
+    receipt = {
+        "schema_version": SELF_EQUIVARIANCE_SMOKE_COMPLETED_SCHEMA,
+        "status": "completed_one_epoch_gpu_smoke_not_scientific_outcome",
+        "cell_id": "task80_assisted__self_equivariance__seed42__smoke",
+        "recipe": "task80_assisted",
+        "arm": "self_equivariance",
+        "source_commit": SELF_EQUIVARIANCE_SMOKE_TRAINING_COMMIT,
+        "source_branch": "agent/sliding-wobble-eradication-20260814",
+        "device": "cuda",
+        "optimizer_step_count": 37,
+        "artifacts": {
+            "best_model.pt": {"sha256": "a" * 64, "size_bytes": 123},
+            "final_model.pt": {"sha256": "b" * 64, "size_bytes": 124},
+        },
+    }
+    receipt["content_hash_sha256"] = _content_hash(receipt)
+    cell_id, checkpoint, identity = _validate_self_equivariance_smoke_receipt(
+        receipt, checkpoint_role="best_model"
+    )
+    assert cell_id == receipt["cell_id"]
+    assert checkpoint == {
+        "checkpoint_role": "best_model",
+        "sha256": "a" * 64,
+        "size_bytes": 123,
+        "epoch": 1,
+    }
+    assert identity == {
+        "recipe": "task80_assisted",
+        "arm": "self_equivariance",
+        "seed": 42,
+        "checkpoint_training_occurred": True,
+    }
 
 
 def test_exact_material_points_become_constant_after_derotation() -> None:

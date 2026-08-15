@@ -59,6 +59,15 @@ EXPECTED_STRIDE = 3
 EXPECTED_STRIDE_DEG = 6.0
 COORDINATE_CONSISTENCY_TOLERANCE = 1e-4
 CELL_RE = re.compile(r"^(task55_clean|task80_assisted)__(control|ocr_zncc)__seed(42|43|44)$")
+SELF_EQUIVARIANCE_SMOKE_CELL_RE = re.compile(
+    r"^(task55_clean|task80_assisted)__(control|self_equivariance)__seed42__smoke$"
+)
+SELF_EQUIVARIANCE_SMOKE_TRAINING_COMMIT = (
+    "b40695960bb3c9ea61a91d0359fe8da6dbe021d6"
+)
+SELF_EQUIVARIANCE_SMOKE_COMPLETED_SCHEMA = (
+    "same_frame_equivariance_gpu_smoke_completed_run.v1"
+)
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 IMPLEMENTATION_SOURCE_RELATIVE_PATHS = (
     "keypoint_net/run_frozen_wobble_forensics.py",
@@ -228,6 +237,82 @@ def _validate_outcome(
     return cell_id, checkpoint
 
 
+def _validate_self_equivariance_smoke_receipt(
+    receipt: Mapping[str, Any], *, checkpoint_role: str
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    _require(
+        receipt.get("schema_version") == SELF_EQUIVARIANCE_SMOKE_COMPLETED_SCHEMA,
+        "self-equivariance completed receipt schema differs",
+    )
+    _require(
+        receipt.get("status")
+        == "completed_one_epoch_gpu_smoke_not_scientific_outcome",
+        "self-equivariance smoke cell is incomplete",
+    )
+    _require(
+        receipt.get("source_commit") == SELF_EQUIVARIANCE_SMOKE_TRAINING_COMMIT,
+        "self-equivariance smoke training source differs",
+    )
+    _require(
+        receipt.get("source_branch")
+        == "agent/sliding-wobble-eradication-20260814",
+        "self-equivariance smoke branch differs",
+    )
+    _require(
+        receipt.get("content_hash_sha256") == _content_hash(receipt),
+        "self-equivariance completed receipt content hash differs",
+    )
+    cell_id = receipt.get("cell_id")
+    _require(
+        isinstance(cell_id, str)
+        and SELF_EQUIVARIANCE_SMOKE_CELL_RE.fullmatch(cell_id) is not None,
+        "self-equivariance smoke cell ID differs",
+    )
+    recipe = receipt.get("recipe")
+    arm = receipt.get("arm")
+    _require(
+        cell_id == f"{recipe}__{arm}__seed42__smoke",
+        "self-equivariance smoke recipe/arm binding differs",
+    )
+    _require(receipt.get("device") == "cuda", "self-equivariance smoke was not run on CUDA")
+    _require(
+        isinstance(receipt.get("optimizer_step_count"), int)
+        and int(receipt["optimizer_step_count"]) > 0,
+        "self-equivariance smoke has no optimizer update",
+    )
+    artifact_name = f"{checkpoint_role}.pt"
+    artifacts = receipt.get("artifacts")
+    _require(
+        isinstance(artifacts, Mapping) and artifact_name in artifacts,
+        "self-equivariance checkpoint is absent from completed receipt",
+    )
+    checkpoint = artifacts[artifact_name]
+    _require(isinstance(checkpoint, Mapping), "self-equivariance checkpoint binding is invalid")
+    _require(
+        isinstance(checkpoint.get("sha256"), str)
+        and SHA_RE.fullmatch(str(checkpoint["sha256"])) is not None,
+        "self-equivariance checkpoint SHA-256 is invalid",
+    )
+    _require(
+        isinstance(checkpoint.get("size_bytes"), int)
+        and int(checkpoint["size_bytes"]) > 0,
+        "self-equivariance checkpoint size is invalid",
+    )
+    binding = {
+        "checkpoint_role": checkpoint_role,
+        "sha256": str(checkpoint["sha256"]),
+        "size_bytes": int(checkpoint["size_bytes"]),
+        "epoch": 1,
+    }
+    identity = {
+        "recipe": str(recipe),
+        "arm": str(arm),
+        "seed": 42,
+        "checkpoint_training_occurred": True,
+    }
+    return cell_id, binding, identity
+
+
 def _validate_calibration(
     calibration: Mapping[str, Any],
     record: Mapping[str, Any],
@@ -248,26 +333,49 @@ def _construct_frozen_model(
     cell_id: str,
     checkpoint_role: str,
     expected_epoch: int,
+    expected_training_commit: str = EXPECTED_TRAINING_COMMIT,
+    checkpoint_schema: str = "ocr_zncc",
 ) -> tuple[PhaseAModel, Mapping[str, Any]]:
-    expected_keys = (
-        {
+    if checkpoint_schema == "ocr_zncc":
+        expected_keys = (
+            {
             "epoch", "model_state_dict", "optimizer_state_dict", "loss",
             "selection_loss_name", "base_validation_loss", "attachment_validation_loss",
             "ocr_zncc_validation_loss", "augmented_validation_loss", "config",
-        }
-        if checkpoint_role == "best_model"
-        else {
+            }
+            if checkpoint_role == "best_model"
+            else {
             "epoch", "model_state_dict", "optimizer_state_dict", "loss",
             "base_training_loss", "attachment_training_loss", "ocr_zncc_training_loss",
             "ocr_zncc_accepted_match_coverage", "config",
-        }
-    )
+            }
+        )
+    elif checkpoint_schema == "self_equivariance_smoke":
+        expected_keys = (
+            {
+                "epoch", "model_state_dict", "optimizer_state_dict", "loss",
+                "selection_loss_name", "base_validation_loss", "attachment_validation_loss",
+                "ocr_zncc_validation_loss", "self_equivariance_validation_loss",
+                "augmented_validation_loss", "config",
+            }
+            if checkpoint_role == "best_model"
+            else {
+                "epoch", "model_state_dict", "optimizer_state_dict", "loss",
+                "base_training_loss", "attachment_training_loss", "ocr_zncc_training_loss",
+                "ocr_zncc_accepted_match_coverage", "self_equivariance_training_loss", "config",
+            }
+        )
+    else:
+        raise FrozenForensicError("unknown checkpoint schema")
     _require(set(payload) == expected_keys, "checkpoint payload keys differ from completed protocol")
     _require(int(payload.get("epoch", -1)) == expected_epoch, "checkpoint epoch differs from outcome binding")
     config = payload.get("config")
     _require(isinstance(config, Mapping), "checkpoint configuration is missing")
     _require(config.get("cell_id") == cell_id, "checkpoint embedded cell ID differs")
-    _require(config.get("source_commit") == EXPECTED_TRAINING_COMMIT, "checkpoint embedded source commit differs")
+    _require(
+        config.get("source_commit") == expected_training_commit,
+        "checkpoint embedded source commit differs",
+    )
     _require(int(config.get("img_size", -1)) == EXPECTED_IMAGE_SIZE, "checkpoint input size differs")
     _require(int(config.get("heatmap_res", -1)) == EXPECTED_HEATMAP_SIZE, "checkpoint heatmap size differs")
     _require(int(config.get("num_keypoints", -1)) == EXPECTED_CHANNEL_COUNT, "checkpoint channel count differs")
@@ -647,8 +755,35 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     calibration, calibration_record = _load_json(args.calibration, name="oracle calibration")
     _validate_calibration(calibration, calibration_record, expected_sha256=args.expected_calibration_sha256)
-    outcome, outcome_record = _load_json(args.outcome_json, name="outcome JSON")
-    cell_id, checkpoint_binding = _validate_outcome(outcome, checkpoint_role=args.checkpoint_role)
+    if args.outcome_json is not None:
+        outcome, source_evidence_record = _load_json(
+            args.outcome_json, name="outcome JSON"
+        )
+        cell_id, checkpoint_binding = _validate_outcome(
+            outcome, checkpoint_role=args.checkpoint_role
+        )
+        identity = {
+            "recipe": outcome["recipe"],
+            "arm": outcome["arm"],
+            "seed": outcome["seed"],
+            "checkpoint_training_occurred": True,
+        }
+        expected_training_commit = EXPECTED_TRAINING_COMMIT
+        checkpoint_schema = "ocr_zncc"
+        source_evidence_name = "outcome_json"
+    else:
+        receipt, source_evidence_record = _load_json(
+            args.smoke_completed_run_receipt,
+            name="self-equivariance completed-run receipt",
+        )
+        cell_id, checkpoint_binding, identity = (
+            _validate_self_equivariance_smoke_receipt(
+                receipt, checkpoint_role=args.checkpoint_role
+            )
+        )
+        expected_training_commit = SELF_EQUIVARIANCE_SMOKE_TRAINING_COMMIT
+        checkpoint_schema = "self_equivariance_smoke"
+        source_evidence_name = "self_equivariance_completed_run_receipt"
     pair_index, pair_index_record = _load_json(args.pair_index, name="pair index")
     partition = _validate_pair_index(pair_index)
 
@@ -662,8 +797,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         cell_id=cell_id,
         checkpoint_role=args.checkpoint_role,
         expected_epoch=int(checkpoint_binding["epoch"]),
+        expected_training_commit=expected_training_commit,
+        checkpoint_schema=checkpoint_schema,
     )
-    _require(_state_sha256(model) == checkpoint_binding["model_state_sha256"], "loaded model-state hash differs from prior bound evaluator")
+    model_state_sha256 = _state_sha256(model)
+    if "model_state_sha256" in checkpoint_binding:
+        _require(
+            model_state_sha256 == checkpoint_binding["model_state_sha256"],
+            "loaded model-state hash differs from prior bound evaluator",
+        )
 
     images, masks, theta, frame_indices, corpus = _load_corpus(args.data_root)
     points, logits, inference = _infer(model, images)
@@ -711,19 +853,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "source_bound_frozen_checkpoint_full_orbit_forensics",
         "cell_id": cell_id,
-        "recipe": outcome["recipe"],
-        "arm": outcome["arm"],
-        "seed": outcome["seed"],
+        "recipe": identity["recipe"],
+        "arm": identity["arm"],
+        "seed": identity["seed"],
         "checkpoint_role": args.checkpoint_role,
         "checkpoint_epoch": int(checkpoint_binding["epoch"]),
         "training_or_weight_update_performed": False,
+        "checkpoint_training_or_weight_update_performed": identity[
+            "checkpoint_training_occurred"
+        ],
         "classification_status": "descriptive_forensic_smoke_not_yet_final_success_contract",
         "bindings": {
             "implementation_head": head,
             "required_evaluation_ancestor_commit": EXPECTED_EVALUATION_COMMIT,
             "implementation_sources": source_records,
-            "outcome_json": outcome_record,
+            source_evidence_name: source_evidence_record,
             "checkpoint": checkpoint_record,
+            "checkpoint_model_state_sha256": model_state_sha256,
             "calibration": calibration_record,
             "pair_index": pair_index_record,
             "corpus": corpus,
@@ -737,7 +883,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "learn_inverse_operator", "lambda_smooth", "lambda_disp", "lambda_ent", "lambda_inv",
                 "lambda_cycle", "lambda_attach", "lambda_ocr_zncc",
             )
-        },
+        }
+        | (
+            {
+                "lambda_self_equivariance": checkpoint_config[
+                    "lambda_self_equivariance"
+                ]
+            }
+            if "lambda_self_equivariance" in checkpoint_config
+            else {}
+        ),
         "geometry": {
             "physical_transform": "TDW world-Z roll",
             "theta_metadata_deg": [float(value) for value in theta],
@@ -808,7 +963,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--outcome-json", type=Path, required=True)
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument("--outcome-json", type=Path)
+    source_group.add_argument("--smoke-completed-run-receipt", type=Path)
     parser.add_argument("--checkpoint-role", choices=("best_model", "final_model"), required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)

@@ -607,11 +607,41 @@ def _stratified_summary(points: np.ndarray, partition: Mapping[str, list[int]]) 
     return result
 
 
+def _binary_boundary(mask: np.ndarray) -> np.ndarray:
+    """Return pixels in ``mask`` that touch its complement in 8-connectivity."""
+    binary = np.asarray(mask, dtype=bool)
+    _require(binary.ndim == 2, "binary boundary expects a 2D mask")
+    padded = np.pad(binary, 1, mode="constant", constant_values=False)
+    interior = binary.copy()
+    height, width = binary.shape
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dy == 0 and dx == 0:
+                continue
+            interior &= padded[
+                1 + dy : 1 + dy + height,
+                1 + dx : 1 + dx + width,
+            ]
+    return binary & ~interior
+
+
+def _minimum_distance_to_pixels(
+    y: int, x: int, target_coordinates_yx: np.ndarray
+) -> float:
+    coordinates = np.asarray(target_coordinates_yx, dtype=np.int64)
+    _require(
+        coordinates.ndim == 2
+        and coordinates.shape[1] == 2
+        and coordinates.shape[0] > 0,
+        "distance target coordinate set is empty or invalid",
+    )
+    dy = coordinates[:, 0] - int(y)
+    dx = coordinates[:, 1] - int(x)
+    squared = dy * dy + dx * dx
+    return math.sqrt(float(np.min(squared)))
+
+
 def _mask_localization(points: np.ndarray, masks: np.ndarray) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
-    try:
-        from scipy.ndimage import distance_transform_edt
-    except Exception as exc:
-        raise FrozenForensicError("scipy is required for signed mask distance") from exc
     pixel = (points + 1.0) * 0.5 * (EXPECTED_IMAGE_SIZE - 1)
     inside = np.zeros(points.shape[:2], dtype=bool)
     signed_distance = np.zeros(points.shape[:2], dtype=np.float64)
@@ -624,8 +654,8 @@ def _mask_localization(points: np.ndarray, masks: np.ndarray) -> tuple[dict[str,
         ys, xs = np.where(mask)
         _require(xs.size > 0, f"empty object mask at frame {frame}")
         bbox_diagonal[frame] = math.hypot(float(xs.max() - xs.min() + 1), float(ys.max() - ys.min() + 1))
-        distance_inside = distance_transform_edt(mask)
-        distance_outside = distance_transform_edt(~mask)
+        object_boundary_yx = np.argwhere(_binary_boundary(mask))
+        background_boundary_yx = np.argwhere(_binary_boundary(~mask))
         for channel in range(EXPECTED_CHANNEL_COUNT):
             x = pixel[frame, channel, 0]
             y = pixel[frame, channel, 1]
@@ -634,8 +664,13 @@ def _mask_localization(points: np.ndarray, masks: np.ndarray) -> tuple[dict[str,
                 yi = int(np.clip(np.rint(y), 0, EXPECTED_IMAGE_SIZE - 1))
                 inside[frame, channel] = bool(mask[yi, xi])
                 signed_distance[frame, channel] = (
-                    float(distance_inside[yi, xi]) if inside[frame, channel]
-                    else -float(distance_outside[yi, xi])
+                    _minimum_distance_to_pixels(
+                        yi, xi, background_boundary_yx
+                    )
+                    if inside[frame, channel]
+                    else -_minimum_distance_to_pixels(
+                        yi, xi, object_boundary_yx
+                    )
                 )
             else:
                 signed_distance[frame, channel] = -float(EXPECTED_IMAGE_SIZE)

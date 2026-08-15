@@ -16,6 +16,7 @@ set -euo pipefail
 EXPECTED_COMMIT="${SELF_EQUIVARIANCE_EVAL_EXPECTED_COMMIT:?set SELF_EQUIVARIANCE_EVAL_EXPECTED_COMMIT}"
 PROJECT_ROOT="${SELF_EQUIVARIANCE_EVAL_PROJECT_ROOT:?set SELF_EQUIVARIANCE_EVAL_PROJECT_ROOT}"
 VENV_DIR="${SELF_EQUIVARIANCE_EVAL_VENV_DIR:?set SELF_EQUIVARIANCE_EVAL_VENV_DIR}"
+PLOT_VENV_DIR="${SELF_EQUIVARIANCE_EVAL_PLOT_VENV_DIR:?set SELF_EQUIVARIANCE_EVAL_PLOT_VENV_DIR}"
 DATA_ROOT="${SELF_EQUIVARIANCE_EVAL_DATA_ROOT:?set SELF_EQUIVARIANCE_EVAL_DATA_ROOT}"
 SMOKE_ROOT="${SELF_EQUIVARIANCE_EVAL_SMOKE_ROOT:?set SELF_EQUIVARIANCE_EVAL_SMOKE_ROOT}"
 OUTPUT_ROOT="${SELF_EQUIVARIANCE_EVAL_OUTPUT_ROOT:?set SELF_EQUIVARIANCE_EVAL_OUTPUT_ROOT}"
@@ -29,7 +30,7 @@ PAIR_INDEX="$PROJECT_ROOT/docs/decisions/2026-07-26/representation_oracle_splits
 for VALUE in "$CALIBRATION_SHA256" "$EXPECTED_SCRIPT_SHA256"; do
   [[ "$VALUE" =~ ^[0-9a-f]{64}$ ]] || exit 2
 done
-for REQUIRED in "$PROJECT_ROOT" "$VENV_DIR" "$DATA_ROOT" "$SMOKE_ROOT"; do
+for REQUIRED in "$PROJECT_ROOT" "$VENV_DIR" "$PLOT_VENV_DIR" "$DATA_ROOT" "$SMOKE_ROOT"; do
   [[ -d "$REQUIRED" ]] || { echo "missing directory: $REQUIRED" >&2; exit 2; }
 done
 for REQUIRED in "$CALIBRATION" "$SCRIPT_PATH" "$PAIR_INDEX"; do
@@ -48,6 +49,8 @@ cd "$PROJECT_ROOT"
 [[ "$(git branch --show-current)" == "agent/sliding-wobble-eradication-20260814" ]] || exit 2
 git diff --quiet HEAD -- || { echo "tracked source differs from HEAD" >&2; exit 2; }
 git diff --cached --quiet || { echo "staged source differs from HEAD" >&2; exit 2; }
+"$VENV_DIR/bin/python" -c "import numpy, PIL, torch; assert torch.__version__ == '2.5.1+cu121'"
+"$PLOT_VENV_DIR/bin/python" -c "import matplotlib, numpy, PIL; assert matplotlib.__version__ == '3.9.2'"
 
 case "${SLURM_ARRAY_TASK_ID:?missing Slurm array task ID}" in
   0) RECIPE=task55_clean ;;
@@ -76,7 +79,7 @@ for ROLE in best_model final_model; do
       --output-dir "$DESTINATION"
   done
 
-  srun python -B -u -m keypoint_net.plot_frozen_wobble_pair \
+  srun "$PLOT_VENV_DIR/bin/python" -B -u -m keypoint_net.plot_frozen_wobble_pair \
     --first-name control \
     --first-run "$OUTPUT_ROOT/${RECIPE}__control__seed42__smoke__${ROLE}" \
     --second-name self_equivariance \

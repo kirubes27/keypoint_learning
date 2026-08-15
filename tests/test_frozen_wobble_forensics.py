@@ -20,8 +20,10 @@ from keypoint_net.run_frozen_wobble_forensics import (
     IMPLEMENTATION_SOURCE_RELATIVE_PATHS,
     SELF_EQUIVARIANCE_SMOKE_COMPLETED_SCHEMA,
     SELF_EQUIVARIANCE_SMOKE_TRAINING_COMMIT,
+    _binary_boundary,
     _content_hash,
     _implementation_binding,
+    _minimum_distance_to_pixels,
     _validate_self_equivariance_smoke_receipt,
 )
 
@@ -82,6 +84,30 @@ def test_self_equivariance_smoke_receipt_binds_one_epoch_checkpoint() -> None:
         "seed": 42,
         "checkpoint_training_occurred": True,
     }
+
+
+def test_numpy_boundary_distance_matches_scipy_edt_exactly() -> None:
+    from scipy.ndimage import distance_transform_edt
+
+    mask = np.zeros((97, 113), dtype=bool)
+    mask[11:88, 48:62] = True
+    mask[60:81, 13:101] = True
+    yy, xx = np.ogrid[:97, :113]
+    mask |= np.square(yy - 35) + np.square(xx - 78) <= 19**2
+    object_boundary = np.argwhere(_binary_boundary(mask))
+    background_boundary = np.argwhere(_binary_boundary(~mask))
+    inside_edt = distance_transform_edt(mask)
+    outside_edt = distance_transform_edt(~mask)
+    generator = np.random.default_rng(20260815)
+    queries = generator.integers((0, 0), mask.shape, size=(500, 2))
+    for y, x in queries:
+        if mask[y, x]:
+            actual = _minimum_distance_to_pixels(y, x, background_boundary)
+            expected = float(inside_edt[y, x])
+        else:
+            actual = _minimum_distance_to_pixels(y, x, object_boundary)
+            expected = float(outside_edt[y, x])
+        assert actual == expected
 
 
 def test_exact_material_points_become_constant_after_derotation() -> None:

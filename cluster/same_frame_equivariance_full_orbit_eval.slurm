@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32000
+#SBATCH --mem-per-cpu=4000
 #SBATCH --constraint="avx512"
 #SBATCH --array=0-1%2
 #SBATCH -A l0003424

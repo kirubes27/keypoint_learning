@@ -335,8 +335,23 @@ def _paired_numeric_summary(
     arrays_by_name: dict[str, dict[str, np.ndarray]],
     names: list[str],
 ) -> dict[str, Any]:
+    recipes = {str(reports[name]["recipe"]) for name in names}
+    seeds = {int(reports[name]["seed"]) for name in names}
+    checkpoint_roles = {str(reports[name]["checkpoint_role"]) for name in names}
+    frame_inventories = {
+        str(reports[name]["bindings"]["corpus"]["frame_inventory_sha256"])
+        for name in names
+    }
+    if len(recipes) != 1 or len(seeds) != 1 or len(checkpoint_roles) != 1:
+        raise ValueError("paired runs differ in recipe, seed, or checkpoint role")
+    if len(frame_inventories) != 1:
+        raise ValueError("paired runs use different frame inventories")
+    recipe = next(iter(recipes))
+    seed = next(iter(seeds))
     result: dict[str, Any] = {
-        "artifact_type": "paired_task80_seed42_frozen_checkpoint_forensic_summary",
+        "artifact_type": (
+            f"paired_{recipe}_seed{seed}_frozen_checkpoint_forensic_summary"
+        ),
         "arms": names,
         "checkpoint_epoch": {name: reports[name]["checkpoint_epoch"] for name in names},
         "training_or_weight_update_performed": False,
@@ -353,12 +368,21 @@ def _paired_numeric_summary(
     }
     thresholds = reports[names[0]]["oracle_envelope_exceedance"]
     for name in names[1:]:
-        if reports[name]["oracle_envelope_exceedance"]["soft_single_gaussian_thresholds"] != thresholds["soft_single_gaussian_thresholds"]:
-            raise ValueError("paired runs use different soft quality thresholds")
-        if reports[name]["oracle_envelope_exceedance"]["hard_thresholds"] != thresholds["hard_thresholds"]:
-            raise ValueError("paired runs use different hard quality thresholds")
-        if reports[name]["oracle_envelope_exceedance"]["grounding_and_distinctness_thresholds"] != thresholds["grounding_and_distinctness_thresholds"]:
-            raise ValueError("paired runs use different grounding/distinctness thresholds")
+        for threshold_key in (
+            "soft_single_gaussian_thresholds",
+            "hard_thresholds",
+            "single_gaussian_heatmap_topology_thresholds",
+            "phase_dominance_thresholds",
+            "activity_thresholds",
+            "grounding_and_distinctness_thresholds",
+        ):
+            if (
+                reports[name]["oracle_envelope_exceedance"][threshold_key]
+                != thresholds[threshold_key]
+            ):
+                raise ValueError(
+                    f"paired runs use different {threshold_key}"
+                )
     hard_thresholds = thresholds["hard_thresholds"]
     soft_thresholds = thresholds["soft_single_gaussian_thresholds"]
     topology_thresholds = thresholds["single_gaussian_heatmap_topology_thresholds"]
@@ -485,16 +509,57 @@ def _paired_numeric_summary(
     }
     kp2 = result["per_channel"][2]["arms"]
     first, second = names
+    def safe_ratio(numerator: float, denominator: float) -> float | None:
+        return numerator / denominator if denominator != 0.0 else None
+
+    def direction(second_value: float, first_value: float) -> str:
+        if second_value < first_value:
+            return "lower"
+        if second_value > first_value:
+            return "higher"
+        return "equal"
+
     result["kp2_direct_comparison"] = {
-        "soft_canonical_rms_ratio_second_over_first": kp2[second]["soft_canonical_rms_normalized"] / kp2[first]["soft_canonical_rms_normalized"],
-        "adjacent_plus2_q99_ratio_second_over_first": kp2[second]["adjacent_plus2_q99_heatmap_cells"] / kp2[first]["adjacent_plus2_q99_heatmap_cells"],
-        "second_difference_q99_ratio_second_over_first": kp2[second]["second_difference_q99_heatmap_cells"] / kp2[first]["second_difference_q99_heatmap_cells"],
-        "hard_jump_rate_ratio_second_over_first": kp2[second]["hard_jump_rate"] / kp2[first]["hard_jump_rate"],
+        "soft_canonical_rms_ratio_second_over_first": safe_ratio(
+            kp2[second]["soft_canonical_rms_normalized"],
+            kp2[first]["soft_canonical_rms_normalized"],
+        ),
+        "adjacent_plus2_q99_ratio_second_over_first": safe_ratio(
+            kp2[second]["adjacent_plus2_q99_heatmap_cells"],
+            kp2[first]["adjacent_plus2_q99_heatmap_cells"],
+        ),
+        "second_difference_q99_ratio_second_over_first": safe_ratio(
+            kp2[second]["second_difference_q99_heatmap_cells"],
+            kp2[first]["second_difference_q99_heatmap_cells"],
+        ),
+        "hard_jump_rate_ratio_second_over_first": safe_ratio(
+            kp2[second]["hard_jump_rate"], kp2[first]["hard_jump_rate"]
+        ),
         "on_object_rate_first": kp2[first]["on_object_rate"],
         "on_object_rate_second": kp2[second]["on_object_rate"],
-        "plain_language": (
-            "The second arm has lower long-term KP2 drift and better object grounding, "
-            "but worse adjacent-tail wobble, worse acceleration-tail wobble, and many more hard-peak jumps."
+        "direction_second_vs_first": {
+            "soft_canonical_rms": direction(
+                kp2[second]["soft_canonical_rms_normalized"],
+                kp2[first]["soft_canonical_rms_normalized"],
+            ),
+            "adjacent_plus2_q99": direction(
+                kp2[second]["adjacent_plus2_q99_heatmap_cells"],
+                kp2[first]["adjacent_plus2_q99_heatmap_cells"],
+            ),
+            "second_difference_q99": direction(
+                kp2[second]["second_difference_q99_heatmap_cells"],
+                kp2[first]["second_difference_q99_heatmap_cells"],
+            ),
+            "hard_jump_rate": direction(
+                kp2[second]["hard_jump_rate"], kp2[first]["hard_jump_rate"]
+            ),
+            "on_object_rate": direction(
+                kp2[second]["on_object_rate"], kp2[first]["on_object_rate"]
+            ),
+        },
+        "direction_note": (
+            "lower is better for drift, wobble, and hard-jump metrics; "
+            "higher is better for on-object rate"
         ),
     }
     result["statistical_scope"] = {
@@ -522,6 +587,15 @@ def main() -> None:
     arrays: dict[str, dict[str, np.ndarray]] = {}
     for name, run_dir in ((args.first_name, args.first_run), (args.second_name, args.second_run)):
         reports[name], arrays[name] = _load_run(run_dir.resolve(strict=True))
+    requested_data_root = args.data_root.expanduser().resolve(strict=True)
+    for name, report in reports.items():
+        recorded_data_root = Path(
+            report["bindings"]["corpus"]["data_root"]
+        ).resolve(strict=True)
+        if recorded_data_root != requested_data_root:
+            raise ValueError(
+                f"plot data root differs from the {name} forensic report"
+            )
     epochs = {int(report["checkpoint_epoch"]) for report in reports.values()}
     if len(epochs) != 1:
         raise ValueError("paired visualization requires the same checkpoint epoch in both arms")

@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 from keypoint_net.frozen_nuisance_sensitivity import (
     IMAGE_SIZE,
@@ -171,9 +173,10 @@ def test_full_path_updates_extractor_but_not_operator() -> None:
     result = run_locked_equivariance_path(
         model.extractor,
         torch.cat((x_t, x_t1), dim=0),
-        torch.cat((outputs["heatmaps_t"], outputs["heatmaps_t1"]), dim=0),
     )
+    assert result.untransformed_image_count == 2
     assert result.transformed_image_count == 4
+    assert result.auxiliary_forward_image_count == 6
     result.loss.backward()
     extractor_gradients = [
         parameter.grad
@@ -182,6 +185,63 @@ def test_full_path_updates_extractor_but_not_operator() -> None:
     ]
     assert any(gradient is not None and torch.count_nonzero(gradient) > 0 for gradient in extractor_gradients)
     assert all(parameter.grad is None for parameter in model.operator.parameters())
+
+
+class _BatchCompositionProbeExtractor(nn.Module):
+    """Minimal train-mode BN extractor exposing cross-call composition changes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_norm = nn.BatchNorm2d(1, affine=False)
+        self.forward_batch_sizes: list[int] = []
+
+    def forward(self, images: torch.Tensor):
+        self.forward_batch_sizes.append(int(images.shape[0]))
+        feature = self.batch_norm(images[:, :1])
+        heatmap = F.avg_pool2d(feature, kernel_size=32, stride=32)
+        coordinate = heatmap.mean(dim=(-2, -1))
+        return coordinate, heatmap
+
+
+def test_common_batch_removes_train_mode_batchnorm_composition_from_identity_loss() -> None:
+    ramp = torch.linspace(0.0, 1.0, IMAGE_SIZE).view(1, 1, 1, IMAGE_SIZE)
+    x_t = ramp.expand(1, 3, IMAGE_SIZE, IMAGE_SIZE).clone()
+    x_t1 = (0.2 + 2.5 * ramp).expand(1, 3, IMAGE_SIZE, IMAGE_SIZE).clone()
+    endpoints = torch.cat((x_t, x_t1), dim=0)
+    identity = (
+        NuisanceSpec(
+            name="identity_translation",
+            kind="translation",
+            dx_pixels=0.0,
+            dy_pixels=0.0,
+        ),
+    )
+
+    old_extractor = _BatchCompositionProbeExtractor().train()
+    old_base = torch.cat((old_extractor(x_t)[1], old_extractor(x_t1)[1]), dim=0)
+    old_augmented = old_extractor(endpoints)[1].unsqueeze(0)
+    old_loss, _ = distribution_equivariance_loss(
+        old_base,
+        old_augmented,
+        specs=identity,
+    )
+
+    corrected_extractor = _BatchCompositionProbeExtractor().train()
+    corrected = run_locked_equivariance_path(
+        corrected_extractor,
+        endpoints,
+        specs=identity,
+    )
+    assert old_loss.item() > 1e-4
+    assert corrected.loss.item() < 1e-12
+    assert torch.equal(
+        corrected.common_batch_base_heatmaps,
+        corrected.augmented_heatmaps[0],
+    )
+    assert corrected.untransformed_image_count == 2
+    assert corrected.transformed_image_count == 2
+    assert corrected.auxiliary_forward_image_count == 4
+    assert corrected_extractor.forward_batch_sizes == [4]
 
 
 def test_uniform_and_duplicated_heatmaps_expose_trivial_zero_loss_escape() -> None:

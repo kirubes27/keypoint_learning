@@ -24,8 +24,10 @@ import numpy as np
 from matplotlib.colors import BoundaryNorm, ListedColormap
 
 try:
+    from .frozen_wobble_classification import soft_coordinate_failure_flags
     from .plot_frozen_wobble_pair import _load_run, _paired_numeric_summary
 except ImportError:
+    from frozen_wobble_classification import soft_coordinate_failure_flags  # type: ignore
     from plot_frozen_wobble_pair import _load_run, _paired_numeric_summary  # type: ignore
 
 
@@ -38,6 +40,7 @@ ARMS = ("control", "ocr_zncc")
 SEEDS = (42, 43, 44)
 ROLES = ("best_model", "final_model")
 IMPLEMENTATION_SOURCES = (
+    "keypoint_net/frozen_wobble_classification.py",
     "keypoint_net/summarize_frozen_wobble_matrix.py",
     "keypoint_net/plot_frozen_wobble_pair.py",
 )
@@ -149,6 +152,7 @@ def _single_run_numeric_summary(
 ) -> dict[str, Any]:
     thresholds = report["oracle_envelope_exceedance"]
     hard_thresholds = thresholds["hard_thresholds"]
+    soft_thresholds = thresholds["soft_single_gaussian_thresholds"]
     topology_thresholds = thresholds["single_gaussian_heatmap_topology_thresholds"]
     activity_thresholds = thresholds["activity_thresholds"]
     grounding_thresholds = thresholds["grounding_and_distinctness_thresholds"]
@@ -205,14 +209,12 @@ def _single_run_numeric_summary(
         grounded = on_object >= grounding_thresholds["required_on_object_rate"]
         border_distance = report["localization"]["minimum_image_border_distance_px_per_channel"][channel]
         border_safe = border_distance >= grounding_thresholds["minimum_image_border_distance_px"]
-        sliding = soft["canonical_rms_per_channel"][channel] > hard_thresholds["canonical_rms_max"]
         hard_jump_rate = heat["hard_jump_rate_per_channel"][channel]
-        wobbling = (
-            soft["adjacent_plus2_step"]["per_channel"][channel]["maximum"]
-            > hard_thresholds["adjacent_step_max"]
-            or soft["cyclic_second_difference"]["per_channel"][channel]["maximum"]
-            > hard_thresholds["cyclic_second_difference_max"]
-            or hard_jump_rate > 0.0
+        sliding, wobbling = soft_coordinate_failure_flags(
+            soft,
+            channel=channel,
+            soft_thresholds=soft_thresholds,
+            hard_jump_rate=hard_jump_rate,
         )
         width_exceedance_rate = float(
             np.mean(arrays["rms_width_cells"][:, channel] > topology_thresholds["rms_width_cells_max"])
@@ -294,6 +296,7 @@ def _single_run_numeric_summary(
         "overlapping_failure_flag_counts": flag_counts,
         "strict_success_contract_pass": category_counts.get("clean", 0) == EXPECTED_CHANNELS,
         "frozen_thresholds": {
+            "soft_quality": soft_thresholds,
             "hard_quality": hard_thresholds,
             "single_gaussian_heatmap_topology": topology_thresholds,
             "activity": activity_thresholds,

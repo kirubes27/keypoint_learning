@@ -53,8 +53,11 @@ class SameFrameEquivarianceResult:
 
     loss: torch.Tensor
     per_transform_loss: dict[str, torch.Tensor]
+    common_batch_base_heatmaps: torch.Tensor
     augmented_heatmaps: torch.Tensor
+    untransformed_image_count: int
     transformed_image_count: int
+    auxiliary_forward_image_count: int
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,16 @@ class PairedEquivarianceLossResult:
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise SameFrameEquivarianceError(message)
+
+
+def _is_exact_identity(spec: NuisanceSpec) -> bool:
+    """Return whether a geometric probe is an exact no-op control."""
+    return (
+        spec.kind in {"translation", "rotation"}
+        and float(spec.dx_pixels) == 0.0
+        and float(spec.dy_pixels) == 0.0
+        and float(spec.clockwise_degrees) == 0.0
+    )
 
 
 def spatial_probabilities(logits: torch.Tensor) -> torch.Tensor:
@@ -98,6 +111,8 @@ def warp_spatial_distribution(
     mass = probabilities.sum(dim=(-2, -1), keepdim=True)
     _require(bool((mass > 0).all()), "every heatmap must have positive mass")
     normalized = probabilities / mass
+    if _is_exact_identity(spec):
+        return normalized
     theta = nuisance_output_to_input_affine(
         spec,
         batch_size=normalized.shape[0],
@@ -177,26 +192,35 @@ def distribution_equivariance_loss(
 def run_locked_equivariance_path(
     extractor: nn.Module,
     normalized_images: torch.Tensor,
-    base_heatmaps: torch.Tensor,
     *,
     specs: Sequence[NuisanceSpec] = LOCKED_EQUIVARIANCE_SPECS,
 ) -> SameFrameEquivarianceResult:
-    """Execute the exact extra forward path required in both paired arms."""
+    """Execute one common-BatchNorm auxiliary forward in both paired arms.
+
+    The untransformed and transformed heatmaps compared by Jensen-Shannon are
+    sliced from one extractor call.  This prevents train-mode BatchNorm batch
+    composition from becoming part of the equivariance target.
+    """
     _require(normalized_images.ndim == 4, "images must be BxCxHxW")
     _require(tuple(normalized_images.shape[-2:]) == (IMAGE_SIZE, IMAGE_SIZE), "locked path requires 512x512 images")
-    _require(base_heatmaps.shape[0] == normalized_images.shape[0], "image/heatmap batch differs")
-    variants = [apply_nuisance(normalized_images, spec) for spec in specs]
-    augmented_images = torch.cat(variants, dim=0)
-    extractor_output = extractor(augmented_images)
+    variants = [
+        normalized_images if _is_exact_identity(spec) else apply_nuisance(normalized_images, spec)
+        for spec in specs
+    ]
+    auxiliary_images = torch.cat((normalized_images, *variants), dim=0)
+    extractor_output = extractor(auxiliary_images)
     _require(isinstance(extractor_output, tuple) and len(extractor_output) >= 2, "extractor output differs")
-    augmented_flat = extractor_output[1]
+    heatmaps_flat = extractor_output[1]
+    base_count = normalized_images.shape[0]
+    common_batch_base_heatmaps = heatmaps_flat[:base_count]
+    augmented_flat = heatmaps_flat[base_count:]
     augmented_heatmaps = augmented_flat.reshape(
         len(specs),
-        normalized_images.shape[0],
+        base_count,
         *augmented_flat.shape[1:],
     )
     loss, components = distribution_equivariance_loss(
-        base_heatmaps,
+        common_batch_base_heatmaps,
         augmented_heatmaps,
         specs=specs,
         input_coordinate_size=IMAGE_SIZE,
@@ -204,8 +228,11 @@ def run_locked_equivariance_path(
     return SameFrameEquivarianceResult(
         loss=loss,
         per_transform_loss=components,
+        common_batch_base_heatmaps=common_batch_base_heatmaps,
         augmented_heatmaps=augmented_heatmaps,
-        transformed_image_count=int(augmented_images.shape[0]),
+        untransformed_image_count=int(base_count),
+        transformed_image_count=int(augmented_flat.shape[0]),
+        auxiliary_forward_image_count=int(auxiliary_images.shape[0]),
     )
 
 
@@ -238,9 +265,11 @@ def add_locked_equivariance_to_pair_loss(
     """Execute one fair pair path and combine it with an existing objective.
 
     The caller must invoke this function in both the zero-weight control and
-    positive candidate.  Thus the transformed-image construction, augmented
-    extractor forward, and BatchNorm exposure are identical before the weight
-    is applied.
+    positive candidate.  Thus the untransformed/transformed common auxiliary
+    extractor forward and BatchNorm exposure are identical before the weight
+    is applied.  ``heatmaps_t`` and ``heatmaps_t1`` are the historical base
+    forward and are retained only to verify the common auxiliary output shape;
+    they are not one side of the Jensen-Shannon comparison.
     """
     _require(x_t.shape == x_t1.shape, "training-pair image shapes differ")
     _require(heatmaps_t.shape == heatmaps_t1.shape, "training-pair heatmap shapes differ")
@@ -248,7 +277,11 @@ def add_locked_equivariance_to_pair_loss(
     equivariance = run_locked_equivariance_path(
         extractor,
         torch.cat((x_t, x_t1), dim=0),
-        torch.cat((heatmaps_t, heatmaps_t1), dim=0),
+    )
+    historical_shape = tuple(torch.cat((heatmaps_t, heatmaps_t1), dim=0).shape)
+    _require(
+        tuple(equivariance.common_batch_base_heatmaps.shape) == historical_shape,
+        "common auxiliary heatmap shape differs from the historical base forward",
     )
     return PairedEquivarianceLossResult(
         optimization_loss=combine_with_base_loss(

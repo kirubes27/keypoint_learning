@@ -16,8 +16,10 @@ import numpy as np
 from PIL import Image
 
 try:
+    from .frozen_wobble_classification import soft_coordinate_failure_flags
     from .frozen_wobble_forensics import rotate_points
 except ImportError:
+    from frozen_wobble_classification import soft_coordinate_failure_flags  # type: ignore
     from frozen_wobble_forensics import rotate_points  # type: ignore
 
 
@@ -300,15 +302,19 @@ def _paired_numeric_summary(
     }
     thresholds = reports[names[0]]["oracle_envelope_exceedance"]
     for name in names[1:]:
+        if reports[name]["oracle_envelope_exceedance"]["soft_single_gaussian_thresholds"] != thresholds["soft_single_gaussian_thresholds"]:
+            raise ValueError("paired runs use different soft quality thresholds")
         if reports[name]["oracle_envelope_exceedance"]["hard_thresholds"] != thresholds["hard_thresholds"]:
             raise ValueError("paired runs use different hard quality thresholds")
         if reports[name]["oracle_envelope_exceedance"]["grounding_and_distinctness_thresholds"] != thresholds["grounding_and_distinctness_thresholds"]:
             raise ValueError("paired runs use different grounding/distinctness thresholds")
     hard_thresholds = thresholds["hard_thresholds"]
+    soft_thresholds = thresholds["soft_single_gaussian_thresholds"]
     topology_thresholds = thresholds["single_gaussian_heatmap_topology_thresholds"]
     activity_thresholds = thresholds["activity_thresholds"]
     grounding_thresholds = thresholds["grounding_and_distinctness_thresholds"]
     result["frozen_thresholds"] = {
+        "soft_quality": soft_thresholds,
         "hard_quality": hard_thresholds,
         "single_gaussian_heatmap_topology": topology_thresholds,
         "activity": activity_thresholds,
@@ -350,11 +356,11 @@ def _paired_numeric_summary(
             border_distance = report["localization"]["minimum_image_border_distance_px_per_channel"][channel]
             border_safe = border_distance >= grounding_thresholds["minimum_image_border_distance_px"]
             soft_metrics = soft
-            sliding = soft_metrics["canonical_rms_per_channel"][channel] > hard_thresholds["canonical_rms_max"]
-            wobbling = (
-                soft_metrics["adjacent_plus2_step"]["per_channel"][channel]["maximum"] > hard_thresholds["adjacent_step_max"]
-                or soft_metrics["cyclic_second_difference"]["per_channel"][channel]["maximum"] > hard_thresholds["cyclic_second_difference_max"]
-                or heat["hard_jump_rate_per_channel"][channel] > 0.0
+            sliding, wobbling = soft_coordinate_failure_flags(
+                soft_metrics,
+                channel=channel,
+                soft_thresholds=soft_thresholds,
+                hard_jump_rate=heat["hard_jump_rate_per_channel"][channel],
             )
             width_exceedance_rate = float(np.mean(
                 arrays["rms_width_cells"][:, channel] > topology_thresholds["rms_width_cells_max"]

@@ -5,8 +5,8 @@ This directory defines the repository's curated pre-OCR, pre-descriptor, pre-sli
 ## What the model does
 
 ```text
-frame t ── shared CNN ── soft-argmax ── 10 keypoints ── shared affine ── predicted keypoints at t+1
-frame t+1 ─ shared CNN ─ soft-argmax ── 10 observed keypoints
+source frame t ── shared CNN ── soft-argmax ── 10 keypoints ── shared affine ── predicted paired target
+target frame t+3 source steps ── shared CNN ── soft-argmax ── 10 observed keypoints
 ```
 
 Both frames use the same CNN weights. There is no decoder or image-reconstruction objective. The operator applies one shared 2D affine transform to all keypoints.

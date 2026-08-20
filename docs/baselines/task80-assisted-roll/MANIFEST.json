@@ -1,0 +1,101 @@
+{
+  "schema_version": "task80-assisted-roll-baseline-v1",
+  "status": "assisted_provisional_single_seed",
+  "source": {
+    "repository": "https://github.com/kirubes27/keypoint_learning.git",
+    "base_commit": "788ee14a9fdf8aa396a52507f7aa1d84416def60",
+    "base_tree": "cd641c2fcce5d56dac4a596e48cd9828184956f4",
+    "core_files_sha256": {
+      "keypoint_net/dataset.py": "b27c8b631723585ccc490a8fd2f415fdf96f1487d070778bcb77438f8498dfb0",
+      "keypoint_net/model.py": "90f77da26a38d8eca36db512fee61cc7aaa32837ad32132f83efc70e906b2615",
+      "keypoint_net/train.py": "e394cdb3bdf2140110da8d865e80ca2c327cd2628f3677a86de496002398371e"
+    }
+  },
+  "configuration": {
+    "path": "docs/baselines/task80-assisted-roll/config.json",
+    "size_bytes": 1020,
+    "sha256": "e1fea4fc99c23637f47cb73f904b0f45c330425e15e327ce07a34d59212af9d7"
+  },
+  "checkpoint": {
+    "filename": "best_model.pt",
+    "size_bytes": 2994210,
+    "sha256": "ccb613c87788a229929b1f6ead002d626819e970237d0e0ad5ca75c9318004f3",
+    "epoch": 970,
+    "storage_locator": null,
+    "storage_status": "verified_local_copy_only"
+  },
+  "dataset": {
+    "name": "_tdw_world_z_roll_base_panel_512_v2",
+    "dataset_index_sha256": "719645aee0b092d647cbc29a4cd807d7cd7ca4da1ec2608baacf1c2a12224c6b",
+    "pair_index_relative_path": "indices/pairs_skip3_cyclic.json",
+    "pair_index_sha256": "87f51500a080fa964fced92f6382c5d421d74f707c926686d565cabaf9a39fc3",
+    "storage_locator": null,
+    "storage_status": "verified_local_copy_only",
+    "full_tree_hash_status": "not_available"
+  },
+  "model_contract": {
+    "trainable_parameters": 246678,
+    "num_keypoints": 10,
+    "heatmap_resolution": 64,
+    "padding_mode": "reflect",
+    "operator_type": "shared_affine",
+    "forward_affine_parameters": 6,
+    "inverse_affine_parameters": 6,
+    "inverse_operator_active": true,
+    "action_classifier_active": false
+  },
+  "behavior_fixture": {
+    "object": "engineers_hammer_vray",
+    "source_frame": 0,
+    "target_frame": 3,
+    "source_image_relative_path": "train/engineers_hammer_vray/frames/a/img_0000.png",
+    "source_image_sha256": "4faa9843aad004b6442158ea45dc2ad083f848c478416b8fcb8d62b6458841d2",
+    "target_image_relative_path": "train/engineers_hammer_vray/frames/a/img_0003.png",
+    "target_image_sha256": "0ab13104b1ffb0f6317cdc3ced63eba50c30c730e92961874a5d2d0a2dd1e942",
+    "source_input_tensor_sha256": "58710fefab6fc4fdb1e718926de3a9757656f250f93fc8687b39425e1350ef99",
+    "target_input_tensor_sha256": "3cc401b023c567978b28501971562b7427e7988ac3cb474a785eab17fff7af78",
+    "outputs": {
+      "p_t": {
+        "shape": [1, 20],
+        "sha256": "154d65677834730fd79568d0c4f814838d40caa1366c61e07714746fac284cc4",
+        "values": [-0.11110715568065643, 0.6190412044525146, 0.14282868802547455, 0.61905437707901, -0.11111073940992355, 0.5869972705841064, -0.04763706400990486, -0.047655537724494934, -0.33332952857017517, 0.6190392971038818, -0.07948366552591324, 0.2357815057039261, -0.3015872538089752, 0.6190475821495056, 0.015881793573498726, 0.6190487742424011, 0.00920025072991848, -0.027992112562060356, 0.11082521080970764, 0.6190475225448608]
+      },
+      "p_t1": {
+        "shape": [1, 20],
+        "sha256": "44b6f3c949ed3076ad5ae9462ae2cc4012a9d7a336f6ec39f043fef19d00bbb0",
+        "values": [-0.2063443511724472, 0.5873012542724609, 0.015836352482438087, 0.61904376745224, -0.14285680651664734, 0.5872957706451416, -0.04397224262356758, -0.1391468644142151, -0.3968065679073334, 0.5872846245765686, -0.11111105978488922, 0.2698412239551544, -0.3649333119392395, 0.5873161554336548, -0.19755519926548004, 0.4452967941761017, 0.012146251276135445, -0.028024259954690933, -0.015876272693276405, 0.619047224521637]
+      },
+      "p_hat_t1": {
+        "shape": [1, 20],
+        "sha256": "52b5883ac6e1922d90fd0907b0cc3d203b9a3204a18143be2a6c11615134ae21",
+        "values": [-0.18109259009361267, 0.6033947467803955, 0.06996709853410721, 0.6287941336631775, -0.17777225375175476, 0.5715463757514954, -0.049185510724782944, -0.05287979543209076, -0.4007990062236786, 0.5811769366264343, -0.11007211357355118, 0.225640207529068, -0.3694169521331787, 0.5843585133552551, -0.055542055517435074, 0.6160975098609924, 0.00496869208291173, -0.027654509991407394, 0.03832664713263512, 0.6255878806114197]
+      },
+      "heatmaps_t": {
+        "shape": [1, 10, 64, 64],
+        "sha256": "a8791b799fe461905b7b6ce7e34b27ff9eda3204bd5b556084f0d22129d15bca"
+      },
+      "heatmaps_t1": {
+        "shape": [1, 10, 64, 64],
+        "sha256": "249a485d21175a56e0e76ca9366ef86e14ae92ef0f141aa6d5ae71de969699c6"
+      }
+    },
+    "coordinate_comparison": {
+      "rtol": 0.00001,
+      "atol": 0.000001
+    },
+    "exact_hashes_observed_in": [
+      {"python": "3.12.7", "torch": "2.7.1", "numpy": "1.26.4", "pillow": "10.3.0"},
+      {"python": "3.10.19", "torch": "2.10.0", "torchvision": "0.25.0", "numpy": "2.2.6", "pillow": "12.1.0"}
+    ]
+  },
+  "scientific_scope": {
+    "supported": "source-compatible assisted operator-learning baseline under the exact bound setup",
+    "not_supported": [
+      "stable material attachment",
+      "held-out object generalization",
+      "multi-seed generalization",
+      "scientific superiority of the 64-resolution head",
+      "promotion of OCR-ZNCC, descriptor, sliding, or wobble experiments"
+    ]
+  }
+}

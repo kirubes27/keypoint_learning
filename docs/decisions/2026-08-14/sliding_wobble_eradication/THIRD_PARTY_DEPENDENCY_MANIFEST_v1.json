@@ -1,0 +1,131 @@
+{
+  "schema_version": "third_party_dependency_manifest.v1",
+  "created_date": "2026-08-20",
+  "worktree": "keypoint_sliding_wobble_eradication_20260814",
+  "source_branch": "agent/sliding-wobble-eradication-20260814",
+  "source_head_before_preservation_commit": "c179cf677afe7a8be203ad8fe01203cc1621d1c4",
+  "purpose": "Bind the local third-party dependencies used by the preserved SIFT and ALIKED-LightGlue bridge code without committing the vendored dependency tree.",
+  "preservation_status": {
+    "dependency_inventory_only": true,
+    "scientific_validation_claimed": false,
+    "experiment_success_claimed": false,
+    "promotion_authorized": false,
+    "third_party_tree_selected_for_git": false,
+    "deletion_authorized": false
+  },
+  "excluded_local_tree": {
+    "relative_path": "third_party",
+    "regular_file_count": 944,
+    "logical_size_bytes": 181032259,
+    "symlink_count": 0,
+    "reason_for_exclusion": "The directory contains a reproducible upstream checkout, isolated Python packages, model checkpoints, and a generated Matplotlib cache. These are local runtime dependencies rather than repository source files.",
+    "interpretation_limit": "Exclusion from Git does not imply that these files are disposable. This manifest does not authorize moving or deleting them."
+  },
+  "expected_local_layout": [
+    {
+      "relative_path": "third_party/LightGlue",
+      "purpose": "Clean upstream LightGlue source checkout",
+      "regular_file_count_including_git_metadata": 64,
+      "logical_size_bytes_including_git_metadata": 22015686
+    },
+    {
+      "relative_path": "third_party/python_pkgs",
+      "purpose": "Isolated Kornia and OpenCV Python distributions",
+      "regular_file_count": 877,
+      "logical_size_bytes": 108499475
+    },
+    {
+      "relative_path": "third_party/model_cache/hub/checkpoints",
+      "purpose": "Exact ALIKED and LightGlue checkpoint files",
+      "regular_file_count": 2,
+      "logical_size_bytes": 50370918
+    },
+    {
+      "relative_path": "third_party/matplotlib_cache",
+      "purpose": "Generated local Matplotlib cache; not a scientific dependency",
+      "regular_file_count": 1,
+      "logical_size_bytes": 146180
+    }
+  ],
+  "upstream_source": {
+    "name": "LightGlue",
+    "repository_url": "https://github.com/cvg/LightGlue.git",
+    "commit": "eb42fee2d71449efb0aa5c10549752b5d75384d8",
+    "checkout_clean": true,
+    "bound_files": [
+      {
+        "relative_path": "third_party/LightGlue/LICENSE",
+        "sha256": "0e6031ed3e62dc91dc8b1c8f240abd200b1083f60773362e64e339fe01d1bf18"
+      },
+      {
+        "relative_path": "third_party/LightGlue/lightglue/aliked.py",
+        "sha256": "60b24397c52e8a08d838828967cd03f5d6066c1f7c3c433805bf11dcb0d5228e"
+      },
+      {
+        "relative_path": "third_party/LightGlue/lightglue/lightglue.py",
+        "sha256": "dcb75b9cad1985c5e7a537c512d4318d47fbcc99df75b39a513de60e027c039f"
+      }
+    ]
+  },
+  "model_checkpoints": [
+    {
+      "role": "ALIKED detector",
+      "model_name": "aliked-n16",
+      "relative_path": "third_party/model_cache/hub/checkpoints/aliked-n16.pth",
+      "size_bytes": 2738091,
+      "sha256": "5be8704840ed662d9d8c561bf7279c222092674e7eb05fd0feab94899e9d82f2",
+      "upstream_url": "https://github.com/Shiaoming/ALIKED/raw/main/models/aliked-n16.pth"
+    },
+    {
+      "role": "LightGlue matcher for ALIKED descriptors",
+      "model_name": "aliked_lightglue_v0-1_arxiv",
+      "relative_path": "third_party/model_cache/hub/checkpoints/aliked_lightglue_v0-1_arxiv.pth",
+      "size_bytes": 47632827,
+      "sha256": "d975e965b105311a6143194852297dff4f02aea5cc2e10cecfed966ca0e22503",
+      "upstream_url": "https://github.com/cvg/LightGlue/releases/download/v0.1_arxiv/aliked_lightglue_v0-1_arxiv.pth"
+    }
+  ],
+  "runtime_environment_observed": {
+    "python": "3.12.7",
+    "numpy": "1.26.4",
+    "torch": "2.7.1",
+    "opencv_runtime": "4.12.0",
+    "kornia_runtime": "0.6.12",
+    "interpretation": "Observed local versions used for the focused preservation tests; this is an environment binding, not a claim that every version is minimal or uniquely required."
+  },
+  "isolated_python_distributions": [
+    {
+      "distribution": "kornia",
+      "version": "0.6.12",
+      "isolated_target": "third_party/python_pkgs",
+      "metadata_relative_path": "third_party/python_pkgs/kornia-0.6.12.dist-info/METADATA",
+      "metadata_sha256": "dd946ab79cb54c5a5c0fe770cf9dc93aa234c95b831eb9528f1fe23c0ffe420e",
+      "record_relative_path": "third_party/python_pkgs/kornia-0.6.12.dist-info/RECORD",
+      "record_sha256": "c99196edba2c9fce54624d4325e8280ad1f2ee872a33b5a033e78f7d9bbee8a6",
+      "upstream_release_url": "https://pypi.org/project/kornia/0.6.12/"
+    },
+    {
+      "distribution": "opencv-python-headless",
+      "version": "4.12.0.88",
+      "runtime_module_version": "4.12.0",
+      "isolated_target": "third_party/python_pkgs",
+      "metadata_relative_path": "third_party/python_pkgs/opencv_python_headless-4.12.0.88.dist-info/METADATA",
+      "metadata_sha256": "d4a32c2de48a90b2171be532b443309cadaa6fe001fdbeb1429293df92f08d38",
+      "record_relative_path": "third_party/python_pkgs/opencv_python_headless-4.12.0.88.dist-info/RECORD",
+      "record_sha256": "8623be4fe8d311032c3a3e6d05445352c1d550daf16e7be305554ee12a523d0d",
+      "upstream_release_url": "https://pypi.org/project/opencv-python-headless/4.12.0.88/"
+    }
+  ],
+  "focused_test_receipt": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=third_party/python_pkgs python -m pytest -p no:cacheprovider -q tests/test_sift_bridge.py tests/test_aliked_lightglue_bridge.py",
+    "result": "13 passed in 0.71s",
+    "test_scope": "Focused unit tests for the preserved SIFT and ALIKED-LightGlue bridge modules only.",
+    "scientific_interpretation": "Passing these tests checks bounded software behavior. It does not establish material attachment, eliminate sliding or wobble, validate a full experimental run, or authorize promotion."
+  },
+  "reconstruction_requirements": [
+    "Clone https://github.com/cvg/LightGlue.git into third_party/LightGlue and check out commit eb42fee2d71449efb0aa5c10549752b5d75384d8.",
+    "Install Kornia 0.6.12 and opencv-python-headless 4.12.0.88 into third_party/python_pkgs, then verify the recorded METADATA and RECORD hashes.",
+    "Place the two checkpoint files at their recorded third_party/model_cache/hub/checkpoints paths and verify both size and SHA-256 before inference.",
+    "Bind NumPy, PyTorch, and Python to the observed versions or revalidate compatibility explicitly before claiming reproduction."
+  ]
+}

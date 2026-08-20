@@ -204,8 +204,14 @@ heatmap and a one-cell Gaussian centred at its own detached predicted mean.
 
 Synthetic semantic tests passed: the loss broadened spikes, concentrated
 uniform maps, handled separated modes, was translation invariant and remained
-finite. A 200-update smoke also produced healthy heatmaps and usable
-counterfactual gradients.
+finite. Note the scope of that invariance: the loss VALUE is unchanged when a
+map and its (detached) centre translate together, but within a single gradient
+step the detached centre is frozen, so the transient asymmetric mass
+redistribution required to move the expectation is penalized. Value-level
+translation invariance therefore did not imply gradient-level
+non-interference — which is exactly the failure the R1 audit later measured.
+A 200-update smoke also produced healthy heatmaps and usable counterfactual
+gradients.
 
 In the authoritative three-seed, 5,000-update R1:
 
@@ -305,9 +311,29 @@ Crucially:
 - no saturation or collapsed-gradient channel was observed from epoch 200
   through the plateau.
 
+**Two-phenotype structure of the failing channels.** The per-channel shape
+probes at the best checkpoint show that the four failing channels split into
+two distinct regimes rather than one:
+
+| Channels | Median error | Max probability | Effective support (cells) | Gradient ratio |
+|---|---:|---:|---:|---:|
+| 1, 3 | 2.18 / 1.81 | 0.88 / 0.95 | 1.7 / 1.3 | 0.18 / 0.19 |
+| 7, 8 | 1.18 / 1.21 | 0.03 / 0.18 | 217.8 / 38.3 | 1.29 / 3.25 |
+
+Channels 1 and 3 are compact-but-wrong: nearly concentrated maps below the
+frozen `>=0.99` saturation threshold, holding the two lowest gradient ratios
+in the run — a weakened form of the tiny-regime concentrated-wrong-peak state
+rather than its absence. Channels 7 and 8 are diffuse with healthy gradients:
+their error is consistent with off-peak probability mass dragging the global
+expectation. Channels 0, 4 and 5 pass despite very large support (176–401
+cells), showing diffuse maps are tolerable when the mass is symmetric about
+the target. Any candidate replacement instrument should therefore be assessed
+against both phenotypes separately, not only against aggregate error.
+
 **Conclusion:** representative data diversity escapes the tiny-regime
-saturation trap. The unchanged instrument nevertheless remains insufficiently
-accurate, and the remaining failure cannot be attributed primarily to vanished
+saturation trap as formally defined. The unchanged instrument nevertheless
+remains insufficiently accurate; the residual failure comprises at least two
+distinct heatmap phenotypes, and cannot be attributed primarily to vanished
 soft-argmax gradients.
 
 Report: `docs/REPRESENTATIVE_COORDINATE_PILOT_RESULTS_2026-07-05.md`.
@@ -365,6 +391,18 @@ possibilities:
    coordinates. Some FPS targets lie on long edges or weakly textured regions.
    Dense supervision proves subtle information is sufficient for memorization,
    but not that coordinate-only learning can generalize robustly there.
+   Direct inspection of the target image content
+   (`keypoint_net/diagnostics/check_failed_targets.py`; overlay and patch
+   contact sheet in `outputs/target_content_analysis/`) supports a graded
+   version of this cause: target 3 lies on the smooth hammer-head face against
+   a nearly iso-luminant background, target 1 on the rounded, near-symmetric
+   handle end, and targets 6/9 on long straight head edges — while robust
+   targets sit on corners, junctions and tapering structures. Difficulty
+   ordering is stable across every arm ever run: target 3 was the worst or
+   near-worst channel under tiny coordinate training, full-data coordinate
+   training, dense heatmap training (1.55–1.72 cell64 in the Phase-1 runs) and
+   the representative pilot. Local content thus predicts WHICH channels fail,
+   even though (per the dense control) it does not make them unlearnable.
 3. **Shared-representation interference.** Ten heads share one encoder.
    Improvements for one channel can alter features needed by another. This has
    not been isolated with independent heads/frozen features or per-channel
@@ -389,6 +427,17 @@ reason” would exceed the data.
 6. Aggregate medians were repeatedly tempting but misleading: good medians can
    coexist with several unusable channels. Per-channel and tail metrics are
    mandatory.
+7. (Review chain.) The prediction-centred JS design originated in external
+   review as a ground-truth-free adaptation of DSNT's distribution
+   regularizer, and was ratified without analyzing its gradient dynamics under
+   translation; the stop-gradient added to prevent one pathology created the
+   anti-translation force. The failure was a design error upstream of
+   implementation.
+8. (Review chain.) The target-content ("observability") hypothesis was first
+   retracted on the basis of the dense arm's healthy GRADIENTS rather than its
+   per-target LOCALIZATION, then over-restored as "targets are inherently
+   unlearnable" before the dense control refuted that too. The surviving,
+   evidence-consistent form is graded difficulty (Section 6, cause 2).
 
 These are interpretation/design errors, not evidence of fabricated results.
 They are recorded because an expert reviewer should not have to reconstruct
@@ -412,7 +461,19 @@ the test split untouched. Before implementation, an expert should review:
    coordinate regression with global spatial context, an explicitly
    position-aware heatmap architecture, or independent/per-channel capacity;
 4. whether a structural heatmap parameterization that guarantees a valid
-   distribution is preferable to another penalty on an unconstrained map.
+   distribution is preferable to another penalty on an unconstrained map;
+5. **a Stage-B transfer constraint on candidates:** the final instrument must
+   be trainable by coordinate-level, ground-truth-free gradients, because the
+   Stage-B losses (operator fitting, grounding) supply only those. Instruments
+   that pass the supervised gate only WITH dense target-heatmap training or
+   ground-truth-centred regularization cannot carry that training signal into
+   Stage B and are eligible as capacity references only — unless the project
+   explicitly adopts a ground-truth-free dense signal (e.g., reconstruction),
+   which changes the scientific claim and must be declared as such;
+6. per-arm reporting of BOTH failure phenotypes from the representative pilot
+   (compact-but-wrong vs diffuse-drag; Section 3, Phase 8), so the comparison
+   attributes WHICH phenotype each instrument fixes rather than only ranking
+   aggregate error.
 
 The success criterion must remain semantic: accurate, stable coordinates on
 held-out validation frames, with every channel reported. File validity,
@@ -439,6 +500,11 @@ the project resume the grounding-versus-operator-loss comparison.
   `docs/REPRESENTATIVE_COORDINATE_PILOT_RESULTS_2026-07-05.md`
 - Representative pilot Mac archive:
   `/Users/kirubeso.r/Documents/PhD/cluster_downloads/stage_r2_representative_pilot_20260705_210253/`
+- Target image-content analysis (script + overlay + patch contact sheet):
+  `keypoint_net/diagnostics/check_failed_targets.py`,
+  `keypoint_net/diagnostics/outputs/target_content_analysis/`
+- Project-level conceptual explainer (hypothesis, pipeline, literature,
+  readout ladder): `/Users/kirubeso.r/Documents/PhD/docs/PROJECT_EXPLAINER_2026-07-05.md`
 
 All reported uncertainty is descriptive. The experiments concern one hammer
 object and correlated frames from one cyclic orbit. Optimization seed is the

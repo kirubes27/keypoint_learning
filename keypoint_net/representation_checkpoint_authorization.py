@@ -164,8 +164,8 @@ _VERIFIED_LOADED_CHECKPOINT_CAPABILITY = object()
 _VERIFIED_EVALUATOR_CAPABILITY = object()
 
 _RUN_ROOT = (
-    "/Users/kirubeso.r/Documents/PhD/cluster_downloads/"
-    "hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared"
+    "/Users/kirubeso.r/Documents/PhD/artifacts/experiments/"
+    "2026-06-full360-shared-affine/cluster-results/keypoint_net/runs_hammer_full360_shared"
 )
 _DATASET_ROOT = (
     "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/"

@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image, ImageDraw
 
-DS = ("/Users/kirubeso.r/Documents/PhD/tdw_phase_a_starter /"
+DS = ("/Users/kirubeso.r/Documents/PhD/data/active/"
       "_tdw_world_z_roll_base_panel_512_v2/train/engineers_hammer_vray")
 OUT = ("/private/tmp/claude-501/-Users-kirubeso-r-Documents-PhD/"
        "7563635a-4a3d-4d83-a4d9-383617a7c7ba/scratchpad")

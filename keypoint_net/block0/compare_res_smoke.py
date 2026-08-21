@@ -34,7 +34,7 @@ sys.path.insert(0, str(HERE.parent))
 from model import KeypointExtractor  # noqa: E402
 
 RUNS_DIR = HERE.parent / "runs_res_smoke"
-FRAMES = Path("/Users/kirubeso.r/Documents/PhD/tdw_phase_a_starter /"
+FRAMES = Path("/Users/kirubeso.r/Documents/PhD/data/active/"
               "_tdw_world_z_roll_base_panel_512_v2/train/"
               "engineers_hammer_vray/frames/a")
 OUT = HERE / "outputs"

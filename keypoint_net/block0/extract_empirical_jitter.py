@@ -31,8 +31,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))          # keypoint_net/
 from model import KeypointExtractor          # noqa: E402
 
-RUN = Path("/Users/kirubeso.r/Documents/PhD/cluster_downloads/"
-           "hammer_full360_shared_complete/keypoint_net/"
+RUN = Path("/Users/kirubeso.r/Documents/PhD/artifacts/experiments/"
+           "2026-06-full360-shared-affine/cluster-results/keypoint_net/"
            "runs_hammer_full360_shared/"
            "phase_a_engineers_hammer_vray_20260606_151123_941396_seed42_"
            "pid3289780")

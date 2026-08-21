@@ -179,6 +179,22 @@ _EXPECTED_DATASET_BINDING = {
     ),
 }
 
+_MIGRATED_PREOPERATOR_ROOT = Path(
+    "/Users/kirubeso.r/Documents/PhD/code/worktrees/active/preoperator-gates"
+)
+_LEGACY_PREOPERATOR_ROOT = Path(
+    "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates"
+)
+
+
+def _resolve_migrated_operational_path(path: Path) -> Path:
+    """Resolve one retired live prefix without rewriting frozen provenance."""
+    try:
+        relative = path.relative_to(_LEGACY_PREOPERATOR_ROOT)
+    except ValueError:
+        return path
+    return _MIGRATED_PREOPERATOR_ROOT / relative
+
 _EXPECTED_DEFINITION_IDENTICAL_FIELDS = {
     "operator": [
         {
@@ -1518,7 +1534,7 @@ def _require_saved_checkpoint_replay_geometry_authorization(
             f"hammer roll geometry evidence {index} path is invalid",
         )
         evidence_resolved, evidence_data = _regular_file_bytes(
-            Path(evidence_path_value),
+            _resolve_migrated_operational_path(Path(evidence_path_value)),
             context=f"hammer roll geometry evidence {index}",
         )
         try:

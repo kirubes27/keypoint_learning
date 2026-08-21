@@ -36,7 +36,7 @@ RUN = Path("/Users/kirubeso.r/Documents/PhD/cluster_downloads/"
            "runs_hammer_full360_shared/"
            "phase_a_engineers_hammer_vray_20260606_151123_941396_seed42_"
            "pid3289780")
-FRAMES = Path("/Users/kirubeso.r/Documents/PhD/tdw_phase_a_starter /"
+FRAMES = Path("/Users/kirubeso.r/Documents/PhD/data/active/"
               "_tdw_world_z_roll_base_panel_512_v2/train/"
               "engineers_hammer_vray/frames/a")
 OUT = HERE / "outputs"

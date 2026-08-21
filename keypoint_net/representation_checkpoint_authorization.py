@@ -168,7 +168,7 @@ _RUN_ROOT = (
     "hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared"
 )
 _DATASET_ROOT = (
-    "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/"
+    "/Users/kirubeso.r/Documents/PhD/code/worktrees/active/preoperator-gates/"
     "_tdw_world_z_roll_base_panel_512_v2"
 )
 

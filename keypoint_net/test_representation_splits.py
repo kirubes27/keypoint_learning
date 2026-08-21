@@ -40,7 +40,7 @@ from keypoint_net.representation_splits import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FUTURE_ROOT = Path("/Users/kirubeso.r/Documents/PhD/tdw_phase_a_starter ")
+FUTURE_ROOT = Path("/Users/kirubeso.r/Documents/PhD/data/active")
 DATASET_ROOTS = {
     "roll": REPO_ROOT / "_tdw_world_z_roll_base_panel_512_v2",
     "yaw": FUTURE_ROOT / "_tdw_world_y_yaw_arc60_step1_base_panel_512_v1",

@@ -2,7 +2,7 @@
 # Run best config (ent=0.05, act=1.0, smooth=0.001) on all 6 remaining objects
 # Best config from sweep: phase_a_engineers_hammer_vray_20260228_031715_807134_seed42_pid16696
 
-DATA_ROOT="/Users/kirubeso.r/Documents/PhD/tdw_phase_a_starter /phase_a_yaw_only_10obj_yaw2deg_512_nodof_dist0.20_yaw60_cam0.5_look0.1"
+DATA_ROOT="/Users/kirubeso.r/Documents/PhD/data/reference/phase_a_yaw_only_10obj_yaw2deg_512_nodof_dist0.20_yaw60_cam0.5_look0.1"
 
 OBJECTS=(
     "ball_peen_hammer"

@@ -32,7 +32,7 @@ FABLE_HELPER_SHA256 = (
     "5a77df5262cb45375b0239c2b788d47397ccc569cbda2e31a3a478213193c339"
 )
 PROTECTED_PATH = (
-    "/Users/kirubeso.r/Documents/PhD/keypoint_preoperator_gates/docs/decisions/"
+    "/Users/kirubeso.r/Documents/PhD/code/worktrees/active/preoperator-gates/docs/decisions/"
     "2026-07-26/representation_oracle_calibration/NUMERIC_CALIBRATION.json"
 )
 FABLE_PROMPT_PREFIX = (

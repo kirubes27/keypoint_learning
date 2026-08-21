@@ -268,8 +268,8 @@ _EXPECTED_DEFINITION_IDENTICAL_FIELDS = {
 }
 
 _RUN_ROOT = (
-    "/Users/kirubeso.r/Documents/PhD/cluster_downloads/"
-    "hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared"
+    "/Users/kirubeso.r/Documents/PhD/artifacts/experiments/"
+    "2026-06-full360-shared-affine/cluster-results/keypoint_net/runs_hammer_full360_shared"
 )
 
 _EXPECTED_FIXTURES = (

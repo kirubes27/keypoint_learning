@@ -13,8 +13,8 @@ from dxutils import OUTPUTS, draw_keypoints, frame_files, to_px
 MODELS = ("task80", "smoke64", "smoke128")
 FRAME_INDICES = (0, 44, 88, 132, 176)
 REFERENCE_TASK80 = Path(
-    "/Users/kirubeso.r/Documents/PhD/cluster_downloads/"
-    "hammer_full360_shared_complete/keypoint_net/runs_hammer_full360_shared/"
+    "/Users/kirubeso.r/Documents/PhD/artifacts/experiments/"
+    "2026-06-full360-shared-affine/cluster-results/keypoint_net/runs_hammer_full360_shared/"
     "phase_a_engineers_hammer_vray_20260606_151123_941396_seed42_pid3289780/"
     "visualizations/sequence.png"
 )

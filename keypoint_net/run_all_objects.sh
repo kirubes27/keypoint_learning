@@ -3,6 +3,7 @@
 # Best config from sweep: phase_a_engineers_hammer_vray_20260228_031715_807134_seed42_pid16696
 
 DATA_ROOT="/Users/kirubeso.r/Documents/PhD/data/reference/phase_a_yaw_only_10obj_yaw2deg_512_nodof_dist0.20_yaw60_cam0.5_look0.1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 OBJECTS=(
     "ball_peen_hammer"
@@ -24,7 +25,7 @@ for OBJ in "${OBJECTS[@]}"; do
     echo "=========================================="
     echo ""
     
-    python /Users/kirubeso.r/Documents/PhD/keypoint_net/train.py \
+    python "$SCRIPT_DIR/train.py" \
         --data_root "$DATA_ROOT" \
         --object "$OBJ" \
         --epochs 1000 \

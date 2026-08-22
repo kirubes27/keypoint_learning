@@ -22,6 +22,7 @@ from certified_witness_capability import (
     EXPECTED_WITNESSES,
     EXPECTED_WITNESS_IDS,
     CapabilityContractError,
+    bilinear_planted_logits,
     dense_heatmap_cross_entropy,
     evaluate_predictions,
     evaluation_score,
@@ -32,7 +33,7 @@ from certified_witness_capability import (
     require,
     sha256_file,
 )
-from model import KeypointExtractor
+from model import KeypointExtractor, spatial_softmax
 
 
 MEAN = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(3, 1, 1)
@@ -197,13 +198,24 @@ def _load_bound_inputs(
         reverse_hashes[int(item["frame"])] = _sha256_bytes(payload)
     require(forward_hashes == reverse_hashes, "forward/reverse loader replay differs")
 
-    planted_prediction = nearest_r64_grid_prediction(target_px[:frame_limit])
+    planted_logits = bilinear_planted_logits(target_normalized[:frame_limit])
+    planted_prediction = normalized_to_pixel(spatial_softmax(planted_logits, temperature=1.0).numpy())
     planted_report, _ = evaluate_predictions(
         planted_prediction,
         target_px[:frame_limit],
         masks,
     )
-    require(planted_report["strict_capability_pass"] is True, "planted-grid evaluator falsifier failed")
+    require(planted_report["strict_capability_pass"] is True, "planted-softargmax evaluator falsifier failed")
+    hard_grid_prediction = nearest_r64_grid_prediction(target_px[:frame_limit])
+    hard_grid_report, _ = evaluate_predictions(
+        hard_grid_prediction,
+        target_px[:frame_limit],
+        masks,
+    )
+    hard_grid_violations = hard_grid_report["violations"]
+    require(hard_grid_violations["outside_half_cell_count"] == 0, "nearest-grid localization geometry failed")
+    require(hard_grid_violations["wrong_identity_count"] == 0, "nearest-grid identity geometry failed")
+    require(hard_grid_violations["collapsed_pair_count"] == 0, "nearest-grid distinctness geometry failed")
     controls = {
         "manifest_sha256_verified": True,
         "tracks_sha256_verified": True,
@@ -212,7 +224,11 @@ def _load_bound_inputs(
         "all_targets_physical_valid": True,
         "all_targets_on_object": True,
         "forward_reverse_loader_replay_exact": True,
-        "planted_grid_evaluator_control": planted_report,
+        "planted_bilinear_logit_softargmax_evaluator_control": planted_report,
+        "nearest_hard_grid_diagnostic": {
+            "report": hard_grid_report,
+            "interpretation": "hard cells pass localization, identity, and distinctness; off-mask cells are allowed only in this diagnostic because the trained readout is continuous soft-argmax",
+        },
     }
     return manifest, dataset, target_px[:frame_limit], masks, controls
 

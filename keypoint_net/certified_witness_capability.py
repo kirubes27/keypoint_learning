@@ -266,9 +266,46 @@ def nearest_r64_grid_prediction(target_px: np.ndarray) -> np.ndarray:
     return normalized_to_pixel(grid_normalized)
 
 
+def bilinear_planted_logits(target_normalized: np.ndarray) -> torch.Tensor:
+    """Create logits whose r64 softmax expectation is the continuous target.
+
+    Probability mass is placed on the four enclosing grid cells with bilinear
+    weights. ``-inf`` elsewhere makes the control exact under spatial softmax
+    without pretending that a hard argmax cell can remain on a thin silhouette.
+    """
+    target = np.asarray(target_normalized, dtype=np.float64)
+    require(target.ndim == 3 and target.shape[1:] == (EXPECTED_WITNESSES, 2), "unexpected planted target shape")
+    require(bool(np.isfinite(target).all()), "planted target contains non-finite values")
+    require(float(target.min()) >= -1.0 and float(target.max()) <= 1.0, "planted target outside normalized image")
+    cell = (target + 1.0) * 0.5 * (FEATURE_SIZE - 1)
+    logits = np.full(
+        (target.shape[0], EXPECTED_WITNESSES, FEATURE_SIZE, FEATURE_SIZE),
+        -np.inf,
+        dtype=np.float64,
+    )
+    for frame in range(target.shape[0]):
+        for witness in range(EXPECTED_WITNESSES):
+            x_value, y_value = cell[frame, witness]
+            x0 = int(np.floor(x_value))
+            y0 = int(np.floor(y_value))
+            x1 = min(x0 + 1, FEATURE_SIZE - 1)
+            y1 = min(y0 + 1, FEATURE_SIZE - 1)
+            x_weights: dict[int, float] = {}
+            y_weights: dict[int, float] = {}
+            x_weights[x0] = x_weights.get(x0, 0.0) + (1.0 - (x_value - x0))
+            x_weights[x1] = x_weights.get(x1, 0.0) + (x_value - x0)
+            y_weights[y0] = y_weights.get(y0, 0.0) + (1.0 - (y_value - y0))
+            y_weights[y1] = y_weights.get(y1, 0.0) + (y_value - y0)
+            for x_index, x_weight in x_weights.items():
+                for y_index, y_weight in y_weights.items():
+                    weight = x_weight * y_weight
+                    if weight > 0.0:
+                        logits[frame, witness, y_index, x_index] = np.log(weight)
+    return torch.from_numpy(logits)
+
+
 def torch_checkpoint_bytes(payload: dict[str, Any]) -> bytes:
     """Serialize a checkpoint deterministically enough for an immediate receipt."""
     buffer = io.BytesIO()
     torch.save(payload, buffer)
     return buffer.getvalue()
-

@@ -9,6 +9,7 @@ from keypoint_net.certified_witness_capability import (
     CELL_SPACING_PX,
     EXPECTED_WITNESSES,
     HALF_CELL_DIAGONAL_PX,
+    bilinear_planted_logits,
     dense_heatmap_cross_entropy,
     evaluate_predictions,
     evaluation_score,
@@ -18,6 +19,7 @@ from keypoint_net.certified_witness_capability import (
     normalized_to_pixel,
     pixel_to_normalized,
 )
+from keypoint_net.model import spatial_softmax
 
 
 def _targets(frames: int = 3) -> np.ndarray:
@@ -70,6 +72,19 @@ def test_planted_grid_prediction_passes_strict_contract() -> None:
     }
 
 
+def test_bilinear_planted_logits_recover_continuous_targets() -> None:
+    target_px = _targets(3) + np.asarray([0.37, -0.42])
+    target_normalized = pixel_to_normalized(target_px)
+    logits = bilinear_planted_logits(target_normalized)
+    observed = spatial_softmax(logits, temperature=1.0).numpy()
+    # The production spatial_softmax constructs its coordinate grid in
+    # float32 even when logits are float64.
+    np.testing.assert_allclose(observed, target_normalized, rtol=0.0, atol=1e-7)
+    masks = np.ones((3, 512, 512), dtype=bool)
+    report, _ = evaluate_predictions(normalized_to_pixel(observed), target_px, masks)
+    assert report["strict_capability_pass"] is True
+
+
 def test_identity_swap_and_collision_fail_closed() -> None:
     target = _targets(2)
     masks = np.ones((2, 512, 512), dtype=bool)
@@ -104,4 +119,3 @@ def test_model_state_hash_changes_after_optimizer_step() -> None:
     loss.backward()
     optimizer.step()
     assert model_state_sha256(model) != before
-

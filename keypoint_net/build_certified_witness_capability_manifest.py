@@ -116,12 +116,23 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         require(np.array_equal(frame_index, np.arange(EXPECTED_FRAMES)), "frame index differs")
         location = {int(value): index for index, value in enumerate(candidate_id)}
         columns = [location[value] for value in EXPECTED_WITNESS_IDS]
-        target_px = np.asarray(arrays["physical_target_coordinate_px"][:, columns], dtype=np.float64)
+        # The source archive is edge-indexed: source_coordinate_px[f] belongs to
+        # RGB frame f, while physical_target_coordinate_px[f] belongs to frame
+        # f+1 modulo the cyclic orbit. Capability targets must align with the
+        # input RGB frame, so use source_coordinate_px and prove the shift.
+        target_px = np.asarray(arrays["source_coordinate_px"][:, columns], dtype=np.float64)
+        next_frame_target_px = np.asarray(
+            arrays["physical_target_coordinate_px"][:, columns], dtype=np.float64
+        )
         physical_valid = np.asarray(arrays["physical_candidate_valid"][:, columns], dtype=bool)
     require(target_px.shape == (EXPECTED_FRAMES, EXPECTED_WITNESSES, 2), "target shape differs")
     require(bool(np.isfinite(target_px).all()), "target contains non-finite values")
     require(bool(physical_valid.all()), "a certified physical target is invalid")
     require(float(target_px.min()) >= 0.0 and float(target_px.max()) <= 511.0, "target is outside image")
+    edge_cycle_alignment_error_px = float(
+        np.max(np.abs(target_px - np.roll(next_frame_target_px, shift=1, axis=0)))
+    )
+    require(edge_cycle_alignment_error_px <= 1e-9, "source/next-frame edge alignment differs")
 
     frame_rows = source_feature_manifest["corpus"]["frames"]
     require(len(frame_rows) == EXPECTED_FRAMES, "source feature manifest frame count differs")
@@ -201,6 +212,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "witness_ids": list(EXPECTED_WITNESS_IDS),
             "frame_count": EXPECTED_FRAMES,
             "minimum_physical_pair_distance_px": minimum_pair_distance,
+            "edge_index_semantics": "source_coordinate_px[f] aligns with RGB frame f; physical_target_coordinate_px[f] aligns with RGB frame (f+1) mod 180",
+            "source_equals_previous_edge_target_max_abs_error_px": edge_cycle_alignment_error_px,
             "all_targets_physical_valid": bool(physical_valid.all()),
             "all_targets_on_object_at_nearest_pixel": bool(target_on_object.all()),
         },
@@ -276,4 +289,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -6,6 +6,7 @@ import argparse
 import copy
 import hashlib
 import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -157,6 +158,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     require(not args.output_dir.exists(), "output directory already exists; use a fresh diagnostic path")
     require(args.frame_limit == EXPECTED_FRAMES, "diagnostic requires all 180 frames")
     require(args.batch_size >= 2, "BatchNorm diagnostic batch size must be at least two")
+    repository_head = subprocess.run(
+        ["git", "-C", str(args.repo_root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    require(repository_head == args.expected_repo_head, "repository HEAD differs from command lock")
     require(sha256_file(args.checkpoint) == args.expected_checkpoint_sha256, "checkpoint SHA-256 differs")
     require(sha256_file(args.reference_result) == args.expected_reference_result_sha256, "reference result SHA-256 differs")
     require(
@@ -306,6 +314,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     config = {
         "schema_version": "certified_witness_bn_state_diagnostic_config.v1",
         "repo_root": str(args.repo_root.resolve()),
+        "diagnostic_implementation_head": repository_head,
         "manifest": file_record(args.manifest),
         "tracks": file_record(args.tracks),
         "checkpoint": file_record(args.checkpoint),
@@ -335,6 +344,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, required=True)
+    parser.add_argument("--expected-repo-head", required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--tracks", type=Path, required=True)
     parser.add_argument("--expected-manifest-sha256", required=True)

@@ -6,6 +6,7 @@ import argparse
 import csv
 import hashlib
 import json
+import platform
 import random
 import shutil
 import time
@@ -14,7 +15,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, __version__ as pillow_version
 from torch.utils.data import DataLoader, Dataset
 
 from certified_witness_capability import (
@@ -384,6 +385,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "weight_decay": 1e-5,
         "augmentation": "none",
         "preservation_loss_or_intervention": "none",
+        "runtime": {
+            "python": platform.python_version(),
+            "torch": torch.__version__,
+            "numpy": np.__version__,
+            "pillow": pillow_version,
+            "cuda_runtime": torch.version.cuda,
+            "cuda_available": torch.cuda.is_available(),
+            "cuda_device_name": (
+                torch.cuda.get_device_name(device) if device.type == "cuda" else None
+            ),
+        },
     }
     (args.output_dir / "config.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
     (args.output_dir / "semantic_controls.json").write_text(json.dumps(controls, indent=2, sort_keys=True) + "\n")

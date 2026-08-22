@@ -188,6 +188,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
     implementation_files = (
         "keypoint_net/model.py",
+        "keypoint_net/descriptor_attachment.py",
         "keypoint_net/certified_witness_capability.py",
         "keypoint_net/build_certified_witness_capability_manifest.py",
         "keypoint_net/run_certified_witness_capability.py",

@@ -13,6 +13,10 @@ from keypoint_net.evaluate_material_transport_witness_distribution_replay import
     hard_centered_local_readout,
     transport_distribution,
 )
+from keypoint_net.evaluate_material_transport_local_motion_replay import (
+    condition_probability,
+    radius_column_mask,
+)
 
 from keypoint_net.material_transport_free_logits import (
     MaterialTransportConfig,
@@ -216,6 +220,29 @@ class MaterialTransportFreeLogitsTest(unittest.TestCase):
         transported = transport_distribution(source, conditional, candidate_index)
         readout = hard_centered_local_readout(transported)
         np.testing.assert_allclose(readout["coordinate_px"], coordinate, atol=1.0e-10)
+
+    def test_radius_two_conditioning_retains_exactly_twenty_five_columns(self) -> None:
+        offsets = np.asarray(
+            [(dx, dy) for dy in range(-4, 5) for dx in range(-4, 5)],
+            dtype=np.int64,
+        )
+        keep = radius_column_mask(offsets)
+        self.assertEqual(int(np.sum(keep)), 25)
+        self.assertTrue(bool(keep[40]))
+        self.assertEqual(np.max(np.abs(offsets[keep])), 2)
+
+    def test_radius_two_conditioning_is_candidate_order_invariant(self) -> None:
+        offsets = np.asarray(
+            [(dx, dy) for dy in range(-4, 5) for dx in range(-4, 5)],
+            dtype=np.int64,
+        )
+        keep = radius_column_mask(offsets)
+        generator = np.random.default_rng(42)
+        probability = generator.random((7, 81), dtype=np.float64)
+        probability /= probability.sum(axis=1, keepdims=True)
+        forward = condition_probability(probability, keep)
+        reversed_result = condition_probability(probability[:, ::-1], keep[::-1])[:, ::-1]
+        np.testing.assert_allclose(forward, reversed_result, atol=1.0e-15, rtol=0.0)
 
 
 if __name__ == "__main__":

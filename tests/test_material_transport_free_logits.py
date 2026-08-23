@@ -17,6 +17,10 @@ from keypoint_net.evaluate_material_transport_local_motion_replay import (
     condition_probability,
     radius_column_mask,
 )
+from keypoint_net.evaluate_material_transport_continuous_query import (
+    continuous_rgb_match,
+    decode_continuous_score_map,
+)
 
 from keypoint_net.material_transport_free_logits import (
     MaterialTransportConfig,
@@ -29,6 +33,7 @@ from keypoint_net.material_transport_free_logits import (
     sparse_transport,
     weighted_site_loss,
 )
+from keypoint_net.rgb_material_observability import RGBObservabilityConfig
 
 
 class MaterialTransportFreeLogitsTest(unittest.TestCase):
@@ -243,6 +248,48 @@ class MaterialTransportFreeLogitsTest(unittest.TestCase):
         forward = condition_probability(probability, keep)
         reversed_result = condition_probability(probability[:, ::-1], keep[::-1])[:, ::-1]
         np.testing.assert_allclose(forward, reversed_result, atol=1.0e-15, rtol=0.0)
+
+    def test_continuous_local_mode_ignores_distant_duplicate_and_order(self) -> None:
+        scores = np.full((478, 478), -1.0, dtype=np.float32)
+        source = np.asarray([256.2, 255.7], dtype=np.float64)
+        # Score-map index plus the 17-pixel patch radius is the patch centre.
+        local_xy = (261, 252)
+        distant_xy = (301, 252)
+        scores[local_xy[1] - 17, local_xy[0] - 17] = 1.0
+        scores[distant_xy[1] - 17, distant_xy[0] - 17] = 2.0
+        forward = decode_continuous_score_map(scores, source)
+        reversed_result = decode_continuous_score_map(
+            scores, source, reverse_enumeration=True
+        )
+        np.testing.assert_allclose(forward["hard_coordinate_px"], local_xy, atol=0.0)
+        np.testing.assert_allclose(
+            forward["coordinate_px"], reversed_result["coordinate_px"], atol=1.0e-12
+        )
+
+    def test_continuous_rgb_match_recovers_planted_translation_both_ways(self) -> None:
+        generator = np.random.default_rng(1234)
+        source = generator.random((512, 512, 3), dtype=np.float32)
+        target = np.zeros_like(source)
+        target[:508, 5:] = source[4:, :507]
+        source_coordinate = np.asarray([256.0, 256.0], dtype=np.float64)
+        target_coordinate = np.asarray([261.0, 252.0], dtype=np.float64)
+        config = RGBObservabilityConfig(minimum_query_rms=1.0e-8)
+        forward = continuous_rgb_match(
+            source,
+            target,
+            source_coordinate,
+            config=config,
+            verify_enumeration=True,
+        )
+        reverse = continuous_rgb_match(
+            target,
+            source,
+            target_coordinate,
+            config=config,
+            verify_enumeration=True,
+        )
+        np.testing.assert_allclose(forward["coordinate_px"], target_coordinate, atol=1.0e-5)
+        np.testing.assert_allclose(reverse["coordinate_px"], source_coordinate, atol=1.0e-5)
 
 
 if __name__ == "__main__":

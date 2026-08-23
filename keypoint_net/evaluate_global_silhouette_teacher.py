@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import subprocess
+import sys
 from typing import Any
 
 import numpy as np
@@ -340,6 +341,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         },
         "implementation_head": implementation_head,
         "implementation_source": file_record(Path(__file__)),
+        "command_argv": list(sys.argv),
         "arrays": file_record(arrays_path),
         "visual": file_record(visual_path),
         "raw_predictions_hashed_before_truth_or_supplied_masks_open": True,

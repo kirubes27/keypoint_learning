@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import sys
 import time
 from typing import Any
 
@@ -129,6 +130,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "gate_io": file_record(Path(__file__).with_name("material_transport_gate_io.py")),
         },
         "environment": {
+            "python": sys.version,
             "opencv": cv2.__version__,
             "numpy": np.__version__,
             "pillow": Image.__version__,
@@ -152,6 +154,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         "frame_count": EXPECTED_FRAMES,
         "witness_count": EXPECTED_WITNESSES,
+        "command_argv": list(sys.argv),
         "runtime_seconds": float(time.time() - started),
         "training_or_weight_update_performed": False,
         "statistical_scope": "one rendered 180-frame orbit; pose diagnostics are descriptive only",

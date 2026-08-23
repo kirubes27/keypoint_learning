@@ -31,7 +31,7 @@ def solve_affine_offset(
     require(y.shape == (x.shape[0], 2), "offset label shape differs")
     require(bool(np.isfinite(x).all()) and bool(np.isfinite(y).all()), "offset fit contains non-finite values")
     coefficient, residuals, rank, singular_values = np.linalg.lstsq(x, y, rcond=None)
-    prediction = x @ coefficient
+    prediction = np.einsum("ij,jk->ik", x, coefficient, optimize=False)
     residual = prediction - y
     require(bool(np.isfinite(coefficient).all()), "offset coefficient is non-finite")
     report = {
@@ -163,7 +163,9 @@ def predict_linear_offset_head(
             row[1:] = feature_array[
                 frame, :, hard_y[frame, witness], hard_x[frame, witness]
             ]
-            raw_offset[frame, witness] = row @ coefficient_array[witness]
+            raw_offset[frame, witness] = np.einsum(
+                "i,ij->j", row, coefficient_array[witness], optimize=False
+            )
     bounded_offset = np.clip(raw_offset, -OFFSET_LIMIT_GRID, OFFSET_LIMIT_GRID)
     prediction_grid = np.stack([hard_x, hard_y], axis=-1).astype(np.float64)
     prediction_grid += bounded_offset

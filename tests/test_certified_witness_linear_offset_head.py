@@ -32,10 +32,14 @@ class CertifiedWitnessLinearOffsetHeadTest(unittest.TestCase):
             ],
             axis=-1,
         )
-        labels = design @ planted
+        labels = np.einsum("ij,jk->ik", design, planted, optimize=False)
         coefficient, report = solve_affine_offset(design, labels)
         np.testing.assert_allclose(coefficient, planted, atol=1e-12)
-        np.testing.assert_allclose(design @ coefficient, labels, atol=1e-12)
+        np.testing.assert_allclose(
+            np.einsum("ij,jk->ik", design, coefficient, optimize=False),
+            labels,
+            atol=1e-12,
+        )
         self.assertEqual(report["design_rank"], FEATURE_CHANNELS + 1)
 
     def test_zero_head_decodes_hard_cell_centers(self) -> None:

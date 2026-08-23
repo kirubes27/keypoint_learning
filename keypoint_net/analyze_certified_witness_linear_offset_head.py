@@ -172,7 +172,9 @@ def _runtime_controls(
         ],
         axis=-1,
     )
-    labels = design @ planted_coefficient
+    labels = np.einsum(
+        "ij,jk->ik", design, planted_coefficient, optimize=False
+    )
     solved, solved_report = solve_affine_offset(design, labels)
     planted_max_abs_error = float(np.max(np.abs(solved - planted_coefficient)))
     require(

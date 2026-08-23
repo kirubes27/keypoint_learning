@@ -5,9 +5,11 @@ import pytest
 
 from keypoint_net.material_transport_gate_io import MaterialTransportIOError
 from keypoint_net.run_tapnextpp_bidirectional_teacher import (
+    CPU_MAX_PROJECTED_SECONDS,
     EXPECTED_WITNESSES,
     _canonicalize,
     _coordinate_mapping_smoke,
+    _project_cpu_full_seconds,
     _validate_prediction_arrays,
 )
 
@@ -86,3 +88,14 @@ def test_coordinate_mapping_smoke_fails_closed_on_mapping_offset() -> None:
 
     with pytest.raises(MaterialTransportIOError, match="round-trip exceeds"):
         _coordinate_mapping_smoke(initial, display_to_model, model_to_display)
+
+
+def test_cpu_projection_uses_slower_prefix_and_safety_factor() -> None:
+    projection = _project_cpu_full_seconds(10.0, 5.0, 10.0)
+    assert projection == pytest.approx(1.25 * (10.0 + 370 * 2.0))
+    assert projection < CPU_MAX_PROJECTED_SECONDS
+
+
+def test_cpu_projection_fails_closed_on_nonfinite_timing() -> None:
+    with pytest.raises(MaterialTransportIOError, match="non-finite"):
+        _project_cpu_full_seconds(1.0, float("nan"), 1.0)

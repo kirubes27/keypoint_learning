@@ -40,7 +40,10 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-EXPECTED_LOCK_SHA256 = "a79183b0d0a49ba79083ffbcf819dafae8281f05feffda3922f8c2ecab83fc0c"
+EXPECTED_LOCK_SHA256_BY_PROFILE = {
+    "cuda": "a79183b0d0a49ba79083ffbcf819dafae8281f05feffda3922f8c2ecab83fc0c",
+    "cpu": "62d0e08361aabffedd3f4a2ddb1e42c2dc6dc9bc9e9550c03ab6da4fa8436360",
+}
 EXPECTED_MANIFEST_SHA256 = "f4a6d27922bcaa6446590a227bbf75c9c38730b5288fef763f0e164225098f29"
 EXPECTED_CAPABILITY_MANIFEST_SHA256 = "1f94e0baf1c0a1b01e8897f0a5dc8419fccbd52c865ff5963253fcd098bd44dd"
 EXPECTED_TRACKS_SHA256 = "b9decd7440da1e35f935f5d8d443e3eb9738b1584f8b72ebebb51b1d7bfa93b6"
@@ -172,7 +175,6 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     implementation_head = _git(args.repo_root, "rev-parse", "HEAD")
 
     lock_record = file_record(args.semantic_lock)
-    require(lock_record["sha256"] == EXPECTED_LOCK_SHA256, "semantic-lock SHA-256 differs")
     manifest_record = file_record(args.manifest)
     require(manifest_record["sha256"] == EXPECTED_MANIFEST_SHA256, "manifest SHA-256 differs")
     capability_record = file_record(args.capability_manifest)
@@ -186,8 +188,14 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     raw_receipt_record = file_record(args.raw_receipt)
     raw_receipt = load_json(args.raw_receipt)
     require(
-        raw_receipt["schema_version"] == "raw_tapnextpp_256_bidirectional_teacher.v1",
+        raw_receipt["schema_version"] == "raw_tapnextpp_256_bidirectional_teacher.v2",
         "raw schema differs",
+    )
+    execution_profile = raw_receipt["execution_profile"]
+    require(execution_profile in EXPECTED_LOCK_SHA256_BY_PROFILE, "raw profile differs")
+    require(
+        lock_record["sha256"] == EXPECTED_LOCK_SHA256_BY_PROFILE[execution_profile],
+        "semantic-lock SHA-256 differs for raw profile",
     )
     require(
         raw_receipt["decision"]["raw_tracker_semantic_pass"] is True,
@@ -221,7 +229,24 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         "raw stage opened a forbidden learned keypoint path",
     )
     require(controls["local_laptop_gpu_used"] is False, "raw stage used the laptop GPU")
-    require(controls["cluster_cuda_only"] is True, "raw stage was not cluster CUDA only")
+    environment = raw_receipt["environment"]
+    require(environment["execution_device"] == execution_profile, "raw device binding differs")
+    if execution_profile == "cpu":
+        require(controls["local_laptop_cpu_only"] is True, "raw stage was not CPU only")
+        require(controls["cluster_cuda_only"] is False, "raw CPU stage claims cluster CUDA")
+        require(controls["autocast_enabled"] is False, "raw CPU stage used autocast")
+        require(environment["cuda_available"] is False, "raw CPU environment exposed CUDA")
+    else:
+        require(controls["local_laptop_cpu_only"] is False, "raw CUDA stage claims laptop CPU")
+        require(controls["cluster_cuda_only"] is True, "raw CUDA stage was not cluster only")
+        require(controls["autocast_enabled"] is True, "raw CUDA stage disabled frozen autocast")
+        require(environment["cuda_available"] is True, "raw CUDA environment lacked CUDA")
+    require(raw_receipt["model_frame_call_count"] == 370, "raw model-call count differs")
+    pip_freeze_path = Path(raw_receipt["pip_freeze"]["absolute_path"])
+    require(
+        file_record(pip_freeze_path) == raw_receipt["pip_freeze"],
+        "raw pip-freeze binding differs",
+    )
     require(controls["repeated_prefix_positions_exact"] is True, "raw repeat positions differ")
     require(controls["repeated_prefix_visibility_exact"] is True, "raw repeat visibility differs")
     require(
@@ -403,8 +428,9 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     result = {
-        "schema_version": "tapnextpp_256_bidirectional_teacher_evaluation.v1",
+        "schema_version": "tapnextpp_256_bidirectional_teacher_evaluation.v2",
         "artifact_type": "privileged_posthash_pretrained_bidirectional_teacher_check",
+        "execution_profile": execution_profile,
         "decision": {
             "both_directions_strict_pass": direction_pass_count == 2,
             "strict_direction_pass_count": direction_pass_count,

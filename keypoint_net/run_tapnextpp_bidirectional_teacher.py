@@ -1,11 +1,14 @@
-"""Run the frozen cluster-only TAPNext++ 256 bidirectional teacher gate."""
+"""Run a frozen TAPNext++ 256 bidirectional teacher execution profile."""
 
 from __future__ import annotations
 
 import argparse
 import gc
 import json
+import os
 from pathlib import Path
+import platform
+import resource
 import subprocess
 import sys
 import time
@@ -33,7 +36,10 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-EXPECTED_LOCK_SHA256 = "a79183b0d0a49ba79083ffbcf819dafae8281f05feffda3922f8c2ecab83fc0c"
+EXPECTED_LOCK_SHA256_BY_DEVICE = {
+    "cuda": "a79183b0d0a49ba79083ffbcf819dafae8281f05feffda3922f8c2ecab83fc0c",
+    "cpu": "62d0e08361aabffedd3f4a2ddb1e42c2dc6dc9bc9e9550c03ab6da4fa8436360",
+}
 EXPECTED_MANIFEST_SHA256 = "f4a6d27922bcaa6446590a227bbf75c9c38730b5288fef763f0e164225098f29"
 EXPECTED_INITIALS_SHA256 = "d5bffc4651347eb76556000ba92ac8f3a82e324f310bda37f84b8c5b789b8a34"
 EXPECTED_TAPNET_COMMIT = "c2cbab81cc06092b5f05bfe2da7bfec54e2079c9"
@@ -44,6 +50,9 @@ EXPECTED_WITNESSES = 10
 IMAGE_SIZE = 512
 MODEL_RESOLUTION = 256
 DETERMINISM_PREFIX_FRAMES = 5
+FULL_RUN_MODEL_CALLS = 2 * DETERMINISM_PREFIX_FRAMES + 2 * EXPECTED_FRAMES
+CPU_TIMING_SAFETY_FACTOR = 1.25
+CPU_MAX_PROJECTED_SECONDS = 7_200.0
 
 
 SOURCE_RELPATHS = (
@@ -73,6 +82,8 @@ def _run_traversal(
     frames_bgr: list[np.ndarray],
     query_xy: np.ndarray,
     traversal: Iterable[int],
+    *,
+    autocast: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
     order = [int(value) for value in traversal]
     require(order and order[0] == 0, "TAPNext++ traversal must start at frame zero")
@@ -84,17 +95,106 @@ def _run_traversal(
             current_xy, current_visible, state = model.track_frame(
                 frames_bgr[frame_index],
                 query_points_xy=query_xy,
-                autocast=True,
+                autocast=autocast,
             )
         else:
             current_xy, current_visible, state = model.track_frame(
                 frames_bgr[frame_index],
                 state=state,
-                autocast=True,
+                autocast=autocast,
             )
         positions.append(np.asarray(current_xy, dtype=np.float32))
         visibility.append(np.asarray(current_visible, dtype=bool))
     return np.stack(positions), np.stack(visibility)
+
+
+def _project_cpu_full_seconds(
+    model_load_seconds: float,
+    prefix_seconds_a: float,
+    prefix_seconds_b: float,
+) -> float:
+    """Conservatively project the complete 370-call CPU execution."""
+    values = np.asarray(
+        [model_load_seconds, prefix_seconds_a, prefix_seconds_b], dtype=np.float64
+    )
+    require(bool(np.isfinite(values).all()), "CPU timing contains a non-finite value")
+    require(bool((values >= 0.0).all()), "CPU timing contains a negative value")
+    slow_prefix_seconds_per_call = max(prefix_seconds_a, prefix_seconds_b) / float(
+        DETERMINISM_PREFIX_FRAMES
+    )
+    return float(
+        CPU_TIMING_SAFETY_FACTOR
+        * (model_load_seconds + FULL_RUN_MODEL_CALLS * slow_prefix_seconds_per_call)
+    )
+
+
+def _peak_rss_record() -> dict[str, Any]:
+    raw = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    multiplier = 1 if sys.platform == "darwin" else 1024
+    return {
+        "ru_maxrss_raw": raw,
+        "ru_maxrss_platform_unit": "bytes" if sys.platform == "darwin" else "kibibytes",
+        "peak_resident_memory_bytes": raw * multiplier,
+    }
+
+
+def _environment_record(device: str, torchvision: Any, einops: Any) -> dict[str, Any]:
+    mps_backend = getattr(torch.backends, "mps", None)
+    record: dict[str, Any] = {
+        "python": sys.version,
+        "python_executable": sys.executable,
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "conda_default_env": os.environ.get("CONDA_DEFAULT_ENV"),
+        "conda_prefix": os.environ.get("CONDA_PREFIX"),
+        "torch": torch.__version__,
+        "torchvision": torchvision.__version__,
+        "einops": einops.__version__,
+        "numpy": np.__version__,
+        "pillow": Image.__version__,
+        "execution_device": device,
+        "torch_num_threads": torch.get_num_threads(),
+        "torch_num_interop_threads": torch.get_num_interop_threads(),
+        "cuda_available": bool(torch.cuda.is_available()),
+        "mps_available": bool(mps_backend and mps_backend.is_available()),
+        "model_input_resolution": MODEL_RESOLUTION,
+        "half_precision": False,
+        "torch_compile": False,
+        "autocast_enabled": device == "cuda",
+        "allow_tf32": False,
+    }
+    if device == "cuda":
+        record.update(
+            {
+                "cuda_runtime": torch.version.cuda,
+                "cuda_device_name": torch.cuda.get_device_name(0),
+                "cuda_device_capability": list(torch.cuda.get_device_capability(0)),
+                "cuda_device_count_visible": torch.cuda.device_count(),
+            }
+        )
+    else:
+        record.update(
+            {
+                "cuda_runtime": None,
+                "cuda_device_name": None,
+                "cuda_device_capability": None,
+                "cuda_device_count_visible": 0,
+            }
+        )
+    return record
+
+
+def _write_pip_freeze(output_dir: Path) -> dict[str, Any]:
+    freeze = subprocess.run(
+        [sys.executable, "-m", "pip", "freeze", "--all"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    path = output_dir / "TAPNEXTPP_EXECUTION_PIP_FREEZE.txt"
+    path.write_text(freeze)
+    return file_record(path)
 
 
 def _canonicalize(
@@ -184,8 +284,13 @@ def _coordinate_mapping_smoke(
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     started = time.time()
-    require(args.device == "cuda", "this frozen gate is cluster CUDA only")
-    require(torch.cuda.is_available(), "CUDA is unavailable; laptop GPU/CPU fallback is forbidden")
+    require(args.device in EXPECTED_LOCK_SHA256_BY_DEVICE, "unknown execution device")
+    if args.device == "cuda":
+        require(torch.cuda.is_available(), "CUDA is unavailable for the frozen CUDA profile")
+    else:
+        require(not torch.cuda.is_available(), "CPU profile refuses a CUDA-visible runtime")
+    if args.timing_smoke_only:
+        require(args.device == "cpu", "the bounded timing smoke is CPU only")
     require(not args.output_dir.exists(), "output directory already exists; use a fresh attempt")
     require(_git(args.repo_root, "status", "--porcelain") == "", "implementation repository is dirty")
     implementation_head = _git(args.repo_root, "rev-parse", "HEAD")
@@ -204,7 +309,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     lock_record = file_record(args.semantic_lock)
-    require(lock_record["sha256"] == EXPECTED_LOCK_SHA256, "semantic-lock SHA-256 differs")
+    require(
+        lock_record["sha256"] == EXPECTED_LOCK_SHA256_BY_DEVICE[args.device],
+        "semantic-lock SHA-256 differs for the execution device",
+    )
     manifest_record = file_record(args.manifest)
     require(manifest_record["sha256"] == EXPECTED_MANIFEST_SHA256, "manifest SHA-256 differs")
     initials_record = file_record(args.initials)
@@ -233,7 +341,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     require(witness_id.shape == (EXPECTED_WITNESSES,), "witness IDs differ")
     require(initial_frame == 0, "initial frame differs")
     require(initial_coordinate.shape == (EXPECTED_WITNESSES, 2), "initial coordinates differ")
-    frames_bgr = [_load_bgr(path) for path in rgb_paths]
+    opened_rgb_paths = (
+        rgb_paths[:DETERMINISM_PREFIX_FRAMES] if args.timing_smoke_only else rgb_paths
+    )
+    frames_bgr = [_load_bgr(path) for path in opened_rgb_paths]
 
     sys.path.insert(0, str(args.tapnet_root.resolve()))
     import einops  # pylint: disable=import-outside-toplevel
@@ -251,13 +362,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     require(TAPNextPP.MODEL_SIZE == MODEL_RESOLUTION, "official model coordinate size differs")
 
     torch.manual_seed(0)
-    torch.cuda.manual_seed_all(0)
-    torch.backends.cuda.matmul.allow_tf32 = False
-    if hasattr(torch.backends, "cudnn"):
-        torch.backends.cudnn.allow_tf32 = False
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+    if args.device == "cuda":
+        torch.cuda.manual_seed_all(0)
+        torch.backends.cuda.matmul.allow_tf32 = False
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.allow_tf32 = False
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+    else:
+        torch.set_num_threads(4)
 
+    model_load_started = time.perf_counter()
     model = TAPNextPP.from_checkpoint(
         args.checkpoint,
         device=args.device,
@@ -265,27 +380,129 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         compile_model=False,
         input_resolution=MODEL_RESOLUTION,
     )
+    model_load_seconds = float(time.perf_counter() - model_load_started)
     require(model.input_resolution == MODEL_RESOLUTION, "official input resolution differs")
+    require(model.device.type == args.device, "official model device differs")
+    autocast = args.device == "cuda"
     prefix_order = list(range(DETERMINISM_PREFIX_FRAMES))
+    prefix_started = time.perf_counter()
     prefix_positions_a, prefix_visibility_a = _run_traversal(
-        model, frames_bgr, initial_coordinate, prefix_order
+        model, frames_bgr, initial_coordinate, prefix_order, autocast=autocast
     )
+    prefix_seconds_a = float(time.perf_counter() - prefix_started)
+    prefix_started = time.perf_counter()
     prefix_positions_b, prefix_visibility_b = _run_traversal(
-        model, frames_bgr, initial_coordinate, prefix_order
+        model, frames_bgr, initial_coordinate, prefix_order, autocast=autocast
     )
+    prefix_seconds_b = float(time.perf_counter() - prefix_started)
     prefix_positions_exact = bool(np.array_equal(prefix_positions_a, prefix_positions_b))
     prefix_visibility_exact = bool(np.array_equal(prefix_visibility_a, prefix_visibility_b))
     require(prefix_positions_exact, "repeated TAPNext++ prefix positions differ")
     require(prefix_visibility_exact, "repeated TAPNext++ prefix visibility differs")
     _validate_prediction_arrays(prefix_positions_a, prefix_visibility_a)
 
+    source_records = {
+        relpath: file_record(args.tapnet_root / relpath) for relpath in SOURCE_RELPATHS
+    }
+    environment = _environment_record(args.device, torchvision, einops)
+
+    if args.timing_smoke_only:
+        projected_full_seconds = _project_cpu_full_seconds(
+            model_load_seconds,
+            prefix_seconds_a,
+            prefix_seconds_b,
+        )
+        full_run_authorized = projected_full_seconds <= CPU_MAX_PROJECTED_SECONDS
+        args.output_dir.mkdir(parents=True)
+        arrays_path = args.output_dir / "TAPNEXTPP_256_CPU_TIMING_SMOKE_ARRAYS.npz"
+        np.savez_compressed(
+            arrays_path,
+            witness_id=witness_id,
+            initial_frame_index=np.asarray(initial_frame, dtype=np.int64),
+            initial_coordinate_px=initial_coordinate,
+            prefix_prediction_xy_a=prefix_positions_a,
+            prefix_visible_a=prefix_visibility_a,
+            prefix_prediction_xy_b=prefix_positions_b,
+            prefix_visible_b=prefix_visibility_b,
+            traversal=np.asarray(prefix_order, dtype=np.int64),
+        )
+        pip_freeze_record = _write_pip_freeze(args.output_dir)
+        smoke_receipt = {
+            "schema_version": "tapnextpp_256_local_cpu_timing_smoke.v1",
+            "artifact_type": "prediction_only_local_cpu_runtime_and_determinism_smoke",
+            "decision": {
+                "full_run_authorized": full_run_authorized,
+                "branch": (
+                    "authorize_full_local_cpu_raw_gate"
+                    if full_run_authorized
+                    else "stop_local_cpu_runtime_exceeds_two_hours"
+                ),
+            },
+            "sources": {
+                "semantic_lock": lock_record,
+                "sanitized_manifest": manifest_record,
+                "frame_zero_initials": initials_record,
+                "tapnextpp_checkpoint": checkpoint_record,
+                "tapnet": {
+                    "origin": tapnet_remote,
+                    "commit": tapnet_commit,
+                    "source_files": source_records,
+                },
+            },
+            "implementation_head": implementation_head,
+            "implementation_sources": {
+                "runner": file_record(Path(__file__)),
+                "gate_io": file_record(Path(__file__).with_name("material_transport_gate_io.py")),
+            },
+            "environment": environment,
+            "pip_freeze": pip_freeze_record,
+            "coordinate_mapping": coordinate_mapping,
+            "timing_seconds": {
+                "model_load": model_load_seconds,
+                "five_frame_prefix_a": prefix_seconds_a,
+                "five_frame_prefix_b": prefix_seconds_b,
+                "projection_safety_factor": CPU_TIMING_SAFETY_FACTOR,
+                "projected_full_370_call_execution": projected_full_seconds,
+                "maximum_authorized_projection": CPU_MAX_PROJECTED_SECONDS,
+            },
+            "process_memory": _peak_rss_record(),
+            "arrays": file_record(arrays_path),
+            "controls": {
+                "all_180_rgb_hashes_rechecked_before_open": True,
+                "opened_rgb_frame_count": DETERMINISM_PREFIX_FRAMES,
+                "only_frame_zero_initial_coordinates_opened": True,
+                "supplied_masks_opened": False,
+                "non_frame_zero_truth_opened": False,
+                "renderer_angle_or_pivot_opened": False,
+                "learned_keypoint_checkpoint_or_features_opened": False,
+                "local_laptop_gpu_used": False,
+                "local_laptop_cpu_only": True,
+                "cluster_cuda_only": False,
+                "autocast_enabled": False,
+                "repeated_prefix_positions_exact": prefix_positions_exact,
+                "repeated_prefix_visibility_exact": prefix_visibility_exact,
+                "coordinates_finite_and_in_image": True,
+                "official_512_to_256_to_512_coordinate_roundtrip_pass": True,
+            },
+            "frame_calls_executed": 2 * DETERMINISM_PREFIX_FRAMES,
+            "command_argv": list(sys.argv),
+            "runtime_seconds": float(time.time() - started),
+            "privileged_evaluation_authorized": False,
+            "training_or_weight_update_performed": False,
+        }
+        receipt_path = args.output_dir / "TAPNEXTPP_256_CPU_TIMING_SMOKE_RECEIPT.json"
+        write_json(receipt_path, smoke_receipt)
+        del model
+        gc.collect()
+        return {**smoke_receipt, "receipt": file_record(receipt_path)}
+
     forward_order = list(range(EXPECTED_FRAMES))
     reverse_order = [0, *range(EXPECTED_FRAMES - 1, 0, -1)]
     forward_positions, forward_visibility = _run_traversal(
-        model, frames_bgr, initial_coordinate, forward_order
+        model, frames_bgr, initial_coordinate, forward_order, autocast=autocast
     )
     reverse_positions_ordered, reverse_visibility_ordered = _run_traversal(
-        model, frames_bgr, initial_coordinate, reverse_order
+        model, frames_bgr, initial_coordinate, reverse_order, autocast=autocast
     )
     reverse_positions, reverse_visibility = _canonicalize(
         reverse_order, reverse_positions_ordered, reverse_visibility_ordered
@@ -317,12 +534,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         repeated_prefix_visible=prefix_visibility_a,
     )
 
-    source_records = {
-        relpath: file_record(args.tapnet_root / relpath) for relpath in SOURCE_RELPATHS
-    }
+    pip_freeze_record = _write_pip_freeze(args.output_dir)
     receipt = {
-        "schema_version": "raw_tapnextpp_256_bidirectional_teacher.v1",
+        "schema_version": "raw_tapnextpp_256_bidirectional_teacher.v2",
         "artifact_type": "prediction_only_pretrained_bidirectional_material_tracks",
+        "execution_profile": args.device,
         "decision": {
             "raw_tracker_semantic_pass": True,
             "branch": "authorize_privileged_posthash_evaluation",
@@ -343,22 +559,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "runner": file_record(Path(__file__)),
             "gate_io": file_record(Path(__file__).with_name("material_transport_gate_io.py")),
         },
-        "environment": {
-            "python": sys.version,
-            "torch": torch.__version__,
-            "torchvision": torchvision.__version__,
-            "einops": einops.__version__,
-            "numpy": np.__version__,
-            "pillow": Image.__version__,
-            "cuda_runtime": torch.version.cuda,
-            "cuda_device_name": torch.cuda.get_device_name(0),
-            "cuda_device_capability": list(torch.cuda.get_device_capability(0)),
-            "cuda_device_count_visible": torch.cuda.device_count(),
-            "model_input_resolution": MODEL_RESOLUTION,
-            "half_precision": False,
-            "torch_compile": False,
-            "allow_tf32": False,
-        },
+        "environment": environment,
+        "pip_freeze": pip_freeze_record,
         "coordinate_mapping": coordinate_mapping,
         "raw_predictions": file_record(arrays_path),
         "controls": {
@@ -369,7 +571,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "renderer_angle_or_pivot_opened": False,
             "learned_keypoint_checkpoint_or_features_opened": False,
             "local_laptop_gpu_used": False,
-            "cluster_cuda_only": True,
+            "local_laptop_cpu_only": args.device == "cpu",
+            "cluster_cuda_only": args.device == "cuda",
+            "autocast_enabled": autocast,
             "repeated_prefix_frame_count": DETERMINISM_PREFIX_FRAMES,
             "repeated_prefix_positions_exact": prefix_positions_exact,
             "repeated_prefix_visibility_exact": prefix_visibility_exact,
@@ -387,6 +591,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "maximum": float(np.max(direction_difference)),
         },
         "frame_count": EXPECTED_FRAMES,
+        "model_frame_call_count": FULL_RUN_MODEL_CALLS,
         "witness_count": EXPECTED_WITNESSES,
         "command_argv": list(sys.argv),
         "runtime_seconds": float(time.time() - started),
@@ -399,7 +604,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     del model
     gc.collect()
-    torch.cuda.empty_cache()
+    if args.device == "cuda":
+        torch.cuda.empty_cache()
     return {**receipt, "receipt": file_record(receipt_path)}
 
 
@@ -412,7 +618,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-root", required=True, type=Path)
     parser.add_argument("--tapnet-root", required=True, type=Path)
     parser.add_argument("--checkpoint", required=True, type=Path)
-    parser.add_argument("--device", default="cuda", choices=("cuda",))
+    parser.add_argument("--device", default="cuda", choices=("cuda", "cpu"))
+    parser.add_argument("--timing-smoke-only", action="store_true")
     parser.add_argument("--output-dir", required=True, type=Path)
     return parser.parse_args()
 

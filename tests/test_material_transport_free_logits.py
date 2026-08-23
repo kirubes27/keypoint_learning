@@ -4,6 +4,16 @@ import unittest
 
 import torch
 
+import numpy as np
+
+from keypoint_net.evaluate_material_transport_witness_distribution_replay import (
+    CELL_STEP_PX,
+    GRID_SIZE,
+    bilinear_grid_distribution,
+    hard_centered_local_readout,
+    transport_distribution,
+)
+
 from keypoint_net.material_transport_free_logits import (
     MaterialTransportConfig,
     build_bidirectional_field,
@@ -185,6 +195,27 @@ class MaterialTransportFreeLogitsTest(unittest.TestCase):
         loss.backward()
         self.assertTrue(torch.isfinite(logits.grad).all())
         self.assertGreater(torch.linalg.vector_norm(logits.grad).item(), 1.0e-5)
+
+    def test_privileged_bilinear_replay_reproduces_subcell_coordinate(self) -> None:
+        coordinate = np.asarray([213.25, 377.75], dtype=np.float64)
+        probability = bilinear_grid_distribution(coordinate)
+        self.assertEqual(np.count_nonzero(probability), 4)
+        grid_x = np.tile(np.arange(GRID_SIZE, dtype=np.float64), GRID_SIZE)
+        grid_y = np.repeat(np.arange(GRID_SIZE, dtype=np.float64), GRID_SIZE)
+        reproduced = np.asarray(
+            [probability @ grid_x, probability @ grid_y], dtype=np.float64
+        ) * CELL_STEP_PX
+        np.testing.assert_allclose(reproduced, coordinate, atol=1.0e-10)
+
+    def test_distribution_replay_identity_field_preserves_local_readout(self) -> None:
+        coordinate = np.asarray([213.25, 377.75], dtype=np.float64)
+        source = bilinear_grid_distribution(coordinate)
+        cells = GRID_SIZE * GRID_SIZE
+        candidate_index = np.arange(cells, dtype=np.int64)[:, None]
+        conditional = np.ones((cells, 1), dtype=np.float64)
+        transported = transport_distribution(source, conditional, candidate_index)
+        readout = hard_centered_local_readout(transported)
+        np.testing.assert_allclose(readout["coordinate_px"], coordinate, atol=1.0e-10)
 
 
 if __name__ == "__main__":

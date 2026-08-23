@@ -174,6 +174,10 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     raw_receipt_record = file_record(args.raw_receipt)
     raw_receipt = load_json(args.raw_receipt)
     require(raw_receipt["schema_version"] == "raw_global_rgb_silhouette_teacher.v1", "raw schema differs")
+    require(
+        raw_receipt["decision"]["raw_pose_semantic_pass"] is True,
+        "raw pose semantic gate failed; truth evaluation is not authorized",
+    )
     require(raw_receipt["sources"]["semantic_lock"] == lock_record, "raw lock binding differs")
     require(raw_receipt["sources"]["sanitized_manifest"] == manifest_record, "raw manifest binding differs")
     require(

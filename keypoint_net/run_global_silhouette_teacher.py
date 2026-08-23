@@ -98,9 +98,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         rgbs, initial_coordinate, reversed(range(EXPECTED_FRAMES))
     )
     _require_exact(canonical, reverse_control)
-    require(
-        bool((canonical["selected_iou"] >= MINIMUM_SELECTED_IOU).all()),
-        "selected silhouette IoU is below the frozen minimum",
+    pose_semantic_pass = bool(
+        (canonical["selected_iou"] >= MINIMUM_SELECTED_IOU).all()
     )
     require(bool(np.isfinite(canonical["prediction_xy"]).all()), "predictions are non-finite")
 
@@ -116,6 +115,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     receipt = {
         "schema_version": "raw_global_rgb_silhouette_teacher.v1",
         "artifact_type": "prediction_only_global_rigid_silhouette_tracks",
+        "decision": {
+            "raw_pose_semantic_pass": pose_semantic_pass,
+            "branch": (
+                "authorize_privileged_posthash_evaluation"
+                if pose_semantic_pass
+                else "stop_before_truth_due_pose_semantic_failure"
+            ),
+        },
         "sources": {
             "semantic_lock": lock_record,
             "sanitized_manifest": manifest_record,
@@ -151,12 +158,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "observed_minimum_orientation_ambiguity_gap_iou": float(
                 np.min(canonical["ambiguity_gap_iou"])
             ),
+            "frames_below_minimum_selected_silhouette_iou": int(
+                np.sum(canonical["selected_iou"] < MINIMUM_SELECTED_IOU)
+            ),
         },
         "frame_count": EXPECTED_FRAMES,
         "witness_count": EXPECTED_WITNESSES,
         "command_argv": list(sys.argv),
         "runtime_seconds": float(time.time() - started),
         "training_or_weight_update_performed": False,
+        "privileged_evaluation_authorized": pose_semantic_pass,
         "statistical_scope": "one rendered 180-frame orbit; pose diagnostics are descriptive only",
     }
     receipt_path = args.output_dir / "RAW_GLOBAL_SILHOUETTE_TEACHER_RECEIPT.json"

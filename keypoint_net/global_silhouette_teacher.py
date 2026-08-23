@@ -160,6 +160,24 @@ def decode_pose(
     reference: SilhouetteObservation,
     target: SilhouetteObservation,
 ) -> dict[str, np.ndarray | float | int]:
+    candidates = pose_candidates(reference, target)
+    candidate_ious = candidates["candidate_iou"]
+    require(candidate_ious[0] != candidate_ious[1], "pi orientation is ambiguous")
+    selected = int(np.argmax(candidate_ious))
+    return {
+        **candidates,
+        "selected_index": selected,
+        "selected_angle_rad": float(candidates["candidate_angle_rad"][selected]),
+        "selected_iou": float(candidate_ious[selected]),
+        "ambiguity_gap_iou": float(abs(candidate_ious[0] - candidate_ious[1])),
+        "matrix": candidates["candidate_matrix"][selected],
+    }
+
+
+def pose_candidates(
+    reference: SilhouetteObservation,
+    target: SilhouetteObservation,
+) -> dict[str, np.ndarray]:
     phase = math.atan2(
         (target.second_moment * reference.second_moment.conjugate()).imag,
         (target.second_moment * reference.second_moment.conjugate()).real,
@@ -181,17 +199,29 @@ def decode_pose(
         ],
         dtype=np.float64,
     )
-    require(candidate_ious[0] != candidate_ious[1], "pi orientation is ambiguous")
-    selected = int(np.argmax(candidate_ious))
     return {
         "candidate_angle_rad": candidate_angles,
         "candidate_iou": candidate_ious,
-        "selected_index": selected,
-        "selected_angle_rad": float(candidate_angles[selected]),
-        "selected_iou": float(candidate_ious[selected]),
-        "ambiguity_gap_iou": float(abs(candidate_ious[0] - candidate_ious[1])),
-        "matrix": candidate_matrices[selected],
+        "candidate_matrix": candidate_matrices,
     }
+
+
+def select_temporal_candidate(
+    previous_unwrapped_angle_rad: float,
+    candidate_angles_rad: np.ndarray,
+) -> tuple[int, float, float]:
+    candidates = np.asarray(candidate_angles_rad, dtype=np.float64)
+    require(candidates.shape == (2,), "temporal candidate shape differs")
+    deltas = np.asarray(
+        [normalize_angle(float(value) - previous_unwrapped_angle_rad) for value in candidates],
+        dtype=np.float64,
+    )
+    magnitudes = np.abs(deltas)
+    require(magnitudes[0] != magnitudes[1], "temporal pi branch is tied")
+    selected = int(np.argmin(magnitudes))
+    require(magnitudes[selected] < 0.5 * math.pi, "temporal angular step is not below pi/2")
+    unwrapped = float(previous_unwrapped_angle_rad + deltas[selected])
+    return selected, unwrapped, float(deltas[selected])
 
 
 def transform_points(points_xy: np.ndarray, matrix: np.ndarray) -> np.ndarray:
@@ -280,6 +310,108 @@ def decode_sequence(
     }
 
 
+def decode_temporally_unwrapped_sequence(
+    rgbs: list[np.ndarray],
+    initial_points_xy: np.ndarray,
+    traversal: Iterable[int],
+) -> dict[str, np.ndarray]:
+    frame_count = len(rgbs)
+    order = [int(value) for value in traversal]
+    require(len(order) == frame_count and order[0] == 0, "traversal must start at frame zero")
+    require(sorted(order) == list(range(frame_count)), "traversal is not a permutation")
+    points = np.asarray(initial_points_xy, dtype=np.float64)
+    require(points.ndim == 2 and points.shape[1] == 2, "initial point shape differs")
+
+    observations: list[SilhouetteObservation | None] = [None] * frame_count
+    for frame in order:
+        observations[frame] = extract_silhouette(rgbs[frame])
+    require(all(value is not None for value in observations), "silhouette extraction is incomplete")
+    reference = observations[0]
+    assert reference is not None
+
+    height, width = reference.mask.shape
+    masks = np.empty((frame_count, height, width), dtype=bool)
+    background = np.empty((frame_count, 3), dtype=np.float64)
+    otsu = np.empty(frame_count, dtype=np.float64)
+    label = np.empty(frame_count, dtype=np.int64)
+    area = np.empty(frame_count, dtype=np.int64)
+    centroid = np.empty((frame_count, 2), dtype=np.float64)
+    moment = np.empty((frame_count, 2), dtype=np.float64)
+    anisotropy = np.empty(frame_count, dtype=np.float64)
+    candidate_angle = np.empty((frame_count, 2), dtype=np.float64)
+    candidate_iou = np.empty((frame_count, 2), dtype=np.float64)
+    candidate_matrix = np.empty((frame_count, 2, 2, 3), dtype=np.float64)
+
+    for frame in order:
+        observation = observations[frame]
+        assert observation is not None
+        candidates = pose_candidates(reference, observation)
+        masks[frame] = observation.mask
+        background[frame] = observation.background_rgb
+        otsu[frame] = observation.otsu_threshold
+        label[frame] = observation.component_label
+        area[frame] = observation.component_area
+        centroid[frame] = observation.centroid_xy
+        moment[frame] = [observation.second_moment.real, observation.second_moment.imag]
+        anisotropy[frame] = observation.anisotropy
+        candidate_angle[frame] = candidates["candidate_angle_rad"]
+        candidate_iou[frame] = candidates["candidate_iou"]
+        candidate_matrix[frame] = candidates["candidate_matrix"]
+
+    selected_index = np.empty(frame_count, dtype=np.int64)
+    selected_angle = np.empty(frame_count, dtype=np.float64)
+    step_delta = np.empty(frame_count, dtype=np.float64)
+    selected_iou = np.empty(frame_count, dtype=np.float64)
+    matrix = np.empty((frame_count, 2, 3), dtype=np.float64)
+    prediction = np.empty((frame_count, points.shape[0], 2), dtype=np.float64)
+
+    selected_index[0] = 0
+    selected_angle[0] = 0.0
+    step_delta[0] = 0.0
+    selected_iou[0] = candidate_iou[0, 0]
+    matrix[0] = rigid_matrix(0.0, reference.centroid_xy, reference.centroid_xy)
+    prediction[0] = transform_points(points, matrix[0])
+    previous_angle = 0.0
+    for frame in order[1:]:
+        selected, unwrapped, delta = select_temporal_candidate(
+            previous_angle, candidate_angle[frame]
+        )
+        selected_index[frame] = selected
+        selected_angle[frame] = unwrapped
+        step_delta[frame] = delta
+        selected_iou[frame] = candidate_iou[frame, selected]
+        observation = observations[frame]
+        assert observation is not None
+        matrix[frame] = rigid_matrix(
+            unwrapped, reference.centroid_xy, observation.centroid_xy
+        )
+        prediction[frame] = transform_points(points, matrix[frame])
+        previous_angle = unwrapped
+
+    closure_delta = float(normalize_angle(-previous_angle))
+    require(abs(closure_delta) < 0.5 * math.pi, "cyclic angular closure is not below pi/2")
+    return {
+        "foreground_mask": masks,
+        "background_rgb": background,
+        "otsu_threshold": otsu,
+        "component_label": label,
+        "component_area": area,
+        "centroid_xy": centroid,
+        "second_moment_real_imag": moment,
+        "anisotropy": anisotropy,
+        "candidate_angle_rad": candidate_angle,
+        "candidate_iou": candidate_iou,
+        "candidate_matrix": candidate_matrix,
+        "selected_index": selected_index,
+        "selected_angle_unwrapped_rad": selected_angle,
+        "selected_iou_diagnostic": selected_iou,
+        "traversal_step_delta_rad": step_delta,
+        "closure_delta_rad": np.asarray(closure_delta, dtype=np.float64),
+        "matrix": matrix,
+        "prediction_xy": prediction,
+    }
+
+
 __all__ = [
     "CORNER_SIZE",
     "GlobalSilhouetteError",
@@ -288,10 +420,13 @@ __all__ = [
     "SilhouetteObservation",
     "decode_pose",
     "decode_sequence",
+    "decode_temporally_unwrapped_sequence",
     "extract_silhouette",
     "intersection_over_union",
     "normalize_angle",
+    "pose_candidates",
     "rigid_matrix",
+    "select_temporal_candidate",
     "transform_points",
     "warp_mask",
 ]

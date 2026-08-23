@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import math
 
 import cv2
 import numpy as np
@@ -8,8 +9,10 @@ import numpy as np
 from keypoint_net.global_silhouette_teacher import (
     GlobalSilhouetteError,
     decode_sequence,
+    decode_temporally_unwrapped_sequence,
     extract_silhouette,
     rigid_matrix,
+    select_temporal_candidate,
     transform_points,
 )
 
@@ -107,6 +110,54 @@ class GlobalSilhouetteTeacherTest(unittest.TestCase):
         self.assertEqual(set(canonical), set(reversed_order))
         for key in canonical:
             np.testing.assert_array_equal(canonical[key], reversed_order[key])
+
+    def test_temporal_unwrap_crosses_pi_and_agrees_forward_reverse(self) -> None:
+        source = self._asymmetric_rgb()
+        centre = np.asarray([64.0, 64.0], dtype=np.float64)
+        points = np.asarray([[63.0, 31.0], [63.0, 80.0], [37.0, 30.0]])
+        rgbs: list[np.ndarray] = []
+        expected: list[np.ndarray] = []
+        for angle_deg in range(0, 360, 10):
+            matrix = rigid_matrix(np.deg2rad(angle_deg), centre, centre)
+            rgbs.append(
+                cv2.warpAffine(
+                    source,
+                    matrix,
+                    (self.image_size, self.image_size),
+                    flags=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=tuple(int(value) for value in self.background),
+                )
+            )
+            expected.append(transform_points(points, matrix))
+        forward = decode_temporally_unwrapped_sequence(
+            rgbs, points, range(len(rgbs))
+        )
+        reverse = decode_temporally_unwrapped_sequence(
+            rgbs, points, [0, *range(len(rgbs) - 1, 0, -1)]
+        )
+        np.testing.assert_allclose(
+            forward["prediction_xy"], np.stack(expected), atol=0.5, rtol=0.0
+        )
+        np.testing.assert_allclose(
+            forward["matrix"], reverse["matrix"], atol=1.0e-12, rtol=0.0
+        )
+        np.testing.assert_allclose(
+            forward["prediction_xy"], reverse["prediction_xy"], atol=1.0e-12, rtol=0.0
+        )
+        self.assertAlmostEqual(
+            abs(forward["selected_angle_unwrapped_rad"][18]), math.pi, places=12
+        )
+        self.assertLess(
+            np.max(np.abs(forward["traversal_step_delta_rad"])), 0.5 * math.pi
+        )
+        self.assertLess(abs(float(forward["closure_delta_rad"])), 0.5 * math.pi)
+
+    def test_temporal_pi_over_two_tie_fails_closed(self) -> None:
+        with self.assertRaisesRegex(GlobalSilhouetteError, "branch is tied"):
+            select_temporal_candidate(
+                0.0, np.asarray([0.5 * math.pi, -0.5 * math.pi])
+            )
 
 
 if __name__ == "__main__":

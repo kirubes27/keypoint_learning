@@ -137,6 +137,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "raw receipt schema differs",
     )
     require(raw_receipt.get("privileged_evaluation_authorized") is True, "raw receipt does not authorize evaluation")
+    paired_arm = str(raw_receipt.get("paired_arm", ""))
+    require(paired_arm in ("control", "candidate"), "raw paired arm differs")
     raw_arrays_path = verify_record(raw_receipt["raw_arrays"], "raw arrays")
     with np.load(raw_arrays_path) as loaded:
         raw = {name: np.asarray(loaded[name]) for name in loaded.files}
@@ -144,6 +146,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     repository_head = verify_clean_repository(args.repo_root, args.expected_repo_head)
     verify_semantic_lock(args.semantic_lock)
+    require(
+        raw_receipt.get("repository_head") == repository_head,
+        "raw receipt repository differs",
+    )
+    require(
+        raw_receipt.get("semantic_lock_sha256") == SEMANTIC_LOCK_SHA256,
+        "raw receipt lock differs",
+    )
     evaluation_input = load_json(args.evaluation_input_receipt)
     require(
         evaluation_input.get("schema_version")
@@ -151,6 +161,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "evaluation input receipt schema differs",
     )
     require(evaluation_input.get("frame_partitions_disjoint") is True, "evaluation split is not disjoint")
+    require(
+        evaluation_input.get("repository_head") == repository_head,
+        "evaluation input repository differs",
+    )
     semantic_lock_record = evaluation_input["semantic_lock"]
     require(semantic_lock_record["sha256"] == SEMANTIC_LOCK_SHA256, "evaluation lock binding differs")
     verify_record(semantic_lock_record, "evaluation semantic lock")
@@ -193,20 +207,47 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         validation_local_px, validation_target_px, validation_masks
     )
 
+    train_logits = np.asarray(raw["native_heatmap_logits"])[train_indices]
+    train_diagnostic_readout = readout_arrays(train_logits, train_target_px)
+    train_category, train_category_counts = classify_localization_failures(
+        train_diagnostic_readout, train_local_derived["within_half_cell"]
+    )
+    train_coarse_mode_pass = bool(
+        np.asarray(
+            train_diagnostic_readout["target_cell_inside_local_window"], dtype=bool
+        ).all()
+    )
     validation_logits = np.asarray(raw["native_heatmap_logits"])[validation_indices]
     diagnostic_readout = readout_arrays(validation_logits, validation_target_px)
     category, category_counts = classify_localization_failures(
         diagnostic_readout, validation_local_derived["within_half_cell"]
     )
-    strict_pass = bool(validation_local_report["strict_capability_pass"])
-    near_pass = operational_near_pass(validation_local_report)
-    operator_authorized = strict_pass or near_pass
+    validation_coarse_mode_pass = bool(
+        np.asarray(
+            diagnostic_readout["target_cell_inside_local_window"], dtype=bool
+        ).all()
+    )
+    training_strict_pass = bool(train_local_report["strict_capability_pass"])
+    validation_strict_pass = bool(validation_local_report["strict_capability_pass"])
+    strict_pass = bool(
+        training_strict_pass
+        and validation_strict_pass
+        and train_coarse_mode_pass
+        and validation_coarse_mode_pass
+    )
+    near_pass = bool(
+        operational_near_pass(train_local_report)
+        and operational_near_pass(validation_local_report)
+    )
+    # The semantic lock also requires a human inspection of both worst-event
+    # montages. Numeric eligibility alone therefore never authorizes an operator.
+    operator_authorized = False
     branch = (
-        "strict_detector_pass_authorize_operator"
+        "strict_numeric_pass_pending_visual_inspection"
         if strict_pass
-        else "operational_near_pass_authorize_diagnostic_operator"
+        else "operational_near_pass_report_only_stop_before_operator"
         if near_pass
-        else "reject_distilled_detector_stop_before_operator"
+        else "reject_paired_detector_stop_before_operator"
     )
 
     args.output_dir.mkdir(parents=True)
@@ -225,6 +266,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         validation_local_identity_correct=validation_local_derived["identity_correct"],
         validation_local_distinct_pair=validation_local_derived["distinct_pair"],
         validation_localization_category_code=category,
+        train_localization_category_code=train_category,
         train_frame_index=TRAIN_FRAMES,
         train_target_coordinate_px=train_target_px,
         train_local_prediction_px=train_local_px,
@@ -251,7 +293,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     result = {
         "schema_version": "leakage_safe_distilled_detector_evaluation.v1",
         "artifact_type": "privileged_posthash_distilled_detector_evaluation",
+        "paired_arm": paired_arm,
         "repository_head": repository_head,
+        "semantic_lock_sha256": SEMANTIC_LOCK_SHA256,
         "raw_predictions_hashed_and_loaded_before_truth_or_masks": raw_hashed_and_loaded_before_truth,
         "implementation_sources": {
             "evaluator": file_record(Path(__file__)),
@@ -272,25 +316,30 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             validation_local_px, validation_target_px
         ),
         "validation_localization_category_counts": category_counts,
+        "training_localization_category_counts": train_category_counts,
+        "coarse_mode_gate": {
+            "training_all_target_cells_inside_hard_centered_3x3": train_coarse_mode_pass,
+            "validation_all_target_cells_inside_hard_centered_3x3": validation_coarse_mode_pass,
+        },
         "thresholds": {
             "strict_half_cell_diagonal_px": HALF_CELL_DIAGONAL_PX,
             "operational_maximum_two_cell_spacing_px": TWO_CELL_SPACING_PX,
+            "strict_requires_both_training_and_validation": True,
             "strict_requires_zero_localization_identity_collapse_and_off_object_violations": True,
+            "strict_requires_all_target_cells_inside_hard_centered_3x3": True,
             "operational_requires_zero_identity_collapse_and_off_object_violations": True,
             "operational_requires_median_within_half_cell": True,
             "operational_requires_all_errors_within_two_cells": True,
         },
         "decision": {
             "strict_detector_pass": strict_pass,
+            "training_strict_capability_pass": training_strict_pass,
+            "validation_strict_capability_pass": validation_strict_pass,
             "operational_near_pass": near_pass,
+            "numeric_operator_eligible_pending_visual_inspection": strict_pass,
+            "visual_inspection_completed": False,
             "operator_authorized": operator_authorized,
-            "operator_role": (
-                "primary_heldout_operator_test"
-                if strict_pass
-                else "diagnostic_only"
-                if near_pass
-                else None
-            ),
+            "operator_role": None,
             "branch": branch,
         },
         "controls": {
@@ -314,6 +363,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     receipt_path = args.output_dir / "DISTILLED_DETECTOR_EVALUATION_RECEIPT.json"
     receipt = {
         "schema_version": "leakage_safe_distilled_detector_evaluation_receipt.v1",
+        "paired_arm": paired_arm,
+        "repository_head": repository_head,
+        "semantic_lock_sha256": SEMANTIC_LOCK_SHA256,
         "result": file_record(result_path),
         "arrays": file_record(arrays_path),
         "raw_receipt": file_record(args.raw_receipt),
@@ -322,6 +374,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "validation_global_visual": file_record(global_visual),
         "validation_local_visual": file_record(local_visual),
         "operator_authorized": operator_authorized,
+        "numeric_operator_eligible_pending_visual_inspection": strict_pass,
         "branch": branch,
     }
     write_json(receipt_path, receipt)

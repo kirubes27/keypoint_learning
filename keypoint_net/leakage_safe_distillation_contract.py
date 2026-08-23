@@ -31,7 +31,7 @@ from run_certified_witness_capability import BoundCapabilityDataset
 
 
 SEMANTIC_LOCK_SHA256 = (
-    "aabd05a0437f77cda143171d68c59c9578f0a09e8bfaea2e1321a4a0e6a2f0fe"
+    "4ed5f52ae5a7406e21f8f06cc228a63b9d168e671ff01ff3fce61ca9245bc80a"
 )
 CAPABILITY_MANIFEST_SHA256 = (
     "1f94e0baf1c0a1b01e8897f0a5dc8419fccbd52c865ff5963253fcd098bd44dd"

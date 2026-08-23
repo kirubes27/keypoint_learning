@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import random
 import shutil
@@ -43,6 +44,15 @@ from leakage_safe_distillation_contract import (
     write_json,
 )
 from model import KeypointExtractor
+from paired_rotation_augmentation import (
+    ANGLE_MAX_DEG,
+    ANGLE_MIN_DEG,
+    AUGMENTATION_SEED,
+    BACKGROUND_RGB_UINT8,
+    ROTATION_CENTER_PX,
+    apply_arm_transform,
+    draw_proposed_angles,
+)
 from run_certified_witness_capability import _save_worst_montage
 from run_certified_witness_local_confirmation import _local_semantic_controls
 
@@ -53,6 +63,7 @@ def _source_hashes(args: argparse.Namespace, train_targets: Path, train_manifest
         "train_input_receipt": args.train_input_receipt,
         "train_targets": train_targets,
         "train_frame_manifest": train_manifest,
+        "geometry_receipt": args.geometry_receipt,
         "runner": Path(__file__),
         "contract": args.repo_root
         / "keypoint_net"
@@ -67,6 +78,9 @@ def _source_hashes(args: argparse.Namespace, train_targets: Path, train_manifest
         / "keypoint_net"
         / "run_certified_witness_local_confirmation.py",
         "model": args.repo_root / "keypoint_net" / "model.py",
+        "paired_rotation_augmentation": args.repo_root
+        / "keypoint_net"
+        / "paired_rotation_augmentation.py",
     }
     return {name: sha256_file(path) for name, path in paths.items()}
 
@@ -124,13 +138,14 @@ def _timing_projection(
         "full_evaluation_count": evaluation_count,
         "safety_factor": 1.25,
         "projected_full_seconds": projected,
-        "maximum_authorized_seconds": 7200.0,
-        "full_run_authorized": bool(projected <= 7200.0),
+        "maximum_authorized_seconds": 10800.0,
+        "full_run_authorized": bool(projected <= 10800.0),
     }
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     require(not args.output_dir.exists(), "output directory already exists")
+    require(args.arm in ("control", "candidate"), "unknown paired arm")
     require(args.seed == 42, "only seed 42 is frozen")
     require(args.device == "cpu", "only CPU is frozen")
     if args.run_kind == "smoke":
@@ -161,6 +176,43 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     train_targets = verify_record(receipt["train_targets"], "train targets")
     train_manifest = verify_record(receipt["train_frame_manifest"], "train manifest")
     require(np.array_equal(np.asarray(receipt["training_frame_indices"], dtype=np.int64), TRAIN_FRAMES), "training receipt frames differ")
+    geometry_receipt = load_json(args.geometry_receipt)
+    require(
+        geometry_receipt.get("schema_version")
+        == "paired_rotation_augmentation_preflight_receipt.v1",
+        "geometry receipt schema differs",
+    )
+    require(
+        geometry_receipt.get("repository_head") == repository_head,
+        "geometry receipt repository differs",
+    )
+    require(
+        geometry_receipt.get("semantic_lock_sha256") == SEMANTIC_LOCK_SHA256,
+        "geometry receipt lock differs",
+    )
+    require(geometry_receipt.get("all_preflight_gates_pass") is True, "preflight did not pass")
+    verify_record(geometry_receipt["semantic_lock"], "geometry receipt semantic lock")
+    geometry_result_path = verify_record(
+        geometry_receipt["result"], "geometry preflight result"
+    )
+    geometry_result = load_json(geometry_result_path)
+    require(
+        geometry_result.get("schema_version")
+        == "paired_rotation_augmentation_preflight_result.v1",
+        "geometry result schema differs",
+    )
+    require(
+        geometry_result.get("repository_head") == repository_head,
+        "geometry result repository differs",
+    )
+    require(
+        geometry_result.get("semantic_lock_sha256") == SEMANTIC_LOCK_SHA256,
+        "geometry result lock differs",
+    )
+    require(
+        geometry_result.get("all_preflight_gates_pass") is True,
+        "geometry result did not pass",
+    )
     environment = require_local_cpu_only()
 
     dataset, target_px, masks, original_frames, data_controls = load_bound_training_dataset(
@@ -190,6 +242,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
     generator = torch.Generator().manual_seed(args.seed)
+    augmentation_generator = torch.Generator(device="cpu").manual_seed(
+        AUGMENTATION_SEED
+    )
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -228,9 +283,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 / "run_certified_witness_local_confirmation.py"
             ),
             "model": file_record(args.repo_root / "keypoint_net" / "model.py"),
+            "paired_rotation_augmentation": file_record(
+                args.repo_root
+                / "keypoint_net"
+                / "paired_rotation_augmentation.py"
+            ),
         },
         "semantic_lock": file_record(args.semantic_lock),
         "train_input_receipt": file_record(args.train_input_receipt),
+        "geometry_receipt": file_record(args.geometry_receipt),
+        "paired_arm": args.arm,
         "seed": args.seed,
         "device": "cpu",
         "training_frame_indices": original_frames.tolist(),
@@ -252,7 +314,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "optimizer": "Adam",
         "learning_rate": 1e-4,
         "weight_decay": 1e-5,
-        "augmentation": "none",
+        "augmentation": {
+            "name": "paired_known_warp_rotation",
+            "control_effective_angle_deg": 0.0,
+            "candidate_selector": "even_zero_based_global_sample_exposure",
+            "candidate_fraction": 0.5,
+            "angle_generator_seed": AUGMENTATION_SEED,
+            "proposed_angle_distribution": "float32_uniform_half_open",
+            "proposed_angle_min_deg": ANGLE_MIN_DEG,
+            "proposed_angle_max_deg_exclusive": ANGLE_MAX_DEG,
+            "rotation_center_px": list(ROTATION_CENTER_PX),
+            "background_rgb_uint8": list(BACKGROUND_RGB_UINT8),
+            "rgb_interpolation": "bilinear",
+            "mask_interpolation_for_audit_only": "nearest",
+            "align_corners": True,
+            "unselected_candidate_and_all_control_tensors_bypass_resampling": True,
+        },
         "checkpoint_selection": "training_only_fixed_local_3x3_lexicographic_score",
         "concurrent_control": "native_global_soft_argmax",
         "environment": environment,
@@ -267,6 +344,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "source_hashes_before_first_update": source_hashes_before,
         "validation_truth_received_or_opened": False,
         "full_track_archive_received_or_opened": False,
+        "paired_arm": args.arm,
+        "geometry_preflight_receipt": file_record(args.geometry_receipt),
     }
     controls_path = args.output_dir / "semantic_controls.json"
     write_json(controls_path, controls)
@@ -279,6 +358,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     evaluation_times: list[float] = []
     update = 0
     epoch = 0
+    global_exposure_count = 0
+    selected_exposure_count = 0
+    applied_rotation_count = 0
+    proposed_angle_min = float("inf")
+    proposed_angle_max = float("-inf")
+    proposed_angle_sum = 0.0
+    proposed_schedule_hash = hashlib.sha256()
+    effective_schedule_hash = hashlib.sha256()
+    selector_schedule_hash = hashlib.sha256()
+    sample_order_hash = hashlib.sha256()
     start = time.perf_counter()
     while update < args.max_updates:
         epoch += 1
@@ -287,6 +376,32 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             update_start = time.perf_counter()
             images = batch["image"].to(device)
             targets = batch["target"].to(device)
+            batch_size_actual = int(images.shape[0])
+            proposed_angles = draw_proposed_angles(
+                batch_size_actual, augmentation_generator
+            )
+            images, targets, selector, effective_angles = apply_arm_transform(
+                images,
+                targets,
+                proposed_angles,
+                global_exposure_start=global_exposure_count,
+                arm=args.arm,
+            )
+            proposed_numpy = proposed_angles.numpy()
+            selector_numpy = selector.numpy()
+            effective_numpy = effective_angles.numpy()
+            frame_numpy = batch["frame"].numpy().astype(np.int64, copy=False)
+            proposed_schedule_hash.update(proposed_numpy.tobytes())
+            selector_schedule_hash.update(selector_numpy.tobytes())
+            effective_schedule_hash.update(effective_numpy.tobytes())
+            sample_order_hash.update(frame_numpy.tobytes())
+            proposed_angle_min = min(proposed_angle_min, float(proposed_numpy.min()))
+            proposed_angle_max = max(proposed_angle_max, float(proposed_numpy.max()))
+            proposed_angle_sum += float(proposed_numpy.astype(np.float64).sum())
+            selected_exposure_count += int(selector_numpy.sum())
+            if args.arm == "candidate":
+                applied_rotation_count += int(selector_numpy.sum())
+            global_exposure_count += batch_size_actual
             _, logits = model(images)
             loss = dense_heatmap_cross_entropy(logits, targets, sigma_input_px=8.0)
             optimizer.zero_grad(set_to_none=True)
@@ -359,6 +474,36 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 break
 
     require(best_checkpoint_path is not None and best_score is not None, "no checkpoint selected")
+    source_hashes_after_last_update = _source_hashes(
+        args, train_targets, train_manifest
+    )
+    require(
+        source_hashes_after_last_update == source_hashes_before,
+        "a bound source changed during training",
+    )
+    expected_exposures = 150 if args.run_kind == "smoke" else 75000
+    require(global_exposure_count == expected_exposures, "sample exposure count differs")
+    require(
+        selected_exposure_count == expected_exposures // 2,
+        "paired selector exposure count differs",
+    )
+    require(
+        applied_rotation_count
+        == (expected_exposures // 2 if args.arm == "candidate" else 0),
+        "applied rotation count differs",
+    )
+    schedule = {
+        "sample_exposure_count": global_exposure_count,
+        "selected_exposure_count": selected_exposure_count,
+        "applied_rotation_count": applied_rotation_count,
+        "proposed_angle_min_deg": proposed_angle_min,
+        "proposed_angle_max_deg": proposed_angle_max,
+        "proposed_angle_mean_deg": proposed_angle_sum / global_exposure_count,
+        "sample_order_sha256": sample_order_hash.hexdigest(),
+        "proposed_angle_schedule_sha256": proposed_schedule_hash.hexdigest(),
+        "selector_schedule_sha256": selector_schedule_hash.hexdigest(),
+        "effective_angle_schedule_sha256": effective_schedule_hash.hexdigest(),
+    }
     best_payload = torch.load(best_checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(best_payload["extractor_state_dict"], strict=True)
     loaded_state_hash = model_state_sha256(model)
@@ -437,8 +582,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     result = {
         "schema_version": "leakage_safe_witness_distillation_training_result.v1",
         "artifact_type": "training_truth_only_supervised_detector",
+        "paired_arm": args.arm,
         "run_kind": args.run_kind,
         "repository_head": repository_head,
+        "semantic_lock_sha256": SEMANTIC_LOCK_SHA256,
         "runtime_seconds": time.perf_counter() - start,
         "completed_updates": update,
         "selected_update": int(best_payload["update"]),
@@ -448,10 +595,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "checkpoint_round_trip_exact": True,
         "selected_prediction_replay_exact": True,
         "source_hashes_unchanged_through_first_update": True,
+        "source_hashes_unchanged_through_last_update": True,
         "validation_truth_received_or_opened": False,
         "full_track_archive_received_or_opened": False,
         "training_global_control": compact_report(global_report),
         "training_local_candidate": compact_report(local_report),
+        "paired_schedule": schedule,
         "timing_projection": timing,
         "decision_branch": decision_branch,
         "statistical_scope": {
@@ -467,6 +616,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     receipt_path = args.output_dir / "TRAINING_RUN_RECEIPT.json"
     receipt = {
         "schema_version": "leakage_safe_witness_distillation_training_receipt.v1",
+        "paired_arm": args.arm,
+        "repository_head": repository_head,
+        "semantic_lock_sha256": SEMANTIC_LOCK_SHA256,
         "result": file_record(result_path),
         "config": file_record(config_path),
         "semantic_controls": file_record(controls_path),
@@ -489,9 +641,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-repo-head", required=True)
     parser.add_argument("--semantic-lock", type=Path, required=True)
     parser.add_argument("--train-input-receipt", type=Path, required=True)
+    parser.add_argument("--geometry-receipt", type=Path, required=True)
     parser.add_argument("--object-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--run-kind", choices=("smoke", "full"), required=True)
+    parser.add_argument("--arm", choices=("control", "candidate"), required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=("cpu",), default="cpu")
     parser.add_argument("--max-updates", type=int, required=True)

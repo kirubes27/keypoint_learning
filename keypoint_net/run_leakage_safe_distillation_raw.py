@@ -106,6 +106,16 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "training receipt schema differs",
     )
     require(training_receipt.get("run_kind") == "full", "raw inference requires full training")
+    paired_arm = str(training_receipt.get("paired_arm", ""))
+    require(paired_arm in ("control", "candidate"), "training paired arm differs")
+    require(
+        training_receipt.get("repository_head") == repository_head,
+        "training receipt repository differs",
+    )
+    require(
+        training_receipt.get("semantic_lock_sha256") == SEMANTIC_LOCK_SHA256,
+        "training receipt lock differs",
+    )
     require(
         training_receipt.get("decision_branch")
         == "freeze_checkpoint_and_run_truth_free_inference",
@@ -113,6 +123,20 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     )
     training_result_path = verify_record(training_receipt["result"], "training result")
     training_result = load_json(training_result_path)
+    require(
+        training_result.get("schema_version")
+        == "leakage_safe_witness_distillation_training_result.v1",
+        "training result schema differs",
+    )
+    require(training_result.get("paired_arm") == paired_arm, "training result arm differs")
+    require(
+        training_result.get("repository_head") == repository_head,
+        "training result repository differs",
+    )
+    require(
+        training_result.get("semantic_lock_sha256") == SEMANTIC_LOCK_SHA256,
+        "training result lock differs",
+    )
     require(training_result.get("validation_truth_received_or_opened") is False, "training opened validation truth")
     model_path = verify_record(training_receipt["selected_model"], "selected detector")
     expected_model_state_hash = str(training_result["selected_model_state_sha256"])
@@ -134,6 +158,16 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         payload.get("schema_version")
         == "leakage_safe_witness_distillation_checkpoint.v1",
         "detector checkpoint schema differs",
+    )
+    require(payload.get("config", {}).get("paired_arm") == paired_arm, "checkpoint arm differs")
+    require(
+        payload.get("config", {}).get("repository_head") == repository_head,
+        "checkpoint repository differs",
+    )
+    require(
+        payload.get("config", {}).get("semantic_lock", {}).get("sha256")
+        == SEMANTIC_LOCK_SHA256,
+        "checkpoint semantic lock differs",
     )
     model.load_state_dict(payload["extractor_state_dict"], strict=True)
     actual_model_state_hash = model_state_sha256(model)
@@ -169,8 +203,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     receipt = {
         "schema_version": "leakage_safe_distillation_raw_receipt.v1",
         "artifact_type": "truth_free_frozen_detector_predictions",
+        "paired_arm": paired_arm,
         "command_argv": list(sys.argv),
         "repository_head": repository_head,
+        "semantic_lock_sha256": SEMANTIC_LOCK_SHA256,
         "implementation_sources": {
             "runner": file_record(Path(__file__)),
             "contract": file_record(

@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 from PIL import Image
@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-EXPECTED_LOCK_SHA256 = "af205b4ba37c58972b6e68d3e4c59b5b31c016440bc23ab9fc774bbf616736d7"
+EXPECTED_LOCK_SHA256 = "a79183b0d0a49ba79083ffbcf819dafae8281f05feffda3922f8c2ecab83fc0c"
 EXPECTED_MANIFEST_SHA256 = "f4a6d27922bcaa6446590a227bbf75c9c38730b5288fef763f0e164225098f29"
 EXPECTED_INITIALS_SHA256 = "d5bffc4651347eb76556000ba92ac8f3a82e324f310bda37f84b8c5b789b8a34"
 EXPECTED_TAPNET_COMMIT = "c2cbab81cc06092b5f05bfe2da7bfec54e2079c9"
@@ -132,6 +132,56 @@ def _validate_prediction_arrays(positions: np.ndarray, visibility: np.ndarray) -
     )
 
 
+def _coordinate_mapping_smoke(
+    initial_coordinate: np.ndarray,
+    display_to_model: Callable[..., np.ndarray],
+    model_to_display: Callable[..., np.ndarray],
+) -> dict[str, Any]:
+    """Prove the exact official 512 -> 256 -> 512 caller convention."""
+    model_coordinate = np.asarray(
+        display_to_model(
+            initial_coordinate,
+            IMAGE_SIZE,
+            IMAGE_SIZE,
+            MODEL_RESOLUTION,
+        ),
+        dtype=np.float32,
+    )
+    roundtrip_coordinate = np.asarray(
+        model_to_display(
+            model_coordinate,
+            IMAGE_SIZE,
+            IMAGE_SIZE,
+            MODEL_RESOLUTION,
+        ),
+        dtype=np.float32,
+    )
+    require(model_coordinate.shape == initial_coordinate.shape, "model query shape differs")
+    require(roundtrip_coordinate.shape == initial_coordinate.shape, "display round-trip shape differs")
+    maximum_absolute_error = float(
+        np.max(np.abs(roundtrip_coordinate.astype(np.float64) - initial_coordinate))
+    )
+    require(
+        maximum_absolute_error <= 1e-6,
+        "official 512-to-256-to-512 coordinate round-trip exceeds 1e-6 pixels",
+    )
+    return {
+        "display_resolution": [IMAGE_SIZE, IMAGE_SIZE],
+        "model_resolution": [MODEL_RESOLUTION, MODEL_RESOLUTION],
+        "display_input_order": "x_y",
+        "inner_query_order": "t_y_x",
+        "inner_track_order": "y_x",
+        "display_output_order": "x_y",
+        "display_to_model_scale_xy": [0.5, 0.5],
+        "model_to_display_scale_xy": [2.0, 2.0],
+        "resize_mode": "bilinear_align_corners_false",
+        "custom_half_pixel_correction_applied": False,
+        "initial_query_count": int(initial_coordinate.shape[0]),
+        "maximum_absolute_roundtrip_error_px": maximum_absolute_error,
+        "roundtrip_tolerance_px": 1e-6,
+    }
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     started = time.time()
     require(args.device == "cuda", "this frozen gate is cluster CUDA only")
@@ -188,9 +238,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     sys.path.insert(0, str(args.tapnet_root.resolve()))
     import einops  # pylint: disable=import-outside-toplevel
     import torchvision  # pylint: disable=import-outside-toplevel
+    from tapnet.tapnextpp.votsp2026 import utils as tapnextpp_utils  # pylint: disable=import-outside-toplevel
     from tapnet.tapnextpp.votsp2026.model import (  # pylint: disable=import-outside-toplevel
         TAPNextPP,
     )
+
+    coordinate_mapping = _coordinate_mapping_smoke(
+        initial_coordinate,
+        tapnextpp_utils.display_to_model,
+        tapnextpp_utils.model_to_display,
+    )
+    require(TAPNextPP.MODEL_SIZE == MODEL_RESOLUTION, "official model coordinate size differs")
 
     torch.manual_seed(0)
     torch.cuda.manual_seed_all(0)
@@ -207,6 +265,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         compile_model=False,
         input_resolution=MODEL_RESOLUTION,
     )
+    require(model.input_resolution == MODEL_RESOLUTION, "official input resolution differs")
     prefix_order = list(range(DETERMINISM_PREFIX_FRAMES))
     prefix_positions_a, prefix_visibility_a = _run_traversal(
         model, frames_bgr, initial_coordinate, prefix_order
@@ -300,6 +359,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "torch_compile": False,
             "allow_tf32": False,
         },
+        "coordinate_mapping": coordinate_mapping,
         "raw_predictions": file_record(arrays_path),
         "controls": {
             "all_rgb_hashes_rechecked_before_open": True,
@@ -315,6 +375,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "repeated_prefix_visibility_exact": prefix_visibility_exact,
             "all_forward_coordinates_finite_and_in_image": True,
             "all_reverse_coordinates_finite_and_in_image": True,
+            "official_512_to_256_to_512_coordinate_roundtrip_pass": True,
             "forward_visible_count_diagnostic": int(np.sum(forward_visibility)),
             "reverse_visible_count_diagnostic": int(np.sum(reverse_visibility)),
         },

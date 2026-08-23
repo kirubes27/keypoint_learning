@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-EXPECTED_LOCK_SHA256 = "af205b4ba37c58972b6e68d3e4c59b5b31c016440bc23ab9fc774bbf616736d7"
+EXPECTED_LOCK_SHA256 = "a79183b0d0a49ba79083ffbcf819dafae8281f05feffda3922f8c2ecab83fc0c"
 EXPECTED_MANIFEST_SHA256 = "f4a6d27922bcaa6446590a227bbf75c9c38730b5288fef763f0e164225098f29"
 EXPECTED_CAPABILITY_MANIFEST_SHA256 = "1f94e0baf1c0a1b01e8897f0a5dc8419fccbd52c865ff5963253fcd098bd44dd"
 EXPECTED_TRACKS_SHA256 = "b9decd7440da1e35f935f5d8d443e3eb9738b1584f8b72ebebb51b1d7bfa93b6"
@@ -232,6 +232,19 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         controls["all_reverse_coordinates_finite_and_in_image"] is True,
         "raw reverse coordinate control failed",
     )
+    require(
+        controls["official_512_to_256_to_512_coordinate_roundtrip_pass"] is True,
+        "raw official coordinate round-trip control failed",
+    )
+    coordinate_mapping = raw_receipt["coordinate_mapping"]
+    require(
+        coordinate_mapping["maximum_absolute_roundtrip_error_px"] <= 1e-6,
+        "raw official coordinate round-trip error exceeds tolerance",
+    )
+    require(
+        coordinate_mapping["custom_half_pixel_correction_applied"] is False,
+        "raw stage applied a custom half-pixel correction",
+    )
 
     raw_record = file_record(args.raw_predictions)
     require(raw_receipt["raw_predictions"] == raw_record, "raw prediction binding differs")
@@ -305,12 +318,42 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     direction_pass_count = int(forward_decision["strict_direction_pass"]) + int(
         reverse_decision["strict_direction_pass"]
     )
+    individual_channel_passes = []
+    for channel, witness in enumerate(witness_id):
+        forward_channel = bool(forward_report["per_witness"][channel]["strict_channel_pass"])
+        reverse_channel = bool(reverse_report["per_witness"][channel]["strict_channel_pass"])
+        forward_visibility = bool(np.all(forward_visible[:, channel]))
+        reverse_visibility = bool(np.all(reverse_visible[:, channel]))
+        individual_channel_passes.append(
+            {
+                "channel": channel,
+                "witness_id": int(witness),
+                "forward_localization_object_identity_pass": forward_channel,
+                "reverse_localization_object_identity_pass": reverse_channel,
+                "forward_visibility_pass": forward_visibility,
+                "reverse_visibility_pass": reverse_visibility,
+                "bidirectional_individual_channel_pass": bool(
+                    forward_channel
+                    and reverse_channel
+                    and forward_visibility
+                    and reverse_visibility
+                ),
+            }
+        )
+    individual_channel_pass_count = sum(
+        int(row["bidirectional_individual_channel_pass"])
+        for row in individual_channel_passes
+    )
+    any_pair_collapse = bool(
+        forward_report["violations"]["collapsed_pair_count"]
+        or reverse_report["violations"]["collapsed_pair_count"]
+    )
     if direction_pass_count == 2:
-        branch = "authorize_raw_site_selection_then_cnn_distillation"
-    elif direction_pass_count == 1:
-        branch = "reject_bidirectional_promotion_and_inspect_direction_specific_failures"
+        branch = "authorize_direct_leakage_safe_shared_affine_operator_fit"
+    elif 6 <= individual_channel_pass_count <= 9 and not any_pair_collapse:
+        branch = "preserve_diagnostic_and_require_predeclared_six_scope_decision"
     else:
-        branch = "reject_tapnextpp_256_and_freeze_512_support_point_gate"
+        branch = "reject_tapnextpp_256_privileged_bridge"
 
     args.output_dir.mkdir(parents=True)
     arrays_path = args.output_dir / "TAPNEXTPP_256_BIDIRECTIONAL_EVALUATION_ARRAYS.npz"
@@ -367,6 +410,9 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "strict_direction_pass_count": direction_pass_count,
             "forward": forward_decision,
             "reverse": reverse_decision,
+            "bidirectional_individual_channel_pass_count": individual_channel_pass_count,
+            "individual_channels": individual_channel_passes,
+            "any_pair_collapse": any_pair_collapse,
             "branch": branch,
         },
         "frozen_contract_report": {

@@ -7,6 +7,7 @@ from keypoint_net.material_transport_gate_io import MaterialTransportIOError
 from keypoint_net.run_tapnextpp_bidirectional_teacher import (
     EXPECTED_WITNESSES,
     _canonicalize,
+    _coordinate_mapping_smoke,
     _validate_prediction_arrays,
 )
 
@@ -51,3 +52,37 @@ def test_prediction_validator_fails_closed_on_query_shape_change() -> None:
     visibility = np.ones((3, EXPECTED_WITNESSES - 1), dtype=bool)
     with pytest.raises(MaterialTransportIOError, match="query shape differs"):
         _validate_prediction_arrays(positions, visibility)
+
+
+def test_coordinate_mapping_smoke_records_exact_official_scale_convention() -> None:
+    initial = np.asarray(
+        [[0.0, 0.0], [0.5, 1.5], [255.5, 255.5], [511.0, 511.0]],
+        dtype=np.float32,
+    )
+
+    def display_to_model(points, height, width, model_size):
+        assert (height, width, model_size) == (512, 512, 256)
+        return points * np.asarray([model_size / width, model_size / height])
+
+    def model_to_display(points, height, width, model_size):
+        assert (height, width, model_size) == (512, 512, 256)
+        return points * np.asarray([width / model_size, height / model_size])
+
+    report = _coordinate_mapping_smoke(initial, display_to_model, model_to_display)
+    assert report["maximum_absolute_roundtrip_error_px"] == 0.0
+    assert report["display_input_order"] == "x_y"
+    assert report["inner_query_order"] == "t_y_x"
+    assert report["custom_half_pixel_correction_applied"] is False
+
+
+def test_coordinate_mapping_smoke_fails_closed_on_mapping_offset() -> None:
+    initial = np.zeros((EXPECTED_WITNESSES, 2), dtype=np.float32)
+
+    def display_to_model(points, _height, _width, _model_size):
+        return points * 0.5
+
+    def model_to_display(points, _height, _width, _model_size):
+        return points * 2.0 + 0.25
+
+    with pytest.raises(MaterialTransportIOError, match="round-trip exceeds"):
+        _coordinate_mapping_smoke(initial, display_to_model, model_to_display)

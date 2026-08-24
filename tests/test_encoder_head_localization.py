@@ -54,18 +54,19 @@ def test_explicit_competitor_margin_and_wrong_coarse_semantics() -> None:
             scores[level, 0, witness, y[witness], x[witness]] = 5.0
             scores[level, 0, witness, 0, 0] = 3.0
             other = (witness + 1) % 10
-            scores[level, 0, witness, y[other], x[other]] = 2.0
+            scores[level, 0, witness, y[other], x[other]] = 4.0
     hard_x = x[None].copy()
     hard_y = y[None].copy()
     hard_x[0, 0] = 60
     hard_y[0, 0] = 60
-    scores[:, 0, 0, 60, 60] = 4.0
+    scores[:, 0, 0, 60, 60] = 4.5
     result = explicit_competitor_margins(scores, targets, hard_x, hard_y)
     assert result["head_wrong_coarse_event"].sum() == 1
     assert bool(result["head_wrong_coarse_event"][0, 0])
-    assert np.allclose(result["target_minus_competitor_margin"][:, 0, 0], 1.0)
+    assert np.allclose(result["target_minus_competitor_margin"][:, 0, 0], 0.5)
     assert np.all(result["maximum_competitor_source_code"][:, 0, 0] == 1)
-    assert np.all(result["target_minus_competitor_margin"][:, 0, 1:] == 2.0)
+    assert np.all(result["target_minus_competitor_margin"][:, 0, 1:] == 1.0)
+    assert np.all(result["maximum_competitor_source_code"][:, 0, 1:] == 0)
 
 
 def test_fixed_transition_labels_do_not_overclaim_nonmonotonic_events() -> None:

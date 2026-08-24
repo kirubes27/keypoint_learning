@@ -188,7 +188,7 @@ def explicit_competitor_margins(
 
     material = sample_all_material_sites(scores, targets)
     diagonal = np.arange(EXPECTED_WITNESSES)
-    material[..., diagonal] = -np.inf
+    material[..., diagonal, diagonal] = -np.inf
     identity_index = np.argmax(material, axis=-1)
     identity_score = np.max(material, axis=-1)
 

@@ -89,6 +89,16 @@ def _bound(path: Path, label: str) -> dict[str, Any]:
     return record
 
 
+def require_frame_coverage(
+    record_frames: set[int], requested_frames: np.ndarray, label: str
+) -> None:
+    """Allow bound manifests to be supersets but never omit a requested frame."""
+
+    requested = {int(frame) for frame in np.asarray(requested_frames).tolist()}
+    missing = sorted(requested - {int(frame) for frame in record_frames})
+    require(not missing, f"{label} omits requested frames: {missing}")
+
+
 def _load_targets(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     with np.load(path, allow_pickle=False) as loaded:
         frame_index = np.asarray(loaded["frame_index"], dtype=np.int64)
@@ -116,7 +126,7 @@ def _load_masks_and_images(
         "mask manifest schema differs",
     )
     mask_records = {int(row["frame_index"]): row for row in mask_manifest["frames"]}
-    require(set(mask_records) == set(frames.tolist()), "mask manifest frames differ")
+    require_frame_coverage(set(mask_records), frames, "mask manifest")
     masks = np.empty((len(frames), 512, 512), dtype=bool)
     for local_index, frame in enumerate(frames.tolist()):
         row = mask_records[frame]
@@ -132,7 +142,7 @@ def _load_masks_and_images(
         "RGB manifest schema differs",
     )
     rgb_records = {int(row["frame_index"]): row for row in rgb_manifest["frames"]}
-    require(all(int(frame) in rgb_records for frame in frames), "RGB manifest omits validation frame")
+    require_frame_coverage(set(rgb_records), frames, "RGB manifest")
     images = np.empty((len(frames), 512, 512, 3), dtype=np.uint8)
     for local_index, frame in enumerate(frames.tolist()):
         row = rgb_records[frame]
@@ -275,7 +285,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     raw_loaded_before_privileged_inputs = True
 
     repository_head = _verify_clean_head(args.repo_root, args.expected_repo_head)
-    require(raw_receipt.get("repository_head") == repository_head, "raw repository differs")
+    raw_repository_head = str(raw_receipt.get("repository_head", ""))
+    require(bool(raw_repository_head), "raw repository HEAD missing")
+    ancestry = subprocess.run(
+        ["git", "-C", str(args.repo_root), "merge-base", "--is-ancestor", raw_repository_head, repository_head],
+        check=False,
+    )
+    require(ancestry.returncode == 0, "raw repository HEAD is not an evaluator ancestor")
     semantic_lock_record = file_record(args.semantic_lock)
     require(semantic_lock_record["sha256"] == EXPECTED_SEMANTIC_LOCK_SHA256, "semantic lock differs")
     require(raw_receipt.get("semantic_lock") == semantic_lock_record, "raw semantic-lock binding differs")
@@ -434,6 +450,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "privileged_posthash_final_feature_query_decoder_evaluation",
         "repository_head": repository_head,
+        "raw_repository_head": raw_repository_head,
         "raw_predictions_hashed_and_loaded_before_truth_masks_baseline_or_rgb": raw_loaded_before_privileged_inputs,
         "sample_scope": {
             "object_count": 1,
@@ -510,6 +527,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     receipt = {
         "schema_version": "final_feature_query_decoder_evaluation_receipt.v1",
         "repository_head": repository_head,
+        "raw_repository_head": raw_repository_head,
         "result": file_record(result_path),
         "derived_arrays": file_record(arrays_path),
         "summary_figure": file_record(summary_figure),

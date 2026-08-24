@@ -201,7 +201,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             },
         ],
         "information_boundary": {
-            "opened": ["checkpoint", "selected RGB", "frame-27 training targets", "prior truth-free arrays"],
+            "opened": ["checkpoint", "bound RGB corpus", "frame-27 training targets", "prior truth-free arrays"],
             "forbidden_and_not_opened": [
                 "validation targets",
                 "masks",

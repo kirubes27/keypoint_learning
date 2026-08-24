@@ -18,6 +18,10 @@ from run_frame27_detector_initialized_tapnextpp import (  # noqa: E402
     EXPECTED_WITNESSES,
     select_detector_anchor,
 )
+from audit_frame27_detector_initialization_vs_drift import (  # noqa: E402
+    compute_audit,
+    descriptive_linear_slope,
+)
 
 
 def _report(
@@ -84,3 +88,33 @@ def test_bridge_branch_preserves_strict_and_boundary_qualified_results() -> None
         select_bridge_branch(_report(strict=False, wrong=1), zero)
         == "detector_initialization_failure_distil_selector"
     )
+
+
+def test_descriptive_slope_has_explicit_units_per_x_step() -> None:
+    assert descriptive_linear_slope([0.0, 1.0, 2.0], [3.0, 5.0, 7.0]) == pytest.approx(2.0)
+
+
+def test_initialization_audit_compares_fixed_witnesses_and_correlated_frames() -> None:
+    witnesses = np.asarray(
+        [1857, 2237, 2241, 12601, 12606, 12980, 12993, 13100, 13868, 14394]
+    )
+    initial_target = np.zeros((10, 2), dtype=np.float64)
+    initial_prediction = np.zeros((10, 2), dtype=np.float64)
+    initial_prediction[:, 0] = np.arange(1.0, 11.0)
+    certified = np.zeros((24, 10, 2), dtype=np.float64)
+    detector = np.broadcast_to(initial_prediction, certified.shape).copy()
+    certified_error = np.zeros((24, 10), dtype=np.float64)
+    detector_error = np.linalg.norm(detector, axis=-1)
+    result = compute_audit(
+        frame_index=np.arange(24),
+        witness_id=witnesses,
+        detector_initial_prediction=initial_prediction,
+        detector_initial_target=initial_target,
+        certified_prediction=certified,
+        detector_prediction=detector,
+        certified_material_error=certified_error,
+        detector_material_error=detector_error,
+    )
+    assert result["initialization_error_vs_mean_inter_arm_distance"]["value"] == pytest.approx(1.0)
+    assert result["inter_arm_distance_px"]["slope_per_backward_frame"] == pytest.approx(0.0, abs=1e-12)
+    assert result["sample_scope"]["correlated_frame_count"] == 24
